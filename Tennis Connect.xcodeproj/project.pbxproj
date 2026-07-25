@@ -1,0 +1,436 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		07134EDC3011E18800A87536 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 07134EDB3011E18800A87536 /* GoogleService-Info.plist */; };
+		07134EDE3011F33900A87536 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EDD3011F33900A87536 /* HomeView.swift */; };
+		07134EE03011F4B800A87536 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EDF3011F4B800A87536 /* SearchView.swift */; };
+		07134EE23011F52300A87536 /* RecruitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EE13011F52300A87536 /* RecruitView.swift */; };
+		07134EE43011F55B00A87536 /* MessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EE33011F55B00A87536 /* MessageView.swift */; };
+		07134EE63011F59700A87536 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EE53011F59700A87536 /* ProfileView.swift */; };
+		07134EE830133A8800A87536 /* Coach.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EE730133A8800A87536 /* Coach.swift */; };
+		07134EEA30133D6A00A87536 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EE930133D6A00A87536 /* SampleData.swift */; };
+		07134EEC301341A600A87536 /* ProfileDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07134EEB301341A600A87536 /* ProfileDetailView.swift */; };
+		07E1E8393010979700DA7170 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 07E1E8383010979700DA7170 /* FirebaseAnalytics */; };
+		07E1E83B3010979700DA7170 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 07E1E83A3010979700DA7170 /* FirebaseAuth */; };
+		07E1E83D3010979700DA7170 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 07E1E83C3010979700DA7170 /* FirebaseFirestore */; };
+		07E1E83F3010979700DA7170 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 07E1E83E3010979700DA7170 /* FirebaseStorage */; };
+		07EDD482300F67AC0097B050 /* Tennis_ConnectApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07EDD481300F67AC0097B050 /* Tennis_ConnectApp.swift */; };
+		07EDD484300F67AC0097B050 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07EDD483300F67AC0097B050 /* ContentView.swift */; };
+		07EDD486300F67B40097B050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD485300F67B40097B050 /* Assets.xcassets */; };
+		07EDD48A300F67B40097B050 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD489300F67B40097B050 /* Preview Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		07134EDB3011E18800A87536 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		07134EDD3011F33900A87536 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		07134EDF3011F4B800A87536 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		07134EE13011F52300A87536 /* RecruitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecruitView.swift; sourceTree = "<group>"; };
+		07134EE33011F55B00A87536 /* MessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageView.swift; sourceTree = "<group>"; };
+		07134EE53011F59700A87536 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
+		07134EE730133A8800A87536 /* Coach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Coach.swift; sourceTree = "<group>"; };
+		07134EE930133D6A00A87536 /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
+		07134EEB301341A600A87536 /* ProfileDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileDetailView.swift; sourceTree = "<group>"; };
+		07EDD47E300F67AC0097B050 /* Tennis Connect.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Tennis Connect.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		07EDD481300F67AC0097B050 /* Tennis_ConnectApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tennis_ConnectApp.swift; sourceTree = "<group>"; };
+		07EDD483300F67AC0097B050 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		07EDD485300F67B40097B050 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		07EDD487300F67B40097B050 /* Tennis_Connect.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Tennis_Connect.entitlements; sourceTree = "<group>"; };
+		07EDD489300F67B40097B050 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		07EDD47B300F67AC0097B050 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				07E1E8393010979700DA7170 /* FirebaseAnalytics in Frameworks */,
+				07E1E83F3010979700DA7170 /* FirebaseStorage in Frameworks */,
+				07E1E83B3010979700DA7170 /* FirebaseAuth in Frameworks */,
+				07E1E83D3010979700DA7170 /* FirebaseFirestore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		07EDD475300F67AC0097B050 = {
+			isa = PBXGroup;
+			children = (
+				07EDD480300F67AC0097B050 /* Tennis Connect */,
+				07EDD47F300F67AC0097B050 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		07EDD47F300F67AC0097B050 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				07EDD47E300F67AC0097B050 /* Tennis Connect.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		07EDD480300F67AC0097B050 /* Tennis Connect */ = {
+			isa = PBXGroup;
+			children = (
+				07EDD481300F67AC0097B050 /* Tennis_ConnectApp.swift */,
+				07EDD483300F67AC0097B050 /* ContentView.swift */,
+				07EDD485300F67B40097B050 /* Assets.xcassets */,
+				07EDD487300F67B40097B050 /* Tennis_Connect.entitlements */,
+				07134EDB3011E18800A87536 /* GoogleService-Info.plist */,
+				07EDD488300F67B40097B050 /* Preview Content */,
+				07134EDD3011F33900A87536 /* HomeView.swift */,
+				07134EEB301341A600A87536 /* ProfileDetailView.swift */,
+				07134EE930133D6A00A87536 /* SampleData.swift */,
+				07134EDF3011F4B800A87536 /* SearchView.swift */,
+				07134EE13011F52300A87536 /* RecruitView.swift */,
+				07134EE33011F55B00A87536 /* MessageView.swift */,
+				07134EE53011F59700A87536 /* ProfileView.swift */,
+				07134EE730133A8800A87536 /* Coach.swift */,
+			);
+			path = "Tennis Connect";
+			sourceTree = "<group>";
+		};
+		07EDD488300F67B40097B050 /* Preview Content */ = {
+			isa = PBXGroup;
+			children = (
+				07EDD489300F67B40097B050 /* Preview Assets.xcassets */,
+			);
+			path = "Preview Content";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		07EDD47D300F67AC0097B050 /* Tennis Connect */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 07EDD48D300F67B40097B050 /* Build configuration list for PBXNativeTarget "Tennis Connect" */;
+			buildPhases = (
+				07EDD47A300F67AC0097B050 /* Sources */,
+				07EDD47B300F67AC0097B050 /* Frameworks */,
+				07EDD47C300F67AC0097B050 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "Tennis Connect";
+			productName = "Tennis Connect";
+			productReference = 07EDD47E300F67AC0097B050 /* Tennis Connect.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		07EDD476300F67AC0097B050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1430;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					07EDD47D300F67AC0097B050 = {
+						CreatedOnToolsVersion = 14.3;
+					};
+				};
+			};
+			buildConfigurationList = 07EDD479300F67AC0097B050 /* Build configuration list for PBXProject "Tennis Connect" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 07EDD475300F67AC0097B050;
+			packageReferences = (
+				07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
+			productRefGroup = 07EDD47F300F67AC0097B050 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				07EDD47D300F67AC0097B050 /* Tennis Connect */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		07EDD47C300F67AC0097B050 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				07EDD48A300F67B40097B050 /* Preview Assets.xcassets in Resources */,
+				07EDD486300F67B40097B050 /* Assets.xcassets in Resources */,
+				07134EDC3011E18800A87536 /* GoogleService-Info.plist in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		07EDD47A300F67AC0097B050 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				07134EE43011F55B00A87536 /* MessageView.swift in Sources */,
+				07134EE03011F4B800A87536 /* SearchView.swift in Sources */,
+				07134EDE3011F33900A87536 /* HomeView.swift in Sources */,
+				07EDD484300F67AC0097B050 /* ContentView.swift in Sources */,
+				07134EE830133A8800A87536 /* Coach.swift in Sources */,
+				07134EE23011F52300A87536 /* RecruitView.swift in Sources */,
+				07134EE63011F59700A87536 /* ProfileView.swift in Sources */,
+				07134EEC301341A600A87536 /* ProfileDetailView.swift in Sources */,
+				07134EEA30133D6A00A87536 /* SampleData.swift in Sources */,
+				07EDD482300F67AC0097B050 /* Tennis_ConnectApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		07EDD48B300F67B40097B050 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		07EDD48C300F67B40097B050 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		07EDD48E300F67B40097B050 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Tennis Connect/Tennis_Connect.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "\"Tennis Connect/Preview Content\"";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 13.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.takahiromatsuzaki.Tennis-Connect";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		07EDD48F300F67B40097B050 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Tennis Connect/Tennis_Connect.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "\"Tennis Connect/Preview Content\"";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 13.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.takahiromatsuzaki.Tennis-Connect";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		07EDD479300F67AC0097B050 /* Build configuration list for PBXProject "Tennis Connect" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				07EDD48B300F67B40097B050 /* Debug */,
+				07EDD48C300F67B40097B050 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		07EDD48D300F67B40097B050 /* Build configuration list for PBXNativeTarget "Tennis Connect" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				07EDD48E300F67B40097B050 /* Debug */,
+				07EDD48F300F67B40097B050 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.16.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		07E1E8383010979700DA7170 /* FirebaseAnalytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAnalytics;
+		};
+		07E1E83A3010979700DA7170 /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		07E1E83C3010979700DA7170 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		07E1E83E3010979700DA7170 /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 07EDD476300F67AC0097B050 /* Project object */;
+}
