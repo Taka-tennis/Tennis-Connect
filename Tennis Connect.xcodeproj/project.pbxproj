@@ -24,6 +24,29 @@
 		07EDD484300F67AC0097B050 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07EDD483300F67AC0097B050 /* ContentView.swift */; };
 		07EDD486300F67B40097B050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD485300F67B40097B050 /* Assets.xcassets */; };
 		07EDD48A300F67B40097B050 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD489300F67B40097B050 /* Preview Assets.xcassets */; };
+		139711B3301722AC0031C537 /* BookingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B2301722AC0031C537 /* BookingView.swift */; };
+		139711B53017424D0031C537 /* CoachRegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B43017424D0031C537 /* CoachRegisterView.swift */; };
+		139711B73018D5D70031C537 /* TimePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B63018D5D70031C537 /* TimePickerView.swift */; };
+		139711B93018E14B0031C537 /* StartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B83018E14B0031C537 /* StartView.swift */; };
+		139711BB3018E3D00031C537 /* CoachHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711BA3018E3D00031C537 /* CoachHomeView.swift */; };
+		139711BD3018E9760031C537 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711BC3018E9760031C537 /* MainTabView.swift */; };
+		139711BF3018E9D50031C537 /* ChatListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711BE3018E9D50031C537 /* ChatListView.swift */; };
+		139711C13018EA0D0031C537 /* FavoriteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711C03018EA0D0031C537 /* FavoriteView.swift */; };
+		139711C33018EA300031C537 /* MyPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711C23018EA300031C537 /* MyPageView.swift */; };
+		139711C53018EBF30031C537 /* CoachDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711C43018EBF30031C537 /* CoachDetailView.swift */; };
+		139711C73018F1CE0031C537 /* CoachHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711C63018F1CE0031C537 /* CoachHeaderView.swift */; };
+		139711C93018F1F70031C537 /* CoachProfileSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711C83018F1F70031C537 /* CoachProfileSection.swift */; };
+		139711CB3018F2200031C537 /* CoachSkillSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711CA3018F2200031C537 /* CoachSkillSection.swift */; };
+		139711CF3018F2B20031C537 /* CoachVideoSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711CE3018F2B20031C537 /* CoachVideoSection.swift */; };
+		139711D13018F2DA0031C537 /* CoachReviewSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711D03018F2DA0031C537 /* CoachReviewSection.swift */; };
+		139711D33018F3030031C537 /* CoachScheduleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711D23018F3030031C537 /* CoachScheduleSection.swift */; };
+		139711D53018F31E0031C537 /* ReserveButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711D43018F31E0031C537 /* ReserveButton.swift */; };
+		139711D7301A365F0031C537 /* BookingConfirmView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711D6301A365F0031C537 /* BookingConfirmView.swift */; };
+		139711D9301A38CE0031C537 /* PaymentView.swift.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711D8301A38CE0031C537 /* PaymentView.swift.swift */; };
+		139711DB301A3AA30031C537 /* BookingCompleteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DA301A3AA30031C537 /* BookingCompleteView.swift */; };
+		139711DD301A3C780031C537 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DC301A3C780031C537 /* ChatView.swift */; };
+		139711DF301A42E00031C537 /* ReservationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DE301A42E00031C537 /* ReservationListView.swift */; };
+		139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E0301A44890031C537 /* ReservationDetailView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +65,29 @@
 		07EDD485300F67B40097B050 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		07EDD487300F67B40097B050 /* Tennis_Connect.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Tennis_Connect.entitlements; sourceTree = "<group>"; };
 		07EDD489300F67B40097B050 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		139711B2301722AC0031C537 /* BookingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingView.swift; sourceTree = "<group>"; };
+		139711B43017424D0031C537 /* CoachRegisterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachRegisterView.swift; sourceTree = "<group>"; };
+		139711B63018D5D70031C537 /* TimePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimePickerView.swift; sourceTree = "<group>"; };
+		139711B83018E14B0031C537 /* StartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartView.swift; sourceTree = "<group>"; };
+		139711BA3018E3D00031C537 /* CoachHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachHomeView.swift; sourceTree = "<group>"; };
+		139711BC3018E9760031C537 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		139711BE3018E9D50031C537 /* ChatListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatListView.swift; sourceTree = "<group>"; };
+		139711C03018EA0D0031C537 /* FavoriteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteView.swift; sourceTree = "<group>"; };
+		139711C23018EA300031C537 /* MyPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyPageView.swift; sourceTree = "<group>"; };
+		139711C43018EBF30031C537 /* CoachDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachDetailView.swift; sourceTree = "<group>"; };
+		139711C63018F1CE0031C537 /* CoachHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachHeaderView.swift; sourceTree = "<group>"; };
+		139711C83018F1F70031C537 /* CoachProfileSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachProfileSection.swift; sourceTree = "<group>"; };
+		139711CA3018F2200031C537 /* CoachSkillSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachSkillSection.swift; sourceTree = "<group>"; };
+		139711CE3018F2B20031C537 /* CoachVideoSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachVideoSection.swift; sourceTree = "<group>"; };
+		139711D03018F2DA0031C537 /* CoachReviewSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachReviewSection.swift; sourceTree = "<group>"; };
+		139711D23018F3030031C537 /* CoachScheduleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachScheduleSection.swift; sourceTree = "<group>"; };
+		139711D43018F31E0031C537 /* ReserveButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReserveButton.swift; sourceTree = "<group>"; };
+		139711D6301A365F0031C537 /* BookingConfirmView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingConfirmView.swift; sourceTree = "<group>"; };
+		139711D8301A38CE0031C537 /* PaymentView.swift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaymentView.swift.swift; sourceTree = "<group>"; };
+		139711DA301A3AA30031C537 /* BookingCompleteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingCompleteView.swift; sourceTree = "<group>"; };
+		139711DC301A3C780031C537 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		139711DE301A42E00031C537 /* ReservationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationListView.swift; sourceTree = "<group>"; };
+		139711E0301A44890031C537 /* ReservationDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationDetailView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,6 +131,14 @@
 				07134EDB3011E18800A87536 /* GoogleService-Info.plist */,
 				07EDD488300F67B40097B050 /* Preview Content */,
 				07134EDD3011F33900A87536 /* HomeView.swift */,
+				139711D6301A365F0031C537 /* BookingConfirmView.swift */,
+				139711DA301A3AA30031C537 /* BookingCompleteView.swift */,
+				139711BC3018E9760031C537 /* MainTabView.swift */,
+				139711BE3018E9D50031C537 /* ChatListView.swift */,
+				139711C03018EA0D0031C537 /* FavoriteView.swift */,
+				139711C23018EA300031C537 /* MyPageView.swift */,
+				139711E0301A44890031C537 /* ReservationDetailView.swift */,
+				139711BA3018E3D00031C537 /* CoachHomeView.swift */,
 				07134EEB301341A600A87536 /* ProfileDetailView.swift */,
 				07134EE930133D6A00A87536 /* SampleData.swift */,
 				07134EDF3011F4B800A87536 /* SearchView.swift */,
@@ -92,6 +146,21 @@
 				07134EE33011F55B00A87536 /* MessageView.swift */,
 				07134EE53011F59700A87536 /* ProfileView.swift */,
 				07134EE730133A8800A87536 /* Coach.swift */,
+				139711B2301722AC0031C537 /* BookingView.swift */,
+				139711D8301A38CE0031C537 /* PaymentView.swift.swift */,
+				139711DE301A42E00031C537 /* ReservationListView.swift */,
+				139711DC301A3C780031C537 /* ChatView.swift */,
+				139711B43017424D0031C537 /* CoachRegisterView.swift */,
+				139711B83018E14B0031C537 /* StartView.swift */,
+				139711C43018EBF30031C537 /* CoachDetailView.swift */,
+				139711C63018F1CE0031C537 /* CoachHeaderView.swift */,
+				139711C83018F1F70031C537 /* CoachProfileSection.swift */,
+				139711CA3018F2200031C537 /* CoachSkillSection.swift */,
+				139711CE3018F2B20031C537 /* CoachVideoSection.swift */,
+				139711D03018F2DA0031C537 /* CoachReviewSection.swift */,
+				139711D23018F3030031C537 /* CoachScheduleSection.swift */,
+				139711D43018F31E0031C537 /* ReserveButton.swift */,
+				139711B63018D5D70031C537 /* TimePickerView.swift */,
 			);
 			path = "Tennis Connect";
 			sourceTree = "<group>";
@@ -180,14 +249,37 @@
 			files = (
 				07134EE43011F55B00A87536 /* MessageView.swift in Sources */,
 				07134EE03011F4B800A87536 /* SearchView.swift in Sources */,
+				139711C93018F1F70031C537 /* CoachProfileSection.swift in Sources */,
+				139711D9301A38CE0031C537 /* PaymentView.swift.swift in Sources */,
 				07134EDE3011F33900A87536 /* HomeView.swift in Sources */,
+				139711BD3018E9760031C537 /* MainTabView.swift in Sources */,
+				139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */,
+				139711C53018EBF30031C537 /* CoachDetailView.swift in Sources */,
 				07EDD484300F67AC0097B050 /* ContentView.swift in Sources */,
+				139711B53017424D0031C537 /* CoachRegisterView.swift in Sources */,
 				07134EE830133A8800A87536 /* Coach.swift in Sources */,
 				07134EE23011F52300A87536 /* RecruitView.swift in Sources */,
+				139711DB301A3AA30031C537 /* BookingCompleteView.swift in Sources */,
 				07134EE63011F59700A87536 /* ProfileView.swift in Sources */,
+				139711B73018D5D70031C537 /* TimePickerView.swift in Sources */,
 				07134EEC301341A600A87536 /* ProfileDetailView.swift in Sources */,
+				139711D7301A365F0031C537 /* BookingConfirmView.swift in Sources */,
+				139711D33018F3030031C537 /* CoachScheduleSection.swift in Sources */,
 				07134EEA30133D6A00A87536 /* SampleData.swift in Sources */,
+				139711CB3018F2200031C537 /* CoachSkillSection.swift in Sources */,
+				139711BB3018E3D00031C537 /* CoachHomeView.swift in Sources */,
+				139711DD301A3C780031C537 /* ChatView.swift in Sources */,
+				139711D53018F31E0031C537 /* ReserveButton.swift in Sources */,
+				139711B3301722AC0031C537 /* BookingView.swift in Sources */,
 				07EDD482300F67AC0097B050 /* Tennis_ConnectApp.swift in Sources */,
+				139711B93018E14B0031C537 /* StartView.swift in Sources */,
+				139711C13018EA0D0031C537 /* FavoriteView.swift in Sources */,
+				139711CF3018F2B20031C537 /* CoachVideoSection.swift in Sources */,
+				139711D13018F2DA0031C537 /* CoachReviewSection.swift in Sources */,
+				139711C73018F1CE0031C537 /* CoachHeaderView.swift in Sources */,
+				139711DF301A42E00031C537 /* ReservationListView.swift in Sources */,
+				139711BF3018E9D50031C537 /* ChatListView.swift in Sources */,
+				139711C33018EA300031C537 /* MyPageView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

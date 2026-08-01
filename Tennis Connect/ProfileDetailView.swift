@@ -7,32 +7,32 @@ struct ProfileDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-
+                
                 Image(systemName: "person.circle.fill")
                     .resizable()
                     .scaledToFit()
                     .frame(width: 140, height: 140)
                     .foregroundColor(.green)
-
+                
                 Text(coach.name)
                     .font(.largeTitle)
                     .bold()
-
-                Text(coach.level)
+                
+                Text(coach.careers.first ?? "経歴未登録")
                     .font(.headline)
-
+                
                 Text("📍 \(coach.area)")
-
+                
                 Text("💰 ¥\(coach.price)")
                     .font(.title2)
                     .bold()
-
+                
                 VStack(alignment: .leading, spacing: 10) {
-
+                    
                     Text("自己紹介")
                         .font(.title3)
                         .bold()
-
+                    
                     Text("""
 初心者から上級者まで対応します！
 
@@ -42,16 +42,17 @@ struct ProfileDetailView: View {
 """)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-                Button("予約する") {
-
+                
+                NavigationLink {
+                    BookingView(coach: coach)
+                } label: {
+                    Text("予約する")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
                 }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.green)
-                .foregroundColor(.white)
-                .cornerRadius(12)
-
             }
             .padding()
         }

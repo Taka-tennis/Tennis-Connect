@@ -20,7 +20,7 @@ struct Tennis_ConnectApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            StartView()
         }
     }
 }
