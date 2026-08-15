@@ -6,6 +6,7 @@ struct RegisterView: View {
 
     private let onAuthenticationSuccess: (() -> Void)?
 
+    @State private var displayName = ""
     @State private var email = ""
     @State private var password = ""
     @State private var passwordConfirm = ""
@@ -23,11 +24,15 @@ struct RegisterView: View {
 
         NavigationStack {
 
-            VStack(spacing:20) {
+            VStack(spacing: 20) {
 
                 Text("新規会員登録")
                     .font(.largeTitle)
                     .bold()
+
+                TextField("表示名", text: $displayName)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
 
                 TextField("メールアドレス", text: $email)
                     .textFieldStyle(.roundedBorder)
@@ -41,6 +46,21 @@ struct RegisterView: View {
                     .textFieldStyle(.roundedBorder)
 
                 Button("登録する") {
+
+                    let trimmedDisplayName =
+                        displayName.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+
+                    guard !trimmedDisplayName.isEmpty else {
+                        message = "表示名を入力してください"
+                        return
+                    }
+
+                    guard trimmedDisplayName.count <= 20 else {
+                        message = "表示名は20文字以内で入力してください"
+                        return
+                    }
 
                     guard !email.isEmpty,
                           !password.isEmpty else {
@@ -75,7 +95,7 @@ struct RegisterView: View {
 
                             print("登録成功")
                             print("UID: \(result?.user.uid ?? "")")
-                            
+
                             guard let uid = result?.user.uid else {
                                 isRegistering = false
                                 message = "会員情報を取得できませんでした"
@@ -86,25 +106,33 @@ struct RegisterView: View {
                                 .collection("students")
                                 .document(uid)
                                 .setData([
+                                    "displayName": trimmedDisplayName,
                                     "email": email,
                                     "createdAt": Timestamp()
                                 ]) { error in
 
                                     if let error = error {
-                                        print("Firestore保存失敗: \(error.localizedDescription)")
+                                        print(
+                                            "Firestore保存失敗: \(error.localizedDescription)"
+                                        )
+                                        message =
+                                            "会員情報の保存に失敗しました"
                                     } else {
                                         print("Firestore保存成功")
                                     }
 
                                     isRegistering = false
-                                    onAuthenticationSuccess?()
+
+                                    if error == nil {
+                                        onAuthenticationSuccess?()
+                                    }
                                 }
                         }
 
                     }
 
                 }
-                .frame(maxWidth:.infinity)
+                .frame(maxWidth: .infinity)
                 .padding()
                 .background(Color.green)
                 .foregroundColor(.white)

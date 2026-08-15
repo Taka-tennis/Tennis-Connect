@@ -18,7 +18,9 @@ struct CoachDetailView: View {
 
                 CoachVideoSection()
 
-                CoachReviewSection()
+                CoachReviewSection(
+                    coachId: coach.id
+                )
 
                 CoachScheduleSection(coach: coach)
 

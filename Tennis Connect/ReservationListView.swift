@@ -12,6 +12,7 @@ struct ReservationItem: Identifiable {
     let status: String
     let paymentStatus: String
     let refundStatus: String
+    let reviewId: String
     let pricePerHour: Int
     let totalPrice: Int
     let createdAt: Timestamp?
@@ -25,6 +26,7 @@ struct ReservationItem: Identifiable {
         status: String,
         paymentStatus: String = "",
         refundStatus: String = "",
+        reviewId: String = "",
         times: [String] = [],
         pricePerHour: Int = 0,
         totalPrice: Int = 0,
@@ -38,6 +40,7 @@ struct ReservationItem: Identifiable {
         self.status = status
         self.paymentStatus = paymentStatus
         self.refundStatus = refundStatus
+        self.reviewId = reviewId
         self.times = times.isEmpty && !time.isEmpty ? [time] : times
         self.pricePerHour = pricePerHour
         self.totalPrice = totalPrice
@@ -208,6 +211,7 @@ struct ReservationListView: View {
                             status: data["status"] as? String ?? "pending",
                             paymentStatus: data["paymentStatus"] as? String ?? "",
                             refundStatus: data["refundStatus"] as? String ?? "",
+                            reviewId: data["reviewId"] as? String ?? "",
                             times: reservationTimes,
                             pricePerHour: pricePerHour,
                             totalPrice: totalPrice,
@@ -363,6 +367,15 @@ struct ReservationListView: View {
 private struct StudentReservationDetailView: View {
     let reservation: ReservationItem
 
+    @State private var reviewSubmitted: Bool
+
+    init(reservation: ReservationItem) {
+        self.reservation = reservation
+        _reviewSubmitted = State(
+            initialValue: !reservation.reviewId.isEmpty
+        )
+    }
+
     private var coach: Coach {
         Coach(
             id: reservation.coachId,
@@ -443,6 +456,39 @@ private struct StudentReservationDetailView: View {
                         Label(
                             "支払いへ進む",
                             systemImage: "creditcard.fill"
+                        )
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.green)
+                        .foregroundColor(.white)
+                        .cornerRadius(14)
+                    }
+                }
+
+                if reviewSubmitted {
+                    Label(
+                        "レビュー投稿済み",
+                        systemImage: "checkmark.seal.fill"
+                    )
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.green)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.green.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                } else if canWriteReview {
+                    NavigationLink {
+                        ReviewSubmissionView(
+                            reservationId: reservation.id,
+                            coachName: reservation.coachName
+                        ) {
+                            reviewSubmitted = true
+                        }
+                    } label: {
+                        Label(
+                            "レビューを書く",
+                            systemImage: "star.bubble.fill"
                         )
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
@@ -565,6 +611,80 @@ private struct StudentReservationDetailView: View {
         ["creating", "pending", "requires_action"].contains(
             reservation.refundStatus
         )
+    }
+
+    private var canWriteReview: Bool {
+        guard reservation.paymentStatus == "paid",
+              ["paid", "completed"].contains(reservation.status),
+              !isRefunded,
+              !isCancelled,
+              let lessonEndDate = lessonEndDate else {
+            return false
+        }
+
+        return lessonEndDate <= Date()
+    }
+
+    private var isCancelled: Bool {
+        ["coach_cancelled", "cancelled", "canceled"].contains(
+            reservation.status
+        )
+    }
+
+    private var lessonEndDate: Date? {
+        let normalizedDate = reservation.date
+            .replacingOccurrences(of: "/", with: "-")
+        let sortedTimes = reservation.times.sorted()
+
+        guard let lastSlot = sortedTimes.last else {
+            return nil
+        }
+
+        let normalizedSlot = lastSlot
+            .replacingOccurrences(of: "~", with: "〜")
+        let parts = normalizedSlot.components(separatedBy: "〜")
+        let startTime = parts.first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let endTime = parts.count > 1
+            ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+
+        guard let startDate = dateTime(
+            date: normalizedDate,
+            time: startTime
+        ) else {
+            return nil
+        }
+
+        if !endTime.isEmpty {
+            guard let parsedEndDate = dateTime(
+                date: normalizedDate,
+                time: endTime
+            ) else {
+                return nil
+            }
+
+            if parsedEndDate <= startDate {
+                return parsedEndDate.addingTimeInterval(
+                    24 * 60 * 60
+                )
+            }
+
+            return parsedEndDate
+        }
+
+        return startDate.addingTimeInterval(60 * 60)
+    }
+
+    private func dateTime(date: String, time: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.isLenient = false
+
+        return formatter.date(from: "\(date) \(time)")
     }
 
     private func statusMessage(
