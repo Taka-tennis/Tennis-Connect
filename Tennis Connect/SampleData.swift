@@ -2,9 +2,9 @@ import Foundation
 
 let sampleCoaches = [
     Coach(
-          
-            name: "山田コーチ",
-            price: 3000,
+        id: "coach1",
+        name: "山田コーチ",
+        price: 3000,
         area: "所沢",
         imageURL: "",
         availableTimes: [
@@ -26,7 +26,7 @@ let sampleCoaches = [
     ),
 
     Coach(
-       
+        id: "coach2",
         name: "佐藤コーチ",
         price: 4000,
         area: "新宿",
@@ -50,7 +50,7 @@ let sampleCoaches = [
     ),
 
     Coach(
-       
+        id: "coach3",
         name: "鈴木コーチ",
         price: 2500,
         area: "池袋",

@@ -47,6 +47,20 @@
 		139711DD301A3C780031C537 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DC301A3C780031C537 /* ChatView.swift */; };
 		139711DF301A42E00031C537 /* ReservationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DE301A42E00031C537 /* ReservationListView.swift */; };
 		139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E0301A44890031C537 /* ReservationDetailView.swift */; };
+		139711E3301EFEBB0031C537 /* BasicInfoSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E2301EFEBB0031C537 /* BasicInfoSectionView.swift */; };
+		139711E5301EFED00031C537 /* ProfileSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E4301EFED00031C537 /* ProfileSectionView.swift */; };
+		139711E7301EFEEB0031C537 /* AvailableTimeSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E6301EFEEB0031C537 /* AvailableTimeSectionView.swift */; };
+		139711EB301F09B30031C537 /* RegisterButtonSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711EA301F09B30031C537 /* RegisterButtonSectionView.swift */; };
+		139711EF3021A1EA0031C537 /* CoachAvailabilityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711EE3021A1EA0031C537 /* CoachAvailabilityView.swift */; };
+		139711F13021A4FC0031C537 /* CoachDashboardView.swift.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711F03021A4FC0031C537 /* CoachDashboardView.swift.swift */; };
+		139711F33021A7B30031C537 /* DashboardCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711F23021A7B30031C537 /* DashboardCard.swift */; };
+		139711F53021A81F0031C537 /* HeroCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711F43021A81F0031C537 /* HeroCard.swift */; };
+		139711F73021ACF50031C537 /* CoachReservationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711F63021ACF50031C537 /* CoachReservationListView.swift */; };
+		139711F93025B24D0031C537 /* StudentReservationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711F83025B24D0031C537 /* StudentReservationListView.swift */; };
+		139711FB3025B90C0031C537 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711FA3025B90C0031C537 /* LoginView.swift */; };
+		139711FD3025BFB70031C537 /* RegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711FC3025BFB70031C537 /* RegisterView.swift */; };
+		139711FF302B262A0031C537 /* NotificationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711FE302B262A0031C537 /* NotificationView.swift */; };
+		13971202302F41000031C537 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = 13971201302F41000031C537 /* FirebaseFunctions */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -88,6 +102,19 @@
 		139711DC301A3C780031C537 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		139711DE301A42E00031C537 /* ReservationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationListView.swift; sourceTree = "<group>"; };
 		139711E0301A44890031C537 /* ReservationDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationDetailView.swift; sourceTree = "<group>"; };
+		139711E2301EFEBB0031C537 /* BasicInfoSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasicInfoSectionView.swift; sourceTree = "<group>"; };
+		139711E4301EFED00031C537 /* ProfileSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileSectionView.swift; sourceTree = "<group>"; };
+		139711E6301EFEEB0031C537 /* AvailableTimeSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvailableTimeSectionView.swift; sourceTree = "<group>"; };
+		139711EA301F09B30031C537 /* RegisterButtonSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegisterButtonSectionView.swift; sourceTree = "<group>"; };
+		139711EE3021A1EA0031C537 /* CoachAvailabilityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachAvailabilityView.swift; sourceTree = "<group>"; };
+		139711F03021A4FC0031C537 /* CoachDashboardView.swift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachDashboardView.swift.swift; sourceTree = "<group>"; };
+		139711F23021A7B30031C537 /* DashboardCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardCard.swift; sourceTree = "<group>"; };
+		139711F43021A81F0031C537 /* HeroCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeroCard.swift; sourceTree = "<group>"; };
+		139711F63021ACF50031C537 /* CoachReservationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachReservationListView.swift; sourceTree = "<group>"; };
+		139711F83025B24D0031C537 /* StudentReservationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentReservationListView.swift; sourceTree = "<group>"; };
+		139711FA3025B90C0031C537 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		139711FC3025BFB70031C537 /* RegisterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegisterView.swift; sourceTree = "<group>"; };
+		139711FE302B262A0031C537 /* NotificationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +124,7 @@
 			files = (
 				07E1E8393010979700DA7170 /* FirebaseAnalytics in Frameworks */,
 				07E1E83F3010979700DA7170 /* FirebaseStorage in Frameworks */,
+				13971202302F41000031C537 /* FirebaseFunctions in Frameworks */,
 				07E1E83B3010979700DA7170 /* FirebaseAuth in Frameworks */,
 				07E1E83D3010979700DA7170 /* FirebaseFirestore in Frameworks */,
 			);
@@ -109,6 +137,7 @@
 			isa = PBXGroup;
 			children = (
 				07EDD480300F67AC0097B050 /* Tennis Connect */,
+				13971200302F41000031C537 /* Frameworks */,
 				07EDD47F300F67AC0097B050 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -147,10 +176,23 @@
 				07134EE53011F59700A87536 /* ProfileView.swift */,
 				07134EE730133A8800A87536 /* Coach.swift */,
 				139711B2301722AC0031C537 /* BookingView.swift */,
-				139711D8301A38CE0031C537 /* PaymentView.swift.swift */,
 				139711DE301A42E00031C537 /* ReservationListView.swift */,
+				139711D8301A38CE0031C537 /* PaymentView.swift.swift */,
 				139711DC301A3C780031C537 /* ChatView.swift */,
 				139711B43017424D0031C537 /* CoachRegisterView.swift */,
+				139711EE3021A1EA0031C537 /* CoachAvailabilityView.swift */,
+				139711F03021A4FC0031C537 /* CoachDashboardView.swift.swift */,
+				139711F63021ACF50031C537 /* CoachReservationListView.swift */,
+				139711FE302B262A0031C537 /* NotificationView.swift */,
+				139711F83025B24D0031C537 /* StudentReservationListView.swift */,
+				139711FA3025B90C0031C537 /* LoginView.swift */,
+				139711FC3025BFB70031C537 /* RegisterView.swift */,
+				139711F23021A7B30031C537 /* DashboardCard.swift */,
+				139711F43021A81F0031C537 /* HeroCard.swift */,
+				139711EA301F09B30031C537 /* RegisterButtonSectionView.swift */,
+				139711E2301EFEBB0031C537 /* BasicInfoSectionView.swift */,
+				139711E4301EFED00031C537 /* ProfileSectionView.swift */,
+				139711E6301EFEEB0031C537 /* AvailableTimeSectionView.swift */,
 				139711B83018E14B0031C537 /* StartView.swift */,
 				139711C43018EBF30031C537 /* CoachDetailView.swift */,
 				139711C63018F1CE0031C537 /* CoachHeaderView.swift */,
@@ -171,6 +213,13 @@
 				07EDD489300F67B40097B050 /* Preview Assets.xcassets */,
 			);
 			path = "Preview Content";
+			sourceTree = "<group>";
+		};
+		13971200302F41000031C537 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -250,7 +299,11 @@
 				07134EE43011F55B00A87536 /* MessageView.swift in Sources */,
 				07134EE03011F4B800A87536 /* SearchView.swift in Sources */,
 				139711C93018F1F70031C537 /* CoachProfileSection.swift in Sources */,
+				139711F53021A81F0031C537 /* HeroCard.swift in Sources */,
+				139711E5301EFED00031C537 /* ProfileSectionView.swift in Sources */,
+				139711F13021A4FC0031C537 /* CoachDashboardView.swift.swift in Sources */,
 				139711D9301A38CE0031C537 /* PaymentView.swift.swift in Sources */,
+				139711E7301EFEEB0031C537 /* AvailableTimeSectionView.swift in Sources */,
 				07134EDE3011F33900A87536 /* HomeView.swift in Sources */,
 				139711BD3018E9760031C537 /* MainTabView.swift in Sources */,
 				139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */,
@@ -260,25 +313,34 @@
 				07134EE830133A8800A87536 /* Coach.swift in Sources */,
 				07134EE23011F52300A87536 /* RecruitView.swift in Sources */,
 				139711DB301A3AA30031C537 /* BookingCompleteView.swift in Sources */,
+				139711F33021A7B30031C537 /* DashboardCard.swift in Sources */,
 				07134EE63011F59700A87536 /* ProfileView.swift in Sources */,
 				139711B73018D5D70031C537 /* TimePickerView.swift in Sources */,
 				07134EEC301341A600A87536 /* ProfileDetailView.swift in Sources */,
 				139711D7301A365F0031C537 /* BookingConfirmView.swift in Sources */,
+				139711E3301EFEBB0031C537 /* BasicInfoSectionView.swift in Sources */,
 				139711D33018F3030031C537 /* CoachScheduleSection.swift in Sources */,
 				07134EEA30133D6A00A87536 /* SampleData.swift in Sources */,
 				139711CB3018F2200031C537 /* CoachSkillSection.swift in Sources */,
+				139711EB301F09B30031C537 /* RegisterButtonSectionView.swift in Sources */,
+				139711FF302B262A0031C537 /* NotificationView.swift in Sources */,
+				139711F93025B24D0031C537 /* StudentReservationListView.swift in Sources */,
 				139711BB3018E3D00031C537 /* CoachHomeView.swift in Sources */,
 				139711DD301A3C780031C537 /* ChatView.swift in Sources */,
+				139711FB3025B90C0031C537 /* LoginView.swift in Sources */,
+				139711EF3021A1EA0031C537 /* CoachAvailabilityView.swift in Sources */,
 				139711D53018F31E0031C537 /* ReserveButton.swift in Sources */,
 				139711B3301722AC0031C537 /* BookingView.swift in Sources */,
 				07EDD482300F67AC0097B050 /* Tennis_ConnectApp.swift in Sources */,
 				139711B93018E14B0031C537 /* StartView.swift in Sources */,
+				139711FD3025BFB70031C537 /* RegisterView.swift in Sources */,
 				139711C13018EA0D0031C537 /* FavoriteView.swift in Sources */,
 				139711CF3018F2B20031C537 /* CoachVideoSection.swift in Sources */,
 				139711D13018F2DA0031C537 /* CoachReviewSection.swift in Sources */,
 				139711C73018F1CE0031C537 /* CoachHeaderView.swift in Sources */,
 				139711DF301A42E00031C537 /* ReservationListView.swift in Sources */,
 				139711BF3018E9D50031C537 /* ChatListView.swift in Sources */,
+				139711F73021ACF50031C537 /* CoachReservationListView.swift in Sources */,
 				139711C33018EA300031C537 /* MyPageView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -521,6 +583,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseStorage;
+		};
+		13971201302F41000031C537 /* FirebaseFunctions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFunctions;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

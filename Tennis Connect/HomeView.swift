@@ -1,12 +1,19 @@
+// 修正版：画面内ヘッダーの左に戻るボタン、右に通知ベルを表示
+
 import SwiftUI
 import FirebaseFirestore
 
 struct HomeView: View {
     let db = Firestore.firestore()
+    let unreadNotificationCount: Int
 
     @State private var coaches: [Coach] = []
     @State private var searchText = ""
-    
+
+    init(unreadNotificationCount: Int = 0) {
+        self.unreadNotificationCount = unreadNotificationCount
+    }
+
     private let columns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12)
@@ -21,6 +28,7 @@ struct HomeView: View {
                     let data = document.data()
 
                     return Coach(
+                        id: document.documentID,
                         name: data["name"] as? String ?? "名前未登録",
                         price: data["price"] as? Int ?? 0,
                         area: data["area"] as? String ?? "エリア未登録",
@@ -50,20 +58,94 @@ struct HomeView: View {
             }
         }
     }
-    
-    var body: some View {
 
-        NavigationStack {
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    NotificationCenter.default.post(
+                        name: .returnToStartScreen,
+                        object: nil
+                    )
+                } label: {
+                    Image(systemName: "chevron.backward")
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.systemGray6))
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel("スタート画面へ戻る")
+
+                Text("🎾 Tennis Connect")
+                    .font(.title)
+                    .bold()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Spacer(minLength: 4)
+
+                NavigationLink {
+                    NotificationView()
+                } label: {
+                    Image(
+                        systemName: unreadNotificationCount > 0
+                            ? "bell.fill"
+                            : "bell"
+                    )
+                    .font(.title3)
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 36)
+                    .background(Color(.systemGray6))
+                    .clipShape(Circle())
+                    .overlay(alignment: .topTrailing) {
+                        if unreadNotificationCount > 0 {
+                            Text(
+                                unreadNotificationCount > 99
+                                    ? "99+"
+                                    : "\(unreadNotificationCount)"
+                            )
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 16, minHeight: 16)
+                            .background(Color.red)
+                            .clipShape(Capsule())
+                            .offset(x: 5, y: -5)
+                        }
+                    }
+                }
+                .accessibilityLabel(
+                    unreadNotificationCount > 0
+                        ? "未読通知が\(unreadNotificationCount)件あります"
+                        : "通知"
+                )
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
 
             ScrollView {
 
                 VStack(alignment: .leading, spacing: 20) {
 
-                    Text("🎾 Tennis Connect")
-                        .font(.largeTitle)
-                        .bold()
+                    NavigationLink {
+                        ReservationListView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "calendar")
+                            Text("予約一覧を見る")
 
-                
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                        }
+                        .padding()
+                        .background(Color.green.opacity(0.1))
+                        .cornerRadius(12)
+                    }
+                    .buttonStyle(.plain)
 
                     TextField(
                         "コーチ・地域・駅名で検索",
@@ -155,7 +237,6 @@ struct HomeView: View {
                 }
                 .padding()
             }
-            .navigationTitle("ホーム")
         }
         .onAppear {
             fetchCoaches()
@@ -193,7 +274,7 @@ struct LessonCard: View {
             Text(price)
                 .bold()
 
-           
+
 
         }
         .padding()

@@ -3,7 +3,7 @@ import FirebaseFirestore
 
 struct ReservationDetailView: View {
 
-    let reservation: Reservation
+    let reservation: ReservationItem
     let db = Firestore.firestore()
     
     @Environment(\.dismiss) private var dismiss
@@ -38,8 +38,7 @@ struct ReservationDetailView: View {
 
                     Divider()
 
-                    row(title: "料金", value: "¥\(reservation.price)")
-
+                    row(title: "料金", value: "¥3,000")
                     Divider()
 
                     row(title: "ステータス", value: "予約済み")
@@ -96,23 +95,48 @@ struct ReservationDetailView: View {
 
    
     func cancelReservation() {
+        
+        print("coachId = \(reservation.coachId)")
+        print("date = \(reservation.date)")
+        print("time = \(reservation.time)")
+        
+        let availabilityRef = db.collection("coachAvailability")
+            .document("sampleCoach")
+            .collection("dates")
+            .document(reservation.date)
+        
+        availabilityRef.getDocument { snapshot, error in
 
-        db.collection("reservations")
-            .document(reservation.id)
-            .delete { error in
+            guard let data = snapshot?.data(),
+                  var times = data["times"] as? [String] else {
+                return
+            }
+
+            times.append(reservation.time)
+            times.sort()
+
+            availabilityRef.updateData([
+                "times": times
+            ]) { error in
 
                 if let error = error {
-
-                    print("削除失敗: \(error.localizedDescription)")
-
-                } else {
-
-                    print("予約削除成功")
-                    dismiss()
-
+                    print("空き時間更新失敗: \(error.localizedDescription)")
+                    return
                 }
 
+                db.collection("reservations")
+                    .document(reservation.id)
+                    .delete { error in
+
+                        if let error = error {
+                            print("削除失敗: \(error.localizedDescription)")
+                        } else {
+                            print("予約削除成功")
+                            dismiss()
+                        }
+                    }
             }
+        }
 
     }
     func row(title: String, value: String) -> some View {
@@ -133,15 +157,14 @@ struct ReservationDetailView: View {
 }
 
 #Preview {
-
     ReservationDetailView(
-        reservation: Reservation(
+        reservation: ReservationItem(
             id: "1",
+            coachId: "coach1",
             coachName: "山田コーチ",
             date: "2026-07-29",
             time: "13:00",
-            price: 5000
+            status: "reserved"
         )
     )
-
 }

@@ -1,19 +1,16 @@
 import SwiftUI
 
 struct BookingCompleteView: View {
-    
     @State private var showChat = false
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.presentationMode) var presentationMode
+    @Environment(\.returnHomeAction) private var returnHome
 
     let coach: Coach
     let date: Date
-    let time: String
+    let times: [String]
+    let totalPrice: Int
 
     var body: some View {
-
         VStack(spacing: 30) {
-
             Spacer()
 
             Image(systemName: "checkmark.circle.fill")
@@ -24,46 +21,19 @@ struct BookingCompleteView: View {
                 .font(.largeTitle)
                 .bold()
 
-            Text("ご予約ありがとうございます。")
+            Text("お支払いが完了しました。")
                 .foregroundStyle(.secondary)
 
             VStack(spacing: 18) {
-
-                HStack {
-                    Text("コーチ")
-                    Spacer()
-                    Text(coach.name)
-                        .bold()
-                }
-
+                detailRow(title: "コーチ", value: coach.name)
                 Divider()
-
-                HStack {
-                    Text("日付")
-                    Spacer()
-                    Text(date.formatted(date: .long, time: .omitted))
-                        .bold()
-                }
-
+                detailRow(title: "日付", value: displayDate(date))
                 Divider()
-
-                HStack {
-                    Text("時間")
-                    Spacer()
-                    Text(time)
-                        .bold()
-                }
-
+                detailRow(title: "時間", value: combinedTimeRange(times))
                 Divider()
-
-                HStack {
-                    Text("料金")
-                    Spacer()
-                    Text("¥\(coach.price)")
-                        .bold()
-                        .foregroundStyle(.green)
-                }
-
+                detailRow(title: "レッスン時間", value: "\(times.count)時間")
+                Divider()
+                detailRow(title: "料金", value: "¥\(totalPrice)")
             }
             .padding()
             .background(Color(.systemGray6))
@@ -75,7 +45,6 @@ struct BookingCompleteView: View {
             Spacer()
 
             VStack(spacing: 15) {
-
                 Button {
                     showChat = true
                 } label: {
@@ -88,13 +57,18 @@ struct BookingCompleteView: View {
                 }
 
                 Button {
-                    presentationMode.wrappedValue.dismiss()
+                    print("支払い完了画面のホームボタンが押されました")
+
+                    NotificationCenter.default.post(
+                        name: .returnToStudentHome,
+                        object: nil
+                    )
                 } label: {
                     Text("ホームへ戻る")
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(Color(.systemGray5))
-                        .foregroundColor(.black)
+                        .foregroundColor(.primary)
                         .cornerRadius(15)
                 }
             }
@@ -103,13 +77,61 @@ struct BookingCompleteView: View {
         .navigationBarBackButtonHidden(true)
         .navigationDestination(isPresented: $showChat) {
             ChatView(coach: coach)
-        }    }
+        }
+    }
+
+    private func detailRow(title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .bold()
+        }
+    }
+
+    private func displayDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "yyyy/MM/dd"
+        return formatter.string(from: date)
+    }
+
+    private func combinedTimeRange(_ times: [String]) -> String {
+        guard let first = times.sorted().first,
+              let last = times.sorted().last else {
+            return ""
+        }
+
+        return "\(first)〜\(endTime(for: last))"
+    }
+
+    private func endTime(for startTime: String) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+
+        guard let startDate = formatter.date(from: startTime),
+              let endDate = Calendar.current.date(
+                byAdding: .hour,
+                value: 1,
+                to: startDate
+              ) else {
+            return startTime
+        }
+
+        return formatter.string(from: endDate)
+    }
 }
 
 #Preview {
-    BookingCompleteView(
-        coach: sampleCoaches[0],
-        date: Date(),
-        time: "09:00"
-    )
+    NavigationStack {
+        BookingCompleteView(
+            coach: sampleCoaches[0],
+            date: Date(),
+            times: ["09:00", "10:00"],
+            totalPrice: sampleCoaches[0].price * 2
+        )
+    }
 }

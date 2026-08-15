@@ -2,7 +2,7 @@ import Foundation
 
 struct Coach: Identifiable {
 
-    let id = UUID()
+    let id: String
 
     let name: String
     let price: Int

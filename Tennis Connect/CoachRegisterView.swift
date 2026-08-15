@@ -1,206 +1,258 @@
 import SwiftUI
 import FirebaseFirestore
+import FirebaseAuth
 import PhotosUI
 import FirebaseStorage
+import UIKit
 
 struct CoachRegisterView: View {
 
     @State private var name = ""
     @State private var area = ""
-    @State private var level = ""
+    @State private var career = ""
     @State private var price = ""
     @State private var introduction = ""
     @State private var specialty = ""
     @State private var availableTimes = ""
-    @State private var selectedTime = Date()
     @State private var selectedItem: PhotosPickerItem?
     @State private var selectedImage: Image?
     @State private var imageData: Data?
     @State private var imageURL = ""
     @State private var selectedLessonTimes: [String] = []
+    @State private var ageGroup = "20代"
+    @State private var showSuccessAlert = false
 
-    let db = Firestore.firestore()
-    let storage = Storage.storage()
-    let timeSlots = [
-        "09:00", "09:30",
-        "10:00", "10:30",
-        "11:00", "11:30",
-        "12:00", "12:30",
-        "13:00", "13:30",
-        "14:00", "14:30",
-        "15:00", "15:30",
-        "16:00", "16:30",
-        "17:00", "17:30",
-        "18:00", "18:30",
-        "19:00", "19:30",
-        "20:00", "20:30",
+    @State private var isLoadingCoach = true
+    @State private var isExistingCoach = false
+    @State private var isSavingProfile = false
+    @State private var showUpdateAlert = false
+    @State private var profileErrorMessage = ""
+    @State private var hasLoadedCoach = false
+
+    @Environment(\.dismiss) private var dismiss
+
+    private let db = Firestore.firestore()
+    private let storage = Storage.storage()
+
+    private let timeSlots = [
+        "09:00", "10:00", "11:00",
+        "12:00", "13:00", "14:00",
+        "15:00", "16:00", "17:00",
+        "18:00", "19:00", "20:00",
         "21:00"
     ]
-    func uploadImage(_ data: Data, completion: @escaping (String?) -> Void) {
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoadingCoach {
+                    ProgressView("プロフィールを読み込み中…")
+                } else {
+                    Form {
+                        BasicInfoSectionView(
+                            name: $name,
+                            area: $area,
+                            career: $career,
+                            price: $price,
+                            ageGroup: $ageGroup
+                        )
+
+                        ProfileSectionView(
+                            selectedItem: $selectedItem,
+                            selectedImage: $selectedImage,
+                            imageData: $imageData,
+                            imageURL: $imageURL,
+                            introduction: $introduction,
+                            specialty: $specialty,
+                            uploadImage: uploadImage
+                        )
+
+                        if isExistingCoach {
+                            Section("空き時間") {
+                                Text("空き日程は、コーチホームの「空き日程管理」から変更できます")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            updateButtonSection
+                        } else {
+                            AvailableTimeSectionView(
+                                timeSlots: timeSlots,
+                                selectedLessonTimes: $selectedLessonTimes,
+                                availableTimes: $availableTimes
+                            )
+
+                            RegisterButtonSectionView(
+                                name: $name,
+                                area: $area,
+                                career: $career,
+                                price: $price,
+                                imageURL: $imageURL,
+                                introduction: $introduction,
+                                specialty: $specialty,
+                                availableTimes: $availableTimes,
+                                ageGroup: $ageGroup,
+                                showSuccessAlert: $showSuccessAlert
+                            )
+                        }
+                    }
+                }
+            }
+            .navigationTitle(isExistingCoach ? "プロフィール編集" : "コーチ登録")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                if !hasLoadedCoach {
+                    loadCoachProfile()
+                }
+            }
+            .alert("更新完了", isPresented: $showUpdateAlert) {
+                Button("OK") {
+                    dismiss()
+                }
+            } message: {
+                Text("プロフィールを更新しました！")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updateButtonSection: some View {
+        Section {
+            Button {
+                updateCoachProfile()
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isSavingProfile {
+                        ProgressView()
+                    } else {
+                        Text("変更を保存")
+                            .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+            }
+            .disabled(isSavingProfile)
+
+            if !profileErrorMessage.isEmpty {
+                Text(profileErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func uploadImage(
+        _ data: Data,
+        completion: @escaping (String?) -> Void
+    ) {
         let fileName = UUID().uuidString + ".jpg"
         let ref = storage.reference().child("coachImages/\(fileName)")
 
-        ref.putData(data, metadata: nil) { metadata, error in
+        ref.putData(data, metadata: nil) { _, error in
             if let error = error {
                 print("アップロード失敗: \(error)")
                 completion(nil)
                 return
             }
 
-            ref.downloadURL { url, error in
+            ref.downloadURL { url, _ in
                 completion(url?.absoluteString)
             }
         }
     }
 
-    var body: some View {
-
-        NavigationStack {
-
-            Form {
-
-                Section("基本情報") {
-
-                    TextField("名前", text: $name)
-                    TextField("活動エリア", text: $area)
-                    TextField("レベル", text: $level)
-                    TextField("料金", text: $price)
-                }
-
-                Section("プロフィール") {
-                    PhotosPicker(
-                        selection: $selectedItem,
-                        matching: .images
-                    ) {
-                        if let selectedImage {
-                            selectedImage
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 120, height: 120)
-                                .clipShape(Circle())
-                        } else {
-                            Image(systemName: "person.circle.fill")
-                                .resizable()
-                                .frame(width: 120, height: 120)
-                                .foregroundColor(.gray)
-                        }
-                    }.onChange(of: selectedItem) { _ in
-                        Task {
-                            if let data = try? await selectedItem?.loadTransferable(type: Data.self) {
-                                imageData = data
-
-                                if let uiImage = UIImage(data: data) {
-                                    selectedImage = Image(uiImage: uiImage)
-                                }
-
-                                uploadImage(data) { url in
-                                    if let url = url {
-                                        imageURL = url
-                                        print("画像URL:", url)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    TextField("自己紹介", text: $introduction)
-                    TextField("得意レッスン", text: $specialty)
-                    Section("空き時間") {
-
-                        ForEach(timeSlots, id: \.self) { time in
-                            Button {
-                                let formatter = DateFormatter()
-                                formatter.dateFormat = "HH:mm"
-
-                                guard
-                                    let startDate = formatter.date(from: time),
-                                    let endDate = Calendar.current.date(
-                                        byAdding: .hour,
-                                        value: 1,
-                                        to: startDate
-                                    )
-                                else {
-                                    return
-                                }
-
-                                let end = formatter.string(from: endDate)
-                                let lessonTime = "\(time)〜\(end)"
-
-                                if selectedLessonTimes.contains(lessonTime) {
-                                    selectedLessonTimes.removeAll { $0 == lessonTime }
-                                } else {
-                                    selectedLessonTimes.append(lessonTime)
-                                    selectedLessonTimes.sort()
-                                }
-
-                                availableTimes = selectedLessonTimes.joined(separator: ",")
-
-                            } label: {
-                                HStack {
-                                    Text(time)
-
-                                    Spacer()
-
-                                    if selectedLessonTimes.contains(where: {
-                                        $0.hasPrefix("\(time)〜")
-                                    }) {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.blue)
-                                    } else {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundColor(.green)
-                                    }
-                                }
-                            }
-                        }
-
-                        if selectedLessonTimes.isEmpty {
-                            Text("時間が選択されていません")
-                                .foregroundColor(.gray)
-                        } else {
-                            ForEach(selectedLessonTimes, id: \.self) { lessonTime in
-                                HStack {
-                                    Image(systemName: "clock")
-                                    Text(lessonTime)
-
-                                    Spacer()
-
-                                    Button {
-                                        selectedLessonTimes.removeAll { $0 == lessonTime }
-                                        availableTimes = selectedLessonTimes.joined(separator: ",")
-                                    } label: {
-                                        Image(systemName: "trash")
-                                            .foregroundColor(.red)
-                                    }
-                                }
-                            }
-                        }
-
-                    }
-                }
-
-                Button("登録する") {
-
-                    db.collection("coaches").addDocument(data: [
-
-                        "name": name,
-                        "area": area,
-                        "level": level,
-                        "price": Int(price) ?? 0,
-                        "imageURL": imageURL,
-                        "introduction": introduction,
-                        "specialty": specialty,
-                        "rating": 5.0,
-                        "reviewCount": 0,
-                        "availableTimes": availableTimes.components(separatedBy: ",")
-
-                    ])
-
-                    print("登録完了")
-                }
-
-            }
-            .navigationTitle("コーチ登録")
+    private func loadCoachProfile() {
+        guard let uid = Auth.auth().currentUser?.uid else {
+            isLoadingCoach = false
+            hasLoadedCoach = true
+            profileErrorMessage = "プロフィールの確認にはログインが必要です"
+            return
         }
+
+        db.collection("coaches")
+            .document(uid)
+            .getDocument { snapshot, error in
+                DispatchQueue.main.async {
+                    isLoadingCoach = false
+                    hasLoadedCoach = true
+
+                    if let error = error {
+                        profileErrorMessage =
+                            "プロフィールを取得できませんでした: \(error.localizedDescription)"
+                        return
+                    }
+
+                    guard let data = snapshot?.data() else {
+                        isExistingCoach = false
+                        return
+                    }
+
+                    isExistingCoach = true
+                    name = data["name"] as? String ?? ""
+                    area = data["area"] as? String ?? ""
+                    career = data["career"] as? String ?? ""
+                    introduction = data["introduction"] as? String ?? ""
+                    specialty = data["specialty"] as? String ?? ""
+                    imageURL = data["imageURL"] as? String ?? ""
+                    ageGroup = data["ageGroup"] as? String ?? "20代"
+
+                    if let savedPrice = data["price"] as? Int {
+                        price = String(savedPrice)
+                    } else if let savedPrice = data["price"] as? NSNumber {
+                        price = savedPrice.stringValue
+                    } else {
+                        price = data["price"] as? String ?? ""
+                    }
+
+                    if let savedTimes = data["availableTimes"] as? [String] {
+                        selectedLessonTimes = savedTimes
+                        availableTimes = savedTimes.joined(separator: ",")
+                    }
+                }
+            }
+    }
+
+    private func updateCoachProfile() {
+        guard let uid = Auth.auth().currentUser?.uid else {
+            profileErrorMessage = "プロフィールの更新にはログインが必要です"
+            return
+        }
+
+        profileErrorMessage = ""
+        isSavingProfile = true
+
+        db.collection("coaches")
+            .document(uid)
+            .setData(
+                [
+                    "coachId": uid,
+                    "ownerId": uid,
+                    "name": name,
+                    "area": area,
+                    "career": career,
+                    "price": Int(price) ?? 0,
+                    "imageURL": imageURL,
+                    "introduction": introduction,
+                    "specialty": specialty,
+                    "ageGroup": ageGroup
+                ],
+                merge: true
+            ) { error in
+                DispatchQueue.main.async {
+                    isSavingProfile = false
+
+                    if let error = error {
+                        profileErrorMessage =
+                            "更新できませんでした: \(error.localizedDescription)"
+                        return
+                    }
+
+                    showUpdateAlert = true
+                }
+            }
     }
 }
 

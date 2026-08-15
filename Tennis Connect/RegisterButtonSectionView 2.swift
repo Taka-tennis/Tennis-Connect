@@ -1,3 +1,11 @@
+//
+//  RegisterButtonSectionView 2.swift
+//  Tennis Connect
+//
+//  Created by 松崎徹郎 on 2026/08/02.
+//
+
+
 import SwiftUI
 import FirebaseFirestore
 
