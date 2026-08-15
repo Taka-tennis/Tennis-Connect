@@ -32,7 +32,7 @@ struct CoachHomeView: View {
                 }
                 .tag(2)
 
-            ChatListView()
+            ChatListView(role: .coach)
                 .tabItem {
                     Label("チャット", systemImage: "message.fill")
                 }
@@ -304,16 +304,41 @@ private struct CoachTabDashboardView: View {
                         newTodayLessonCount += 1
                     }
 
-                    if status == "paid" {
-                        let totalPrice = data["totalPrice"] as? Int ?? 0
+                    let paymentStatus =
+                        data["paymentStatus"] as? String ?? ""
+                    let refundStatus =
+                        data["refundStatus"] as? String ?? ""
 
-                        if let paidAt = data["paidAt"] as? Timestamp,
-                           calendar.isDate(
-                                paidAt.dateValue(),
-                                equalTo: now,
-                                toGranularity: .month
-                           ) {
-                            newMonthlySales += totalPrice
+                    let isSuccessfullyPaid =
+                        paymentStatus == "paid" ||
+                        (paymentStatus.isEmpty && status == "paid")
+
+                    let isSuccessfullyRefunded =
+                        paymentStatus == "refunded" ||
+                        refundStatus == "succeeded"
+
+                    if let paidAt = data["paidAt"] as? Timestamp,
+                       calendar.isDate(
+                            paidAt.dateValue(),
+                            equalTo: now,
+                            toGranularity: .month
+                       ) {
+                        let originalAmount =
+                            data["amountPaid"] as? Int ??
+                            data["totalPrice"] as? Int ??
+                            0
+
+                        if isSuccessfullyPaid {
+                            newMonthlySales += originalAmount
+                        } else if isSuccessfullyRefunded {
+                            let refundAmount =
+                                data["refundAmount"] as? Int ??
+                                originalAmount
+
+                            newMonthlySales += max(
+                                0,
+                                originalAmount - refundAmount
+                            )
                         }
                     }
 
@@ -502,55 +527,152 @@ private struct CoachSalesView: View {
         let id: String
         let studentName: String
         let date: String
-        let totalPrice: Int
+        let originalAmount: Int
+        let paymentStatus: String
+        let refundStatus: String
+        let refundAmount: Int
         let paidAt: Timestamp?
+
+        var isRefunded: Bool {
+            paymentStatus == "refunded" ||
+            refundStatus == "succeeded"
+        }
+
+        var isRefundProcessing: Bool {
+            paymentStatus == "refund_processing" ||
+            ["creating", "pending", "requires_action"].contains(
+                refundStatus
+            )
+        }
+
+        var isRefundFailed: Bool {
+            paymentStatus == "refund_failed" ||
+            ["failed", "canceled", "failed_to_create"].contains(
+                refundStatus
+            )
+        }
+
+        var effectiveRefundAmount: Int {
+            guard isRefunded else {
+                return 0
+            }
+
+            return refundAmount > 0
+                ? min(refundAmount, originalAmount)
+                : originalAmount
+        }
+
+        var netAmount: Int {
+            max(0, originalAmount - effectiveRefundAmount)
+        }
     }
 
     @State private var sales: [SaleItem] = []
+    @State private var selectedMonth = Date()
     @State private var isLoading = false
     @State private var errorMessage = ""
 
     private let db = Firestore.firestore()
 
-    private var totalSales: Int {
-        sales.reduce(0) { $0 + $1.totalPrice }
+    private var salesCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        return calendar
     }
 
-    private var monthlySales: Int {
-        let calendar = Calendar.current
-        let now = Date()
+    private var currentMonth: Date {
+        startOfMonth(Date())
+    }
 
-        return sales.reduce(0) { total, sale in
-            guard let paidAt = sale.paidAt?.dateValue(),
-                  calendar.isDate(
-                    paidAt,
-                    equalTo: now,
-                    toGranularity: .month
-                  ) else {
-                return total
+    private var earliestMonth: Date {
+        sales.compactMap(accountingDate)
+            .min()
+            .map(startOfMonth) ??
+            currentMonth
+    }
+
+    private var totalNetSales: Int {
+        sales.reduce(0) {
+            $0 + $1.netAmount
+        }
+    }
+
+    private var currentMonthNetSales: Int {
+        netSales(for: currentMonth)
+    }
+
+    private var selectedMonthSales: [SaleItem] {
+        let targetMonth = startOfMonth(selectedMonth)
+
+        return sales.filter { sale in
+            guard let date = accountingDate(for: sale) else {
+                return false
             }
 
-            return total + sale.totalPrice
+            return salesCalendar.isDate(
+                date,
+                equalTo: targetMonth,
+                toGranularity: .month
+            )
         }
+    }
+
+    private var selectedMonthNetSales: Int {
+        selectedMonthSales.reduce(0) {
+            $0 + $1.netAmount
+        }
+    }
+
+    private var previousMonth: Date {
+        salesCalendar.date(
+            byAdding: .month,
+            value: -1,
+            to: startOfMonth(selectedMonth)
+        ) ?? startOfMonth(selectedMonth)
+    }
+
+    private var previousMonthNetSales: Int {
+        netSales(for: previousMonth)
+    }
+
+    private var monthDifference: Int {
+        selectedMonthNetSales - previousMonthNetSales
+    }
+
+    private var canMoveToPreviousMonth: Bool {
+        startOfMonth(selectedMonth) > earliestMonth
+    }
+
+    private var canMoveToNextMonth: Bool {
+        startOfMonth(selectedMonth) < currentMonth
     }
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 18) {
+            VStack(alignment: .leading, spacing: 18) {
+
                 HStack(spacing: 12) {
                     SalesSummaryCard(
                         title: "今月の売上",
-                        value: monthlySales
+                        value: currentMonthNetSales
                     )
 
                     SalesSummaryCard(
                         title: "累計売上",
-                        value: totalSales
+                        value: totalNetSales
                     )
                 }
 
+                Text(
+                    "※ 売上は決済額から完了済みの返金額を差し引いた金額です。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
                 if isLoading {
                     ProgressView("売上を読み込み中…")
+                        .frame(maxWidth: .infinity)
                         .padding(.top, 30)
                 } else if sales.isEmpty {
                     VStack(spacing: 10) {
@@ -568,33 +690,45 @@ private struct CoachSalesView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 30)
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(sales) { sale in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(sale.studentName)
-                                        .fontWeight(.semibold)
+                    Text("月別売上")
+                        .font(.headline)
 
-                                    Text(sale.date.replacingOccurrences(of: "-", with: "/"))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                    monthSelector
+
+                    monthComparisonCard
+
+                    Text("売上明細")
+                        .font(.headline)
+
+                    if selectedMonthSales.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "calendar.badge.minus")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary)
+
+                            Text(
+                                "\(monthTitle(selectedMonth))の売上はありません"
+                            )
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 28)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(16)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(selectedMonthSales) { sale in
+                                saleRow(sale)
+
+                                if sale.id != selectedMonthSales.last?.id {
+                                    Divider()
                                 }
-
-                                Spacer()
-
-                                Text("¥\(sale.totalPrice)")
-                                    .fontWeight(.bold)
-                                    .foregroundStyle(.green)
-                            }
-                            .padding()
-
-                            if sale.id != sales.last?.id {
-                                Divider()
                             }
                         }
+                        .background(Color(.systemGray6))
+                        .cornerRadius(16)
                     }
-                    .background(Color(.systemGray6))
-                    .cornerRadius(16)
                 }
 
                 if !errorMessage.isEmpty {
@@ -602,14 +736,210 @@ private struct CoachSalesView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 }
             }
             .padding()
         }
         .navigationTitle("売上管理")
         .navigationBarTitleDisplayMode(.inline)
+        .refreshable {
+            loadSales()
+        }
         .onAppear {
             loadSales()
+        }
+    }
+
+    private var monthSelector: some View {
+        HStack {
+            Button {
+                moveSelectedMonth(by: -1)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .fontWeight(.semibold)
+                    .frame(width: 40, height: 40)
+            }
+            .disabled(!canMoveToPreviousMonth)
+
+            Spacer()
+
+            Text(monthTitle(selectedMonth))
+                .font(.title3)
+                .fontWeight(.bold)
+
+            Spacer()
+
+            Button {
+                moveSelectedMonth(by: 1)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .fontWeight(.semibold)
+                    .frame(width: 40, height: 40)
+            }
+            .disabled(!canMoveToNextMonth)
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private var monthComparisonCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(monthTitle(selectedMonth))の売上")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("¥\(selectedMonthNetSales.formatted())")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("前月")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("¥\(previousMonthNetSales.formatted())")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Text("前月比")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(monthComparisonText)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(monthComparisonColor)
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(16)
+    }
+
+    private var monthComparisonText: String {
+        if monthDifference == 0 {
+            return "±¥0"
+        }
+
+        let amountSign = monthDifference > 0 ? "+" : "-"
+        let amount =
+            "\(amountSign)¥\(abs(monthDifference).formatted())"
+
+        guard previousMonthNetSales > 0 else {
+            return amount
+        }
+
+        let percentage =
+            Double(monthDifference) /
+            Double(previousMonthNetSales) *
+            100
+
+        let percentSign = percentage > 0 ? "+" : ""
+        let percentText = String(
+            format: "%@%.1f%%",
+            percentSign,
+            percentage
+        )
+
+        return "\(amount)（\(percentText)）"
+    }
+
+    private var monthComparisonColor: Color {
+        if monthDifference > 0 {
+            return .green
+        }
+
+        if monthDifference < 0 {
+            return .red
+        }
+
+        return .secondary
+    }
+
+    private func saleRow(
+        _ sale: SaleItem
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(sale.studentName)
+                    .fontWeight(.semibold)
+
+                Text(
+                    sale.date.replacingOccurrences(
+                        of: "-",
+                        with: "/"
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                saleStatusLabel(sale)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 5) {
+                Text("¥\(sale.originalAmount.formatted())")
+                    .fontWeight(.bold)
+                    .foregroundStyle(
+                        sale.isRefunded
+                            ? Color.gray
+                            : Color.green
+                    )
+
+                if sale.isRefunded {
+                    Text(
+                        "実質 ¥\(sale.netAmount.formatted())"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding()
+    }
+
+    @ViewBuilder
+    private func saleStatusLabel(
+        _ sale: SaleItem
+    ) -> some View {
+        if sale.isRefunded {
+            Label(
+                "全額返金済み",
+                systemImage: "arrow.uturn.backward.circle.fill"
+            )
+            .foregroundStyle(.purple)
+        } else if sale.isRefundFailed {
+            Label(
+                "返金確認中",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .foregroundStyle(.red)
+        } else if sale.isRefundProcessing {
+            Label(
+                "返金処理中",
+                systemImage: "arrow.triangle.2.circlepath"
+            )
+            .foregroundStyle(.orange)
+        } else {
+            Label(
+                "支払い済み",
+                systemImage: "checkmark.circle.fill"
+            )
+            .foregroundStyle(.green)
         }
     }
 
@@ -630,36 +960,169 @@ private struct CoachSalesView: View {
 
                     if let error = error {
                         errorMessage =
-                            "売上を取得できませんでした: \(error.localizedDescription)"
+                            "売上を取得できませんでした: " +
+                            error.localizedDescription
                         return
                     }
 
                     var loadedSales: [SaleItem] =
-                        snapshot?.documents.compactMap { document -> SaleItem? in
-                            let data = document.data()
+                        snapshot?.documents.compactMap {
+                            document -> SaleItem? in
 
-                            guard data["status"] as? String == "paid" else {
+                            let data = document.data()
+                            let status =
+                                data["status"] as? String ?? ""
+                            let paymentStatus =
+                                data["paymentStatus"] as? String ?? ""
+                            let refundStatus =
+                                data["refundStatus"] as? String ?? ""
+                            let paidAt =
+                                data["paidAt"] as? Timestamp
+
+                            let hasPaymentRecord =
+                                paidAt != nil ||
+                                status == "paid" ||
+                                [
+                                    "paid",
+                                    "refunded",
+                                    "refund_processing",
+                                    "refund_failed"
+                                ].contains(paymentStatus)
+
+                            guard hasPaymentRecord else {
+                                return nil
+                            }
+
+                            let originalAmount =
+                                data["amountPaid"] as? Int ??
+                                data["totalPrice"] as? Int ??
+                                0
+
+                            guard originalAmount > 0 else {
                                 return nil
                             }
 
                             return SaleItem(
                                 id: document.documentID,
-                                studentName: data["studentName"] as? String ?? "生徒",
-                                date: data["date"] as? String ?? "",
-                                totalPrice: data["totalPrice"] as? Int ?? 0,
-                                paidAt: data["paidAt"] as? Timestamp
+                                studentName:
+                                    data["studentDisplayName"] as? String ??
+                                    data["studentName"] as? String ??
+                                    "生徒",
+                                date:
+                                    data["date"] as? String ?? "",
+                                originalAmount: originalAmount,
+                                paymentStatus: paymentStatus,
+                                refundStatus: refundStatus,
+                                refundAmount:
+                                    data["refundAmount"] as? Int ?? 0,
+                                paidAt: paidAt
                             )
                         } ?? []
 
                     loadedSales.sort {
-                        let first = $0.paidAt?.dateValue() ?? .distantPast
-                        let second = $1.paidAt?.dateValue() ?? .distantPast
+                        let first =
+                            accountingDate(for: $0) ?? .distantPast
+                        let second =
+                            accountingDate(for: $1) ?? .distantPast
+
                         return first > second
                     }
 
                     sales = loadedSales
+                    selectedMonth = currentMonth
+                    errorMessage = ""
                 }
             }
+    }
+
+    private func netSales(
+        for month: Date
+    ) -> Int {
+        sales.reduce(0) { total, sale in
+            guard let date = accountingDate(for: sale),
+                  salesCalendar.isDate(
+                    date,
+                    equalTo: month,
+                    toGranularity: .month
+                  ) else {
+                return total
+            }
+
+            return total + sale.netAmount
+        }
+    }
+
+    private func accountingDate(
+        for sale: SaleItem
+    ) -> Date? {
+        if let paidAt = sale.paidAt {
+            return paidAt.dateValue()
+        }
+
+        return reservationDate(sale.date)
+    }
+
+    private func reservationDate(
+        _ value: String
+    ) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = salesCalendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo")
+        formatter.isLenient = false
+
+        for format in ["yyyy-MM-dd", "yyyy/MM/dd"] {
+            formatter.dateFormat = format
+
+            if let date = formatter.date(from: value) {
+                return date
+            }
+        }
+
+        return nil
+    }
+
+    private func startOfMonth(
+        _ date: Date
+    ) -> Date {
+        let components = salesCalendar.dateComponents(
+            [.year, .month],
+            from: date
+        )
+
+        return salesCalendar.date(
+            from: components
+        ) ?? date
+    }
+
+    private func monthTitle(
+        _ date: Date
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = salesCalendar
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo")
+        formatter.dateFormat = "yyyy年M月"
+
+        return formatter.string(
+            from: startOfMonth(date)
+        )
+    }
+
+    private func moveSelectedMonth(
+        by value: Int
+    ) {
+        guard let newMonth = salesCalendar.date(
+            byAdding: .month,
+            value: value,
+            to: startOfMonth(selectedMonth)
+        ) else {
+            return
+        }
+
+        selectedMonth = newMonth
     }
 }
 
@@ -673,16 +1136,20 @@ private struct SalesSummaryCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("¥\(value)")
+            Text("¥\(value.formatted())")
                 .font(.title3)
                 .fontWeight(.bold)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
         .padding()
         .background(Color(.systemGray6))
         .cornerRadius(14)
     }
 }
+
 
 #Preview {
     NavigationStack {

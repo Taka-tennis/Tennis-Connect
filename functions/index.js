@@ -954,7 +954,8 @@ function lessonEndDateFromReservation(reservation) {
 }
 
 /**
- * 受講済み予約に対するレビューを1件だけ登録します。
+ * 受講済み予約に対するレビューを登録します。
+ * 同じ生徒から同じコーチへのレビューは1件までに制限します。
  */
 exports.submitReview = onCall(
   async (request) => {
@@ -1079,14 +1080,40 @@ exports.submitReview = onCall(
       }
 
       const coachRef = db.collection("coaches").doc(coachId);
+      const reviewUniquenessRef = studentRef
+        .collection("reviewedCoaches")
+        .doc(coachId);
+      const existingStudentReviewsQuery = db
+        .collection("reviews")
+        .where("studentId", "==", request.auth.uid);
+
       const reviewSnap = await transaction.get(reviewRef);
       const studentSnap = await transaction.get(studentRef);
       const coachSnap = await transaction.get(coachRef);
+      const reviewUniquenessSnap = await transaction.get(
+        reviewUniquenessRef,
+      );
+      const existingStudentReviewsSnap = await transaction.get(
+        existingStudentReviewsQuery,
+      );
 
       if (reviewSnap.exists) {
         throw new HttpsError(
           "already-exists",
           "この予約のレビューは投稿済みです。",
+        );
+      }
+
+      const alreadyReviewedCoach =
+        reviewUniquenessSnap.exists ||
+        existingStudentReviewsSnap.docs.some((document) => {
+          return document.get("coachId") === coachId;
+        });
+
+      if (alreadyReviewedCoach) {
+        throw new HttpsError(
+          "already-exists",
+          "このコーチへのレビューは投稿済みです。",
         );
       }
 
@@ -1149,6 +1176,13 @@ exports.submitReview = onCall(
         times: Array.isArray(reservation.times) ?
           reservation.times :
           reservation.time ? [reservation.time] : [],
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      transaction.set(reviewUniquenessRef, {
+        studentId: request.auth.uid,
+        coachId,
+        reviewId: reservationId,
         createdAt: FieldValue.serverTimestamp(),
       });
 

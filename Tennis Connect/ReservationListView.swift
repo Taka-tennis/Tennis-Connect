@@ -368,6 +368,11 @@ private struct StudentReservationDetailView: View {
     let reservation: ReservationItem
 
     @State private var reviewSubmitted: Bool
+    @State private var hasReviewedCoach = false
+    @State private var isCheckingCoachReview = true
+    @State private var reviewEligibilityError = ""
+
+    private let db = Firestore.firestore()
 
     init(reservation: ReservationItem) {
         self.reservation = reservation
@@ -478,24 +483,45 @@ private struct StudentReservationDetailView: View {
                     .background(Color.green.opacity(0.1))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 } else if canWriteReview {
-                    NavigationLink {
-                        ReviewSubmissionView(
-                            reservationId: reservation.id,
-                            coachName: reservation.coachName
-                        ) {
-                            reviewSubmitted = true
+                    if isCheckingCoachReview {
+                        ProgressView("レビュー状況を確認中…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    } else if !reviewEligibilityError.isEmpty {
+                        VStack(spacing: 10) {
+                            Text("レビュー状況を確認できませんでした")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Button("再確認") {
+                                checkExistingCoachReview()
+                            }
+                            .buttonStyle(.bordered)
                         }
-                    } label: {
-                        Label(
-                            "レビューを書く",
-                            systemImage: "star.bubble.fill"
-                        )
-                        .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(14)
+                    } else if !hasReviewedCoach {
+                        NavigationLink {
+                            ReviewSubmissionView(
+                                reservationId: reservation.id,
+                                coachName: reservation.coachName
+                            ) {
+                                reviewSubmitted = true
+                                hasReviewedCoach = true
+                            }
+                        } label: {
+                            Label(
+                                "レビューを書く",
+                                systemImage: "star.bubble.fill"
+                            )
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.green)
+                            .foregroundColor(.white)
+                            .cornerRadius(14)
+                        }
                     }
                 }
             }
@@ -503,6 +529,56 @@ private struct StudentReservationDetailView: View {
         }
         .navigationTitle("予約詳細")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            checkExistingCoachReview()
+        }
+    }
+
+    private func checkExistingCoachReview() {
+        if reviewSubmitted {
+            hasReviewedCoach = true
+            isCheckingCoachReview = false
+            reviewEligibilityError = ""
+            return
+        }
+
+        guard canWriteReview else {
+            hasReviewedCoach = false
+            isCheckingCoachReview = false
+            reviewEligibilityError = ""
+            return
+        }
+
+        guard let uid = Auth.auth().currentUser?.uid,
+              !reservation.coachId.isEmpty else {
+            hasReviewedCoach = false
+            isCheckingCoachReview = false
+            reviewEligibilityError = "レビュー状況を確認できませんでした"
+            return
+        }
+
+        isCheckingCoachReview = true
+        reviewEligibilityError = ""
+
+        db.collection("reviews")
+            .whereField("studentId", isEqualTo: uid)
+            .whereField("coachId", isEqualTo: reservation.coachId)
+            .limit(to: 1)
+            .getDocuments { snapshot, error in
+                DispatchQueue.main.async {
+                    isCheckingCoachReview = false
+
+                    if let error = error {
+                        hasReviewedCoach = false
+                        reviewEligibilityError = error.localizedDescription
+                        return
+                    }
+
+                    hasReviewedCoach =
+                        !(snapshot?.documents.isEmpty ?? true)
+                    reviewEligibilityError = ""
+                }
+            }
     }
 
     @ViewBuilder
