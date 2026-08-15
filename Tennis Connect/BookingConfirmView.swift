@@ -2,6 +2,7 @@
 import SwiftUI
 import FirebaseFirestore
 import FirebaseAuth
+import FirebaseFunctions
 
 struct BookingConfirmView: View {
     @State private var isSubmitting = false
@@ -12,7 +13,7 @@ struct BookingConfirmView: View {
     let date: Date
     let times: [String]
 
-    private let db = Firestore.firestore()
+    private let functions = Functions.functions(region: "asia-northeast1")
 
     private var sortedTimes: [String] {
         times.sorted()
@@ -144,7 +145,7 @@ struct BookingConfirmView: View {
     }
 
     private func submitReservationRequest() {
-        guard let studentId = Auth.auth().currentUser?.uid else {
+        guard Auth.auth().currentUser != nil else {
             errorMessage = "予約申請にはログインが必要です"
             return
         }
@@ -157,96 +158,46 @@ struct BookingConfirmView: View {
         errorMessage = ""
         isSubmitting = true
 
-        let dateKey = firestoreDate(date)
-        let availabilityRef = db.collection("coachAvailability")
-            .document(coach.id)
-            .collection("dates")
-            .document(dateKey)
+        let requestData: [String: Any] = [
+            "coachId": coach.id,
+            "date": firestoreDate(date),
+            "times": sortedTimes
+        ]
 
-        availabilityRef.getDocument { snapshot, error in
-            if let error = error {
-                finishWithError(
-                    "空き時間を確認できませんでした: \(error.localizedDescription)"
-                )
-                return
-            }
-
-            guard var availableTimes = snapshot?.data()?["times"] as? [String] else {
-                finishWithError("選択した日の空き時間が見つかりませんでした")
-                return
-            }
-
-            let unavailableTimes = sortedTimes.filter {
-                !availableTimes.contains($0)
-            }
-
-            guard unavailableTimes.isEmpty else {
-                finishWithError(
-                    "選択した時間の一部が予約済みになりました。前の画面に戻って選び直してください。"
-                )
-                return
-            }
-
-            availableTimes.removeAll { sortedTimes.contains($0) }
-
-            let reservationRef = db.collection("reservations").document()
-            let batch = db.batch()
-
-            batch.setData(
-                [
-                    "coachId": coach.id,
-                    "studentId": studentId,
-                    "coachName": coach.name,
-                    "date": dateKey,
-                    "time": sortedTimes.first ?? "",
-                    "times": sortedTimes,
-                    "durationHours": sortedTimes.count,
-                    "pricePerHour": coach.price,
-                    "totalPrice": totalPrice,
-                    "status": "pending",
-                    "createdAt": Timestamp()
-                ],
-                forDocument: reservationRef
-            )
-
-            batch.updateData(
-                ["times": availableTimes.sorted()],
-                forDocument: availabilityRef
-            )
-
-            let notificationRef = db.collection("notifications").document()
-
-            batch.setData(
-                [
-                    "recipientId": coach.id,
-                    "coachId": coach.id,
-                    "studentId": studentId,
-                    "reservationId": reservationRef.documentID,
-                    "type": "reservationRequested",
-                    "title": "新しい予約申請が届きました",
-                    "message": "\(displayDate(date)) \(combinedTimeRange(sortedTimes))の予約申請が届きました。内容を確認してください。",
-                    "date": dateKey,
-                    "times": sortedTimes,
-                    "isRead": false,
-                    "createdAt": Timestamp()
-                ],
-                forDocument: notificationRef
-            )
-
-            batch.commit { error in
-                if let error = error {
-                    finishWithError(
-                        "予約を申請できませんでした: \(error.localizedDescription)"
-                    )
-                    return
-                }
-
+        functions
+            .httpsCallable("submitReservationRequest")
+            .call(requestData) { _, error in
                 DispatchQueue.main.async {
                     isSubmitting = false
+
+                    if let error = error {
+                        errorMessage = reservationRequestErrorMessage(
+                            from: error
+                        )
+                        return
+                    }
+
                     isSubmitted = true
                 }
             }
+    }
+
+    private func reservationRequestErrorMessage(
+        from error: Error
+    ) -> String {
+        let nsError = error as NSError
+        let message = nsError.localizedDescription
+
+        if message.contains("予約済み") ||
+            message.contains("空き時間") {
+            return message
         }
+
+        if message.contains("ログイン") {
+            return "ログイン状態を確認して、もう一度お試しください"
+        }
+
+        return "予約を申請できませんでした: \(message)"
     }
 
     private func finishWithError(_ message: String) {

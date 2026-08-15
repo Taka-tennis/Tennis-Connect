@@ -336,6 +336,249 @@ async function markReservationRefund(refund, eventId) {
   });
 }
 
+
+/**
+ * 生徒の予約申請をサーバー側で確定します。
+ * 空き枠確認・予約作成・空き枠除去・通知作成を
+ * 1つのFirestore Transactionで処理します。
+ */
+exports.submitReservationRequest = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "予約申請にはログインが必要です。",
+      );
+    }
+
+    const coachId = String(
+      request.data?.coachId || "",
+    ).trim();
+    const date = String(
+      request.data?.date || "",
+    )
+      .trim()
+      .replaceAll("/", "-");
+    const rawTimes = Array.isArray(request.data?.times) ?
+      request.data.times :
+      [];
+    const selectedTimes = rawTimes
+      .map((time) => String(time || "").trim())
+      .filter((time) => time !== "")
+      .sort();
+
+    if (!coachId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "コーチ情報がありません。",
+      );
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約日が正しくありません。",
+      );
+    }
+
+    if (
+      selectedTimes.length === 0 ||
+      selectedTimes.length > 13
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約時間が正しくありません。",
+      );
+    }
+
+    if (
+      selectedTimes.some(
+        (time) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(time),
+      )
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約時間の形式が正しくありません。",
+      );
+    }
+
+    if (new Set(selectedTimes).size !== selectedTimes.length) {
+      throw new HttpsError(
+        "invalid-argument",
+        "同じ予約時間が重複しています。",
+      );
+    }
+
+    const minuteValues = selectedTimes.map((time) => {
+      const [hour, minute] = time.split(":").map(Number);
+      return hour * 60 + minute;
+    });
+
+    for (let i = 1; i < minuteValues.length; i += 1) {
+      if (minuteValues[i] - minuteValues[i - 1] !== 60) {
+        throw new HttpsError(
+          "invalid-argument",
+          "連続した時間を選択してください。",
+        );
+      }
+    }
+
+    const db = getFirestore();
+    const coachRef = db
+      .collection("coaches")
+      .doc(coachId);
+    const availabilityRef = db
+      .collection("coachAvailability")
+      .doc(coachId)
+      .collection("dates")
+      .doc(date);
+    const reservationRef = db
+      .collection("reservations")
+      .doc();
+    const notificationRef = db
+      .collection("notifications")
+      .doc();
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const coachSnap = await transaction.get(coachRef);
+        const availabilitySnap = await transaction.get(
+          availabilityRef,
+        );
+
+        if (!coachSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "コーチ情報が見つかりません。",
+          );
+        }
+
+        if (!availabilitySnap.exists) {
+          throw new HttpsError(
+            "failed-precondition",
+            "選択した日の空き時間が見つかりません。",
+          );
+        }
+
+        const coach = coachSnap.data();
+        const availableTimes = Array.isArray(
+          availabilitySnap.get("times"),
+        ) ?
+          availabilitySnap.get("times")
+            .map((time) => String(time)) :
+          [];
+
+        const unavailableTimes = selectedTimes.filter(
+          (time) => !availableTimes.includes(time),
+        );
+
+        if (unavailableTimes.length > 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "選択した時間の一部が予約済みです。" +
+            "時間を選び直してください。",
+          );
+        }
+
+        const pricePerHour = Number(coach.price);
+
+        if (
+          !Number.isInteger(pricePerHour) ||
+          pricePerHour <= 0
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "コーチの料金情報が正しくありません。",
+          );
+        }
+
+        const remainingTimes = availableTimes
+          .filter((time) => !selectedTimes.includes(time))
+          .sort();
+        const totalPrice =
+          pricePerHour * selectedTimes.length;
+
+        const firstTime = selectedTimes[0];
+        const lastTime =
+          selectedTimes[selectedTimes.length - 1];
+        const [lastHour, lastMinute] =
+          lastTime.split(":").map(Number);
+        const endHour = (lastHour + 1) % 24;
+        const endTime =
+          `${String(endHour).padStart(2, "0")}:` +
+          `${String(lastMinute).padStart(2, "0")}`;
+        const timeRange =
+          `${firstTime}〜${endTime}`;
+        const displayDate =
+          date.replaceAll("-", "/");
+
+        transaction.set(
+          reservationRef,
+          {
+            coachId,
+            studentId: request.auth.uid,
+            coachName: String(
+              coach.name || "コーチ名未登録",
+            ),
+            date,
+            time: firstTime,
+            times: selectedTimes,
+            durationHours: selectedTimes.length,
+            pricePerHour,
+            totalPrice,
+            status: "pending",
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        );
+
+        transaction.set(
+          availabilityRef,
+          {
+            times: remainingTimes,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        transaction.set(
+          notificationRef,
+          {
+            recipientId: coachId,
+            coachId,
+            studentId: request.auth.uid,
+            reservationId: reservationRef.id,
+            type: "reservationRequested",
+            title: "新しい予約申請が届きました",
+            message:
+              `${displayDate} ${timeRange}の予約申請が` +
+              "届きました。内容を確認してください。",
+            date,
+            times: selectedTimes,
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+        );
+
+        return {
+          reservationId: reservationRef.id,
+          totalPrice,
+        };
+      },
+    );
+
+    logger.info("予約申請を登録しました。", {
+      reservationId: result.reservationId,
+      studentId: request.auth.uid,
+      coachId,
+      date,
+      times: selectedTimes,
+    });
+
+    return result;
+  },
+);
+
 exports.createCheckoutSession = onCall(
   {secrets: [stripeSecretKey]},
   async (request) => {
