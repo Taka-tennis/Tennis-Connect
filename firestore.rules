@@ -1,0 +1,227 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function reservationStudent() {
+      return signedIn()
+        && ('studentId' in resource.data)
+        && resource.data.studentId == request.auth.uid;
+    }
+
+    function reservationCoach() {
+      return signedIn()
+        && ('coachId' in resource.data)
+        && resource.data.coachId == request.auth.uid;
+    }
+
+    // 生徒プロフィール：本人だけ
+    match /students/{studentId} {
+      allow create, read, update, delete:
+        if signedIn() && request.auth.uid == studentId;
+
+      match /{document=**} {
+        allow read, write:
+          if signedIn() && request.auth.uid == studentId;
+      }
+    }
+
+    // コーチプロフィール：閲覧は公開、編集は本人だけ
+    match /coaches/{coachId} {
+      allow read: if true;
+
+      allow create:
+        if signedIn() && request.auth.uid == coachId;
+
+      allow update:
+        if signedIn()
+        && request.auth.uid == coachId
+        && !request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasAny([
+            'rating',
+            'ratingAverage',
+            'ratingCount',
+            'ratingSum',
+            'reviewCount'
+          ]);
+
+      allow delete:
+        if signedIn() && request.auth.uid == coachId;
+    }
+
+    // 空き日程
+    // 現在は予約作成・却下時にクライアントから枠更新を行うため、
+    // Phase 1ではログイン済みユーザーの書き込みを許可する。
+   match /coachAvailability/{coachId}/dates/{dateId} {
+  allow read: if true;
+
+  allow write:
+    if signedIn()
+    && request.auth.uid == coachId;
+}
+
+    // 予約
+    match /reservations/{reservationId} {
+
+      allow create: if false;
+
+      allow read:
+        if reservationStudent() || reservationCoach();
+
+      // クライアントからの更新は担当コーチの承認・却下のみ
+      allow update:
+  if reservationCoach()
+  && resource.data.status == 'pending'
+  && request.resource.data.studentId == resource.data.studentId
+  && request.resource.data.coachId == resource.data.coachId
+  && request.resource.data
+      .diff(resource.data)
+      .affectedKeys()
+      .hasOnly(['status', 'updatedAt'])
+  && request.resource.data.status in ['confirmed', 'rejected'];
+      allow delete: if false;
+    }
+
+    // 1対1チャット
+    match /messages/{messageId} {
+
+      allow read:
+        if signedIn()
+        && (
+          (
+            ('studentId' in resource.data)
+            && resource.data.studentId == request.auth.uid
+          )
+          ||
+          (
+            ('coachId' in resource.data)
+            && resource.data.coachId == request.auth.uid
+          )
+        );
+
+      allow create:
+        if signedIn()
+        && ('studentId' in request.resource.data)
+        && ('coachId' in request.resource.data)
+        && ('senderId' in request.resource.data)
+        && request.resource.data.senderId == request.auth.uid
+        && ('sender' in request.resource.data)
+        && (
+          (
+            request.resource.data.sender == 'user'
+            && request.resource.data.studentId == request.auth.uid
+          )
+          ||
+          (
+            request.resource.data.sender == 'coach'
+            && request.resource.data.coachId == request.auth.uid
+          )
+        );
+
+      // 相手から届いたメッセージの未読→既読だけ許可
+      allow update:
+        if signedIn()
+        && (
+          (
+            resource.data.sender == 'coach'
+            && resource.data.studentId == request.auth.uid
+          )
+          ||
+          (
+            resource.data.sender == 'user'
+            && resource.data.coachId == request.auth.uid
+          )
+        )
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly(['isRead'])
+        && resource.data.isRead == false
+        && request.resource.data.isRead == true;
+
+      allow delete: if false;
+    }
+
+    // アプリ内通知
+    match /notifications/{notificationId} {
+
+      // コーチ→生徒：予約承認・却下通知
+      allow create:
+  if signedIn()
+  && ('type' in request.resource.data)
+  && ('recipientId' in request.resource.data)
+  && ('reservationId' in request.resource.data)
+  && ('coachId' in request.resource.data)
+  && request.resource.data.type in [
+       'reservationApproved',
+       'reservationRejected'
+     ]
+  && request.resource.data.coachId == request.auth.uid
+  && get(
+       /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
+     ).data.coachId == request.auth.uid
+  && get(
+       /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
+     ).data.studentId == request.resource.data.recipientId;
+
+      allow read:
+        if signedIn()
+        && ('recipientId' in resource.data)
+        && resource.data.recipientId == request.auth.uid;
+
+      allow update:
+        if signedIn()
+        && resource.data.recipientId == request.auth.uid
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly(['isRead'])
+        && resource.data.isRead == false
+        && request.resource.data.isRead == true;
+
+      allow delete: if false;
+    }
+
+    // レビュー：公開閲覧。
+    // 投稿・評価集計はCloud Functions側で行う。
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // お気に入り：本人のデータだけ
+    match /favorites/{favoriteId} {
+      allow create:
+        if signedIn()
+        && request.resource.data.keys().hasAll([
+          'studentId',
+          'coachId',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'studentId',
+          'coachId',
+          'createdAt'
+        ])
+        && request.resource.data.studentId == request.auth.uid;
+
+      allow read, delete:
+        if signedIn()
+        && ('studentId' in resource.data)
+        && resource.data.studentId == request.auth.uid;
+
+      allow update: if false;
+    }
+
+    // 明示していないコレクションは拒否
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
