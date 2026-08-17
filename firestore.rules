@@ -218,7 +218,46 @@ service cloud.firestore {
 
       allow update: if false;
     }
+// お問い合わせ：ログイン中の本人が新規送信する場合のみ許可
+match /inquiries/{inquiryId} {
+  allow create:
+    if signedIn()
+    && request.resource.data.keys().hasAll([
+      'userId',
+      'email',
+      'category',
+      'message',
+      'status',
+      'appVersion',
+      'createdAt'
+    ])
+    && request.resource.data.keys().hasOnly([
+      'userId',
+      'email',
+      'category',
+      'message',
+      'status',
+      'appVersion',
+      'createdAt'
+    ])
+    && request.resource.data.userId == request.auth.uid
+    && request.resource.data.email is string
+    && request.resource.data.category in [
+      '予約について',
+      '支払い・返金について',
+      'コーチについて',
+      'アカウントについて',
+      'その他'
+    ]
+    && request.resource.data.message is string
+    && request.resource.data.message.size() > 0
+    && request.resource.data.message.size() <= 1000
+    && request.resource.data.status == 'open'
+    && request.resource.data.appVersion is string
+    && request.resource.data.createdAt == request.time;
 
+  allow read, update, delete: if false;
+}
     // 明示していないコレクションは拒否
     match /{document=**} {
       allow read, write: if false;
