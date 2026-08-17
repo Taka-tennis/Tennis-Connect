@@ -29,6 +29,8 @@ struct ChatListView: View {
     @State private var coachConversations: [CoachConversation] = []
     @State private var messageListener: ListenerRegistration?
     @State private var errorMessage = ""
+    @State private var isLoggedIn = false
+    @State private var showLogin = false
 
     init(role: ChatParticipantRole = .student) {
         self.role = role
@@ -37,17 +39,21 @@ struct ChatListView: View {
     var body: some View {
         NavigationStack {
             Group {
-                switch role {
-                case .student:
-                    studentChatList
+                if isLoggedIn {
+                    switch role {
+                    case .student:
+                        studentChatList
 
-                case .coach:
-                    coachChatList
+                    case .coach:
+                        coachChatList
+                    }
+                } else {
+                    loggedOutView
                 }
             }
             .navigationTitle("チャット")
             .safeAreaInset(edge: .bottom) {
-                if !errorMessage.isEmpty {
+                if isLoggedIn && !errorMessage.isEmpty {
                     Text(errorMessage)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -58,7 +64,14 @@ struct ChatListView: View {
                 }
             }
             .onAppear {
-                startMessageListener()
+                isLoggedIn = Auth.auth().currentUser != nil
+
+                if isLoggedIn {
+                    startMessageListener()
+                } else {
+                    resetChatState()
+                    errorMessage = ""
+                }
             }
             .onDisappear {
                 messageListener?.remove()
@@ -69,9 +82,66 @@ struct ChatListView: View {
                     for: Notification.Name("ReloadChatList")
                 )
             ) { _ in
+                guard Auth.auth().currentUser != nil else {
+                    isLoggedIn = false
+                    resetChatState()
+                    errorMessage = ""
+                    return
+                }
+
+                isLoggedIn = true
                 startMessageListener()
             }
+            .sheet(isPresented: $showLogin) {
+                LoginView {
+                    isLoggedIn = true
+                    startMessageListener()
+                }
+            }
         }
+    }
+
+    private var loggedOutView: some View {
+        VStack(spacing: 18) {
+            Spacer()
+
+            Image(systemName: "message.badge")
+                .font(.system(size: 58))
+                .foregroundStyle(.secondary)
+
+            Text("チャットを利用するにはログインが必要です")
+                .font(.title3)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+
+            Text(
+                role == .student
+                    ? "ログインすると、コーチとのメッセージを確認できます。"
+                    : "ログインすると、生徒とのメッセージを確認できます。"
+            )
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+
+            Button {
+                showLogin = true
+            } label: {
+                Label(
+                    "ログイン・新規会員登録",
+                    systemImage: "person.crop.circle.badge.plus"
+                )
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.green)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .padding(.top, 6)
+
+            Spacer()
+        }
+        .padding(.horizontal, 28)
     }
 
     private var studentChatList: some View {
@@ -255,8 +325,9 @@ struct ChatListView: View {
         messageListener = nil
 
         guard let uid = Auth.auth().currentUser?.uid else {
+            isLoggedIn = false
             resetChatState()
-            errorMessage = "チャットの確認にはログインが必要です"
+            errorMessage = ""
             return
         }
 

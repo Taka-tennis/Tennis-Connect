@@ -62,6 +62,7 @@
 		139711FF302B262A0031C537 /* NotificationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711FE302B262A0031C537 /* NotificationView.swift */; };
 		13971202302F41000031C537 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = 13971201302F41000031C537 /* FirebaseFunctions */; };
 		1397120430304ECF0031C537 /* ReviewSubmissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120330304ECF0031C537 /* ReviewSubmissionView.swift */; };
+		139712083031CB1B0031C537 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139712073031CB1B0031C537 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -117,6 +118,7 @@
 		139711FC3025BFB70031C537 /* RegisterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegisterView.swift; sourceTree = "<group>"; };
 		139711FE302B262A0031C537 /* NotificationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationView.swift; sourceTree = "<group>"; };
 		1397120330304ECF0031C537 /* ReviewSubmissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSubmissionView.swift; sourceTree = "<group>"; };
+		139712073031CB1B0031C537 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -161,13 +163,14 @@
 				07EDD487300F67B40097B050 /* Tennis_Connect.entitlements */,
 				07134EDB3011E18800A87536 /* GoogleService-Info.plist */,
 				07EDD488300F67B40097B050 /* Preview Content */,
-				07134EDD3011F33900A87536 /* HomeView.swift */,
 				139711D6301A365F0031C537 /* BookingConfirmView.swift */,
+				07134EDD3011F33900A87536 /* HomeView.swift */,
 				139711DA301A3AA30031C537 /* BookingCompleteView.swift */,
 				139711BC3018E9760031C537 /* MainTabView.swift */,
 				139711BE3018E9D50031C537 /* ChatListView.swift */,
 				139711C03018EA0D0031C537 /* FavoriteView.swift */,
 				139711C23018EA300031C537 /* MyPageView.swift */,
+				139712073031CB1B0031C537 /* SettingsView.swift */,
 				1397120330304ECF0031C537 /* ReviewSubmissionView.swift */,
 				139711E0301A44890031C537 /* ReservationDetailView.swift */,
 				139711BA3018E3D00031C537 /* CoachHomeView.swift */,
@@ -308,6 +311,7 @@
 				139711D9301A38CE0031C537 /* PaymentView.swift.swift in Sources */,
 				139711E7301EFEEB0031C537 /* AvailableTimeSectionView.swift in Sources */,
 				07134EDE3011F33900A87536 /* HomeView.swift in Sources */,
+				139712083031CB1B0031C537 /* SettingsView.swift in Sources */,
 				139711BD3018E9760031C537 /* MainTabView.swift in Sources */,
 				139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */,
 				139711C53018EBF30031C537 /* CoachDetailView.swift in Sources */,

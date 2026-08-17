@@ -73,29 +73,37 @@ struct ReservationListView: View {
     @State private var selectedCategory: ReservationCategory = .upcoming
     @State private var isLoading = false
     @State private var errorMessage = ""
+    @State private var isLoggedIn = false
+    @State private var showLogin = false
 
     private let db = Firestore.firestore()
 
     var body: some View {
-        VStack(spacing: 0) {
-            categoryPicker
+        Group {
+            if isLoggedIn {
+                VStack(spacing: 0) {
+                    categoryPicker
 
-            Group {
-                if isLoading && reservations.isEmpty {
-                    ProgressView("予約を読み込み中…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if filteredReservations.isEmpty {
-                    emptyState
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    reservationList
+                    Group {
+                        if isLoading && reservations.isEmpty {
+                            ProgressView("予約を読み込み中…")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if filteredReservations.isEmpty {
+                            emptyState
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            reservationList
+                        }
+                    }
                 }
+            } else {
+                loggedOutView
             }
         }
         .navigationTitle("予約一覧")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
-            if !errorMessage.isEmpty {
+            if isLoggedIn && !errorMessage.isEmpty {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -106,8 +114,57 @@ struct ReservationListView: View {
             }
         }
         .onAppear {
-            loadReservations()
+            isLoggedIn = Auth.auth().currentUser != nil
+
+            if isLoggedIn {
+                loadReservations()
+            } else {
+                reservations = []
+                errorMessage = ""
+            }
         }
+        .sheet(isPresented: $showLogin) {
+            LoginView {
+                isLoggedIn = true
+                loadReservations()
+            }
+        }
+    }
+
+    private var loggedOutView: some View {
+        VStack(spacing: 18) {
+            Spacer()
+
+            Image(systemName: "calendar.badge.person.crop")
+                .font(.system(size: 58))
+                .foregroundStyle(.secondary)
+
+            Text("予約を確認するにはログインが必要です")
+                .font(.title3)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+
+            Text("ログインすると、承認待ち・今後の予約・予約履歴を確認できます。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button {
+                showLogin = true
+            } label: {
+                Label("ログイン・新規会員登録", systemImage: "person.crop.circle.badge.plus")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.green)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .padding(.top, 6)
+
+            Spacer()
+        }
+        .padding(.horizontal, 28)
     }
 
     private var categoryPicker: some View {
@@ -481,7 +538,8 @@ struct ReservationListView: View {
     private func loadReservations() {
         guard let uid = Auth.auth().currentUser?.uid else {
             reservations = []
-            errorMessage = "予約一覧の確認にはログインが必要です"
+            errorMessage = ""
+            isLoggedIn = false
             return
         }
 

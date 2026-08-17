@@ -1,6 +1,7 @@
 // 修正版：画面内ヘッダーの左に戻るボタン、右に通知ベルを表示
 
 import SwiftUI
+import FirebaseAuth
 import FirebaseFirestore
 
 struct HomeView: View {
@@ -9,6 +10,8 @@ struct HomeView: View {
 
     @State private var coaches: [Coach] = []
     @State private var searchText = ""
+    @State private var isLoggedIn = false
+    @State private var showLogin = false
 
     init(unreadNotificationCount: Int = 0) {
         self.unreadNotificationCount = unreadNotificationCount
@@ -86,41 +89,55 @@ struct HomeView: View {
 
                 Spacer(minLength: 4)
 
-                NavigationLink {
-                    NotificationView()
-                } label: {
-                    Image(
-                        systemName: unreadNotificationCount > 0
-                            ? "bell.fill"
-                            : "bell"
-                    )
-                    .font(.title3)
-                    .foregroundStyle(.primary)
-                    .frame(width: 36, height: 36)
-                    .background(Color(.systemGray6))
-                    .clipShape(Circle())
-                    .overlay(alignment: .topTrailing) {
-                        if unreadNotificationCount > 0 {
-                            Text(
-                                unreadNotificationCount > 99
-                                    ? "99+"
-                                    : "\(unreadNotificationCount)"
-                            )
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .frame(minWidth: 16, minHeight: 16)
-                            .background(Color.red)
-                            .clipShape(Capsule())
-                            .offset(x: 5, y: -5)
+                if isLoggedIn {
+                    NavigationLink {
+                        NotificationView()
+                    } label: {
+                        Image(
+                            systemName: unreadNotificationCount > 0
+                                ? "bell.fill"
+                                : "bell"
+                        )
+                        .font(.title3)
+                        .foregroundStyle(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.systemGray6))
+                        .clipShape(Circle())
+                        .overlay(alignment: .topTrailing) {
+                            if unreadNotificationCount > 0 {
+                                Text(
+                                    unreadNotificationCount > 99
+                                        ? "99+"
+                                        : "\(unreadNotificationCount)"
+                                )
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .frame(minWidth: 16, minHeight: 16)
+                                .background(Color.red)
+                                .clipShape(Capsule())
+                                .offset(x: 5, y: -5)
+                            }
                         }
                     }
+                    .accessibilityLabel(
+                        unreadNotificationCount > 0
+                            ? "未読通知が\(unreadNotificationCount)件あります"
+                            : "通知"
+                    )
+                } else {
+                    Button {
+                        showLogin = true
+                    } label: {
+                        Image(systemName: "person.crop.circle.badge.plus")
+                            .font(.title3)
+                            .foregroundStyle(.primary)
+                            .frame(width: 36, height: 36)
+                            .background(Color(.systemGray6))
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("ログイン")
                 }
-                .accessibilityLabel(
-                    unreadNotificationCount > 0
-                        ? "未読通知が\(unreadNotificationCount)件あります"
-                        : "通知"
-                )
             }
             .padding(.horizontal)
             .padding(.top, 8)
@@ -239,7 +256,13 @@ struct HomeView: View {
             }
         }
         .onAppear {
+            isLoggedIn = Auth.auth().currentUser != nil
             fetchCoaches()
+        }
+        .sheet(isPresented: $showLogin) {
+            LoginView {
+                isLoggedIn = true
+            }
         }
     }
 }

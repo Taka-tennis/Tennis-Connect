@@ -19,69 +19,128 @@ struct FavoriteView: View {
     @State private var isLoading = false
     @State private var errorMessage = ""
     @State private var listener: ListenerRegistration?
+    @State private var isLoggedIn = false
+    @State private var showLogin = false
 
     var body: some View {
         NavigationStack {
             Group {
-                if isLoading && favoriteCoaches.isEmpty {
-                    ProgressView("お気に入りを読み込み中…")
-                } else if !errorMessage.isEmpty &&
-                            favoriteCoaches.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.orange)
+                if isLoggedIn {
+                    if isLoading && favoriteCoaches.isEmpty {
+                        ProgressView("お気に入りを読み込み中…")
+                    } else if !errorMessage.isEmpty &&
+                                favoriteCoaches.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.orange)
 
-                        Text("お気に入りを取得できませんでした")
-                            .font(.headline)
+                            Text("お気に入りを取得できませんでした")
+                                .font(.headline)
 
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                            Text(errorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
 
-                        Button("再読み込み") {
-                            startFavoriteListener()
+                            Button("再読み込み") {
+                                startFavoriteListener()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.green)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.green)
-                    }
-                    .padding()
-                } else if favoriteCoaches.isEmpty {
-                    VStack(spacing: 14) {
-                        Image(systemName: "heart")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.secondary)
+                        .padding()
+                    } else if favoriteCoaches.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "heart")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.secondary)
 
-                        Text("お気に入りはまだありません")
-                            .font(.headline)
+                            Text("お気に入りはまだありません")
+                                .font(.headline)
 
-                        Text("コーチ詳細の♡を押すと、ここに追加されます")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                            Text("コーチ詳細の♡を押すと、ここに追加されます")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding()
+                    } else {
+                        List(favoriteCoaches) { item in
+                            NavigationLink {
+                                CoachDetailView(coach: item.coach)
+                            } label: {
+                                FavoriteCoachRow(coach: item.coach)
+                            }
+                        }
+                        .listStyle(.plain)
                     }
-                    .padding()
                 } else {
-                    List(favoriteCoaches) { item in
-                        NavigationLink {
-                            CoachDetailView(coach: item.coach)
-                        } label: {
-                            FavoriteCoachRow(coach: item.coach)
-                        }
-                    }
-                    .listStyle(.plain)
+                    loggedOutView
                 }
             }
             .navigationTitle("お気に入り")
             .onAppear {
-                startFavoriteListener()
+                isLoggedIn = Auth.auth().currentUser != nil
+
+                if isLoggedIn {
+                    startFavoriteListener()
+                } else {
+                    favoriteCoaches = []
+                    errorMessage = ""
+                    isLoading = false
+                }
             }
             .onDisappear {
                 listener?.remove()
                 listener = nil
             }
+            .sheet(isPresented: $showLogin) {
+                LoginView {
+                    isLoggedIn = true
+                    startFavoriteListener()
+                }
+            }
         }
+    }
+
+    private var loggedOutView: some View {
+        VStack(spacing: 18) {
+            Spacer()
+
+            Image(systemName: "heart.circle")
+                .font(.system(size: 58))
+                .foregroundStyle(.secondary)
+
+            Text("お気に入りを見るにはログインが必要です")
+                .font(.title3)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+
+            Text("ログインすると、保存したコーチをいつでも確認できます。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button {
+                showLogin = true
+            } label: {
+                Label(
+                    "ログイン・新規会員登録",
+                    systemImage: "person.crop.circle.badge.plus"
+                )
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.green)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .padding(.top, 6)
+
+            Spacer()
+        }
+        .padding(.horizontal, 28)
     }
 
     private func startFavoriteListener() {
@@ -89,8 +148,9 @@ struct FavoriteView: View {
         listener = nil
 
         guard let studentId = Auth.auth().currentUser?.uid else {
+            isLoggedIn = false
             favoriteCoaches = []
-            errorMessage = "お気に入り機能を使うにはログインが必要です"
+            errorMessage = ""
             isLoading = false
             return
         }
