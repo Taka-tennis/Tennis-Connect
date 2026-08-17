@@ -1197,6 +1197,131 @@ function lessonEndDateFromReservation(reservation) {
 }
 
 /**
+ * アカウント削除前に、未処理の予約が残っていないか確認します。
+ * この関数自体はデータ削除を行いません。
+ *
+ * @param {object} reservation 予約データ
+ * @return {string} 削除を止める理由。問題なければ空文字
+ */
+function accountDeletionBlockReason(reservation) {
+  const status = String(reservation.status || "");
+  const paymentStatus = String(reservation.paymentStatus || "");
+  const refundStatus = String(reservation.refundStatus || "");
+
+  if (["pending", "confirmed", "approved"].includes(status)) {
+    return "未処理の予約があります。";
+  }
+
+  if (
+    paymentStatus === "refund_processing" ||
+    paymentStatus === "refund_failed" ||
+    refundStatus === "creating" ||
+    refundStatus === "pending" ||
+    refundStatus === "failed" ||
+    refundStatus === "failed_to_create"
+  ) {
+    return "返金処理が完了していない予約があります。";
+  }
+
+  if (status === "paid" || paymentStatus === "paid") {
+    const lessonEndDate = lessonEndDateFromReservation(reservation);
+
+    if (!lessonEndDate) {
+      return "予約日時を確認できない支払い済み予約があります。";
+    }
+
+    if (lessonEndDate > new Date()) {
+      return "これから受講する支払い済み予約があります。";
+    }
+  }
+
+  return "";
+}
+
+/**
+ * アカウント削除が可能か確認します。
+ * 生徒側・コーチ側の両方の予約を確認します。
+ */
+exports.checkAccountDeletionEligibility = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "アカウント削除の確認にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+
+    const [
+      studentReservationsSnap,
+      coachReservationsSnap,
+    ] = await Promise.all([
+      db.collection("reservations")
+        .where("studentId", "==", uid)
+        .get(),
+      db.collection("reservations")
+        .where("coachId", "==", uid)
+        .get(),
+    ]);
+
+    const reservationMap = new Map();
+
+    for (const document of studentReservationsSnap.docs) {
+      reservationMap.set(document.id, {
+        document,
+        role: "student",
+      });
+    }
+
+    for (const document of coachReservationsSnap.docs) {
+      const existing = reservationMap.get(document.id);
+
+      reservationMap.set(document.id, {
+        document,
+        role: existing ? "student_and_coach" : "coach",
+      });
+    }
+
+    const blockers = [];
+
+    for (const [reservationId, entry] of reservationMap.entries()) {
+      const reservation = entry.document.data();
+      const reason = accountDeletionBlockReason(reservation);
+
+      if (!reason) {
+        continue;
+      }
+
+      blockers.push({
+        reservationId,
+        role: entry.role,
+        reason,
+        status: String(reservation.status || ""),
+        paymentStatus: String(reservation.paymentStatus || ""),
+        refundStatus: String(reservation.refundStatus || ""),
+        date: String(reservation.date || ""),
+        times: Array.isArray(reservation.times) ?
+          reservation.times.map((time) => String(time)) :
+          reservation.time ? [String(reservation.time)] : [],
+      });
+    }
+
+    logger.info("アカウント削除可否を確認しました。", {
+      uid,
+      eligible: blockers.length === 0,
+      blockerCount: blockers.length,
+    });
+
+    return {
+      eligible: blockers.length === 0,
+      blockers,
+    };
+  },
+);
+
+/**
  * 受講済み予約に対するレビューを登録します。
  * 同じ生徒から同じコーチへのレビューは1件までに制限します。
  */

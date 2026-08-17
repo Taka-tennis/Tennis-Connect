@@ -1,6 +1,7 @@
 import SwiftUI
 import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 
 struct SettingsView: View {
 
@@ -67,6 +68,18 @@ struct SettingsView: View {
                     InquiryView()
                 } label: {
                     Label("お問い合わせ", systemImage: "questionmark.circle")
+                }
+            }
+
+            Section("アカウント管理") {
+                NavigationLink {
+                    AccountDeletionCheckView()
+                } label: {
+                    Label(
+                        "アカウントを削除",
+                        systemImage: "person.crop.circle.badge.minus"
+                    )
+                    .foregroundStyle(.red)
                 }
             }
 
@@ -256,6 +269,195 @@ private struct InquiryView: View {
 
                     message = ""
                     showSentAlert = true
+                }
+            }
+    }
+}
+
+
+
+private struct AccountDeletionCheckView: View {
+
+    @State private var isChecking = false
+    @State private var eligible: Bool?
+    @State private var blockerMessages: [String] = []
+    @State private var errorMessage = ""
+
+    private let functions = Functions.functions(
+        region: "asia-northeast1"
+    )
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 52))
+                    .foregroundStyle(.orange)
+
+                Text("アカウント削除")
+                    .font(.title2)
+                    .fontWeight(.bold)
+
+                Text(
+                    "アカウントを削除する前に、未処理の予約や返金が残っていないか確認します。"
+                )
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+                if isChecking {
+                    ProgressView("確認中…")
+                        .padding(.vertical, 8)
+                }
+
+                if let eligible {
+                    if eligible {
+                        VStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 42))
+                                .foregroundStyle(.green)
+
+                            Text("削除を進められる状態です")
+                                .font(.headline)
+
+                            Text(
+                                "この確認ではまだアカウントやデータは削除されません。"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color(.systemGray6))
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: 16)
+                        )
+                    } else {
+                        VStack(
+                            alignment: .leading,
+                            spacing: 12
+                        ) {
+                            Label(
+                                "現在は削除できません",
+                                systemImage: "xmark.circle.fill"
+                            )
+                            .font(.headline)
+                            .foregroundStyle(.red)
+
+                            ForEach(
+                                Array(
+                                    Set(blockerMessages)
+                                ).sorted(),
+                                id: \.self
+                            ) { message in
+                                Label(
+                                    message,
+                                    systemImage: "exclamationmark.circle"
+                                )
+                                .font(.subheadline)
+                            }
+                        }
+                        .padding()
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+                        .background(Color(.systemGray6))
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: 16)
+                        )
+                    }
+                }
+
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Button {
+                    checkEligibility()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        if isChecking {
+                            ProgressView()
+                        } else {
+                            Label(
+                                "削除条件を確認する",
+                                systemImage: "checklist"
+                            )
+                            .fontWeight(.semibold)
+                        }
+
+                        Spacer()
+                    }
+                    .padding()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(isChecking)
+
+                Text(
+                    "支払い済みの今後の予約や返金処理中の予約などがある場合は、先にそれらの処理を完了する必要があります。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            }
+            .padding()
+        }
+        .navigationTitle("アカウント削除")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func checkEligibility() {
+        guard Auth.auth().currentUser != nil else {
+            errorMessage =
+                "アカウント削除の確認にはログインが必要です。"
+            eligible = nil
+            blockerMessages = []
+            return
+        }
+
+        isChecking = true
+        errorMessage = ""
+        eligible = nil
+        blockerMessages = []
+
+        functions
+            .httpsCallable("checkAccountDeletionEligibility")
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    isChecking = false
+
+                    if let error {
+                        errorMessage =
+                            "削除条件を確認できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    guard
+                        let data = result?.data as? [String: Any],
+                        let canDelete = data["eligible"] as? Bool
+                    else {
+                        errorMessage =
+                            "削除条件の確認結果を読み取れませんでした。"
+                        return
+                    }
+
+                    let blockers =
+                        data["blockers"] as? [[String: Any]] ?? []
+
+                    blockerMessages = blockers.compactMap {
+                        $0["reason"] as? String
+                    }
+
+                    eligible = canDelete
                 }
             }
     }
