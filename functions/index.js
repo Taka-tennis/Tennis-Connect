@@ -211,8 +211,9 @@ function reservationIdFromRefund(refund) {
 }
 
 /**
- * コーチ都合キャンセル後の返金状態をFirestoreへ反映します。
- * Stripe Webhookが再送されても同じ通知を重複作成しません。
+ * Stripe Refundの状態をFirestoreへ反映します。
+ * コーチ都合・生徒都合のどちらにも対応し、
+ * Webhook再送時も通知IDを固定して重複作成を防ぎます。
  *
  * @param {object} refund Stripe Refund
  * @param {string} eventId Stripe Event ID
@@ -256,18 +257,49 @@ async function markReservationRefund(refund, eventId) {
       );
     }
 
+    const metadataSource = String(
+      refund.metadata?.cancellationSource || "",
+    );
+    const storedSource = String(
+      reservation.cancellationSource || "",
+    );
+    const cancellationSource =
+      metadataSource === "student" ||
+      storedSource === "student" ||
+      reservation.status === "student_cancelled" ?
+        "student" :
+        "coach";
+
+    const cancellationStatus = cancellationSource === "student" ?
+      "student_cancelled" :
+      "coach_cancelled";
     const refundStatus = String(refund.status || "pending");
+    const refundAmount = Number(refund.amount || 0);
+    const amountPaid = Number(
+      reservation.amountPaid ||
+      reservation.totalPrice ||
+      0,
+    );
+    const isPartialRefund =
+      cancellationSource === "student" &&
+      amountPaid > 0 &&
+      refundAmount > 0 &&
+      refundAmount < amountPaid;
+
     const update = {
-      status: "coach_cancelled",
+      status: cancellationStatus,
+      cancellationSource,
       refundStatus,
       stripeRefundId: refund.id,
       stripeRefundEventId: eventId,
-      refundAmount: Number(refund.amount || 0),
+      refundAmount,
       updatedAt: FieldValue.serverTimestamp(),
     };
 
     if (refundStatus === "succeeded") {
-      update.paymentStatus = "refunded";
+      update.paymentStatus = isPartialRefund ?
+        "partially_refunded" :
+        "refunded";
       update.refundedAt = FieldValue.serverTimestamp();
     } else if (
       refundStatus === "failed" ||
@@ -287,7 +319,38 @@ async function markReservationRefund(refund, eventId) {
     let title = "";
     let message = "";
 
-    if (refundStatus === "succeeded") {
+    if (cancellationSource === "student") {
+      const storedPercent = Number(
+        reservation.cancellationRefundPercent,
+      );
+      const refundPercent =
+        Number.isFinite(storedPercent) && storedPercent >= 0 ?
+          storedPercent :
+          amountPaid > 0 ?
+            Math.round((refundAmount / amountPaid) * 100) :
+            0;
+
+      if (refundStatus === "succeeded") {
+        notificationId =
+          `student_refund_succeeded_${reservationId}`;
+        notificationType = "studentCancellationRefunded";
+        title = "キャンセルの返金が完了しました";
+        message =
+          `キャンセル規定に基づく${refundPercent}%返金が` +
+          "完了しました。";
+      } else if (
+        refundStatus === "failed" ||
+        refundStatus === "canceled"
+      ) {
+        notificationId =
+          `student_refund_failed_${reservationId}`;
+        notificationType = "studentCancellationRefundFailed";
+        title = "返金状況をご確認ください";
+        message =
+          "生徒都合キャンセルの返金処理を" +
+          "完了できませんでした。運営が確認します。";
+      }
+    } else if (refundStatus === "succeeded") {
       notificationId = `refund_succeeded_${reservationId}`;
       notificationType = "coachCancellationRefunded";
       title = "返金が完了しました";
@@ -316,6 +379,7 @@ async function markReservationRefund(refund, eventId) {
         {
           recipientId: reservation.studentId,
           coachId: reservation.coachId || "",
+          studentId: reservation.studentId,
           reservationId,
           type: notificationType,
           title,
@@ -871,6 +935,8 @@ exports.requestCoachRefund = onCall(
           reservationRef,
           {
             status: "coach_cancelled",
+            cancellationSource: "coach",
+            cancellationRefundPercent: 100,
             paymentStatus: "refund_processing",
             refundStatus: "creating",
             refundRequestedBy: request.auth.uid,
@@ -902,6 +968,8 @@ exports.requestCoachRefund = onCall(
             reservationId,
             coachId: reservation.coachId || "",
             studentId: reservation.studentId || "",
+            cancellationSource: "coach",
+            refundPercent: "100",
           },
         },
         {
@@ -1010,6 +1078,352 @@ exports.requestCoachRefund = onCall(
 
     return {
       status: refund.status,
+      refundId: refund.id,
+    };
+  },
+);
+
+/**
+ * 支払い済み予約を生徒都合でキャンセルします。
+ * 返金率はサーバー側で予約開始時刻から自動判定します。
+ *
+ * 24時間より前: 100%返金
+ * 12時間より前〜24時間以内: 50%返金
+ * 12時間以内: 返金なし
+ */
+exports.requestStudentCancellation = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "キャンセルにはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+
+    const prepared = await db.runTransaction(
+      async (transaction) => {
+        const reservationSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!reservationSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const data = reservationSnap.data();
+
+        if (data.studentId !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "この予約はキャンセルできません。",
+          );
+        }
+
+        if (data.status === "coach_cancelled") {
+          throw new HttpsError(
+            "failed-precondition",
+            "この予約はコーチ都合でキャンセル済みです。",
+          );
+        }
+
+        if (data.status === "student_cancelled") {
+          const expectedRefundAmount = Number(
+            data.cancellationRefundAmountExpected || 0,
+          );
+          const refundPercent = Number(
+            data.cancellationRefundPercent || 0,
+          );
+          const shouldCreateRefund =
+            expectedRefundAmount > 0 &&
+            !data.stripeRefundId &&
+            ["creating", "failed_to_create"].includes(
+              String(data.refundStatus || ""),
+            );
+
+          return {
+            ...data,
+            alreadyCancelled: true,
+            expectedRefundAmount,
+            refundPercent,
+            shouldCreateRefund,
+          };
+        }
+
+        if (
+          data.status !== "paid" ||
+          data.paymentStatus !== "paid"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "支払い済みの予約だけこのキャンセル処理を利用できます。",
+          );
+        }
+
+        if (!data.stripePaymentIntentId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "決済情報を確認できませんでした。",
+          );
+        }
+
+        const policy = studentCancellationPolicy(data);
+        const amountPaid = Number(
+          data.amountPaid ||
+          data.totalPrice ||
+          0,
+        );
+
+        if (
+          !Number.isInteger(amountPaid) ||
+          amountPaid <= 0
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "支払い金額を確認できませんでした。",
+          );
+        }
+
+        const expectedRefundAmount = Math.floor(
+          amountPaid * policy.refundPercent / 100,
+        );
+        const times = Array.isArray(data.times) ?
+          data.times.map((time) => String(time)) :
+          data.time ? [String(data.time)] : [];
+        const dateId = String(data.date || "")
+          .replaceAll("/", "-");
+        const refundRequired = expectedRefundAmount > 0;
+
+        transaction.set(
+          reservationRef,
+          {
+            status: "student_cancelled",
+            cancellationSource: "student",
+            cancellationRefundPercent:
+              policy.refundPercent,
+            cancellationRefundAmountExpected:
+              expectedRefundAmount,
+            studentCancelledAt:
+              FieldValue.serverTimestamp(),
+            cancelledAt: FieldValue.serverTimestamp(),
+            refundRequestedBy: uid,
+            refundRequestedAt:
+              refundRequired ?
+                FieldValue.serverTimestamp() :
+                FieldValue.delete(),
+            refundStatus:
+              refundRequired ?
+                "creating" :
+                "not_applicable",
+            refundAmount:
+              refundRequired ?
+                FieldValue.delete() :
+                0,
+            paymentStatus:
+              refundRequired ?
+                "refund_processing" :
+                "paid",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        if (
+          data.coachId &&
+          dateId &&
+          times.length > 0
+        ) {
+          const availabilityRef = db
+            .collection("coachAvailability")
+            .doc(data.coachId)
+            .collection("dates")
+            .doc(dateId);
+
+          transaction.set(
+            availabilityRef,
+            {
+              times: FieldValue.arrayUnion(...times),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        if (data.coachId) {
+          const notificationRef = db
+            .collection("notifications")
+            .doc(`student_cancel_${reservationId}`);
+
+          let cancellationMessage =
+            "生徒都合で予約がキャンセルされました。";
+
+          if (policy.refundPercent === 100) {
+            cancellationMessage +=
+              "全額返金の手続きを開始しました。";
+          } else if (policy.refundPercent === 50) {
+            cancellationMessage +=
+              "50%返金の手続きを開始しました。";
+          } else {
+            cancellationMessage +=
+              "キャンセル規定により返金はありません。";
+          }
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: data.coachId,
+              coachId: data.coachId,
+              studentId: uid,
+              reservationId,
+              type: "studentCancellation",
+              title: "生徒都合で予約がキャンセルされました",
+              message: cancellationMessage,
+              date: data.date || "",
+              times,
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          ...data,
+          alreadyCancelled: false,
+          expectedRefundAmount,
+          refundPercent: policy.refundPercent,
+          shouldCreateRefund: refundRequired,
+        };
+      },
+    );
+
+    if (!prepared.shouldCreateRefund) {
+      const storedRefundAmount = Number(
+        prepared.refundAmount || 0,
+      );
+      const storedRefundStatus = String(
+        prepared.refundStatus ||
+        (
+          prepared.expectedRefundAmount > 0 ?
+            "pending" :
+            "not_applicable"
+        ),
+      );
+
+      return {
+        cancelled: true,
+        alreadyCancelled: Boolean(
+          prepared.alreadyCancelled,
+        ),
+        reservationId,
+        refundPercent: Number(
+          prepared.refundPercent || 0,
+        ),
+        refundAmount: storedRefundAmount,
+        refundStatus: storedRefundStatus,
+        refundId: String(
+          prepared.stripeRefundId || "",
+        ),
+      };
+    }
+
+    const stripe = new Stripe(stripeSecretKey.value());
+    let refund;
+
+    try {
+      refund = await stripe.refunds.create(
+        {
+          payment_intent:
+            prepared.stripePaymentIntentId,
+          amount: prepared.expectedRefundAmount,
+          metadata: {
+            reservationId,
+            coachId: prepared.coachId || "",
+            studentId: uid,
+            cancellationSource: "student",
+            refundPercent: String(
+              prepared.refundPercent,
+            ),
+          },
+        },
+        {
+          idempotencyKey:
+            `student_refund_${reservationId}`,
+        },
+      );
+    } catch (error) {
+      await reservationRef.set(
+        {
+          paymentStatus: "refund_failed",
+          refundStatus: "failed_to_create",
+          refundError: error.message,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      logger.error(
+        "生徒都合キャンセルの返金作成に失敗しました。",
+        {
+          reservationId,
+          studentId: uid,
+          message: error.message,
+        },
+      );
+
+      throw new HttpsError(
+        "internal",
+        "予約はキャンセルされましたが、返金処理を開始できませんでした。",
+      );
+    }
+
+    await markReservationRefund(
+      refund,
+      `callable_student_cancel_${reservationId}`,
+    );
+
+    logger.info("生徒都合キャンセルを受け付けました。", {
+      reservationId,
+      studentId: uid,
+      coachId: prepared.coachId || "",
+      refundPercent: prepared.refundPercent,
+      refundAmount: Number(refund.amount || 0),
+      refundStatus: refund.status,
+    });
+
+    return {
+      cancelled: true,
+      alreadyCancelled: Boolean(
+        prepared.alreadyCancelled,
+      ),
+      reservationId,
+      refundPercent: Number(
+        prepared.refundPercent || 0,
+      ),
+      refundAmount: Number(refund.amount || 0),
+      refundStatus: String(
+        refund.status || "pending",
+      ),
       refundId: refund.id,
     };
   },
@@ -1137,6 +1551,90 @@ exports.paymentResult = onRequest(
 );
 
 /**
+ * 予約情報からレッスン開始日時を取得します。
+ * 予約日時は日本時間として扱います。
+ *
+ * @param {object} reservation 予約データ
+ * @return {Date|null} レッスン開始日時
+ */
+function lessonStartDateFromReservation(reservation) {
+  const rawDate = String(reservation.date || "")
+    .replaceAll("/", "-");
+  const rawTimes = Array.isArray(reservation.times) &&
+    reservation.times.length > 0 ?
+    reservation.times :
+    typeof reservation.time === "string" &&
+    reservation.time !== "" ?
+      [reservation.time] : [];
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate) || rawTimes.length === 0) {
+    return null;
+  }
+
+  const sortedTimes = [...rawTimes]
+    .map((time) => String(time || "").replaceAll("~", "〜"))
+    .sort();
+  const firstSlot = sortedTimes[0] || "";
+  const startTime = firstSlot.split("〜")[0]?.trim() || "";
+
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) {
+    return null;
+  }
+
+  const parsed = new Date(`${rawDate}T${startTime}:00+09:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * 生徒都合キャンセルの返金率を決定します。
+ * 24時間より前は100%、12時間より前は50%、
+ * 12時間以内は返金なしです。
+ *
+ * @param {object} reservation 予約データ
+ * @param {Date} now 現在日時
+ * @return {{lessonStartDate: Date, refundPercent: number}}
+ */
+function studentCancellationPolicy(
+  reservation,
+  now = new Date(),
+) {
+  const lessonStartDate =
+    lessonStartDateFromReservation(reservation);
+
+  if (!lessonStartDate) {
+    throw new HttpsError(
+      "failed-precondition",
+      "予約日時を確認できませんでした。",
+    );
+  }
+
+  const millisecondsUntilLesson =
+    lessonStartDate.getTime() - now.getTime();
+
+  if (millisecondsUntilLesson <= 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "レッスン開始後はキャンセルできません。",
+    );
+  }
+
+  const twelveHours = 12 * 60 * 60 * 1000;
+  const twentyFourHours = 24 * 60 * 60 * 1000;
+  let refundPercent = 0;
+
+  if (millisecondsUntilLesson > twentyFourHours) {
+    refundPercent = 100;
+  } else if (millisecondsUntilLesson > twelveHours) {
+    refundPercent = 50;
+  }
+
+  return {
+    lessonStartDate,
+    refundPercent,
+  };
+}
+
+/**
  * 予約情報からレッスン終了日時を取得します。
  * 予約日時は日本時間として扱います。
  *
@@ -1223,6 +1721,17 @@ function accountDeletionBlockReason(reservation) {
     refundStatus === "failed_to_create"
   ) {
     return "返金処理が完了していない予約があります。";
+  }
+
+  if (
+    [
+      "coach_cancelled",
+      "student_cancelled",
+      "cancelled",
+      "canceled",
+    ].includes(status)
+  ) {
+    return "";
   }
 
   if (status === "paid" || paymentStatus === "paid") {

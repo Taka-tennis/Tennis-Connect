@@ -1,6 +1,7 @@
 import SwiftUI
 import FirebaseFirestore
 import FirebaseAuth
+import FirebaseFunctions
 
 struct ReservationItem: Identifiable {
     let id: String
@@ -12,6 +13,9 @@ struct ReservationItem: Identifiable {
     let status: String
     let paymentStatus: String
     let refundStatus: String
+    let cancellationSource: String
+    let cancellationRefundPercent: Int
+    let refundAmount: Int
     let reviewId: String
     let pricePerHour: Int
     let totalPrice: Int
@@ -26,6 +30,9 @@ struct ReservationItem: Identifiable {
         status: String,
         paymentStatus: String = "",
         refundStatus: String = "",
+        cancellationSource: String = "",
+        cancellationRefundPercent: Int = 0,
+        refundAmount: Int = 0,
         reviewId: String = "",
         times: [String] = [],
         pricePerHour: Int = 0,
@@ -40,6 +47,9 @@ struct ReservationItem: Identifiable {
         self.status = status
         self.paymentStatus = paymentStatus
         self.refundStatus = refundStatus
+        self.cancellationSource = cancellationSource
+        self.cancellationRefundPercent = cancellationRefundPercent
+        self.refundAmount = refundAmount
         self.reviewId = reviewId
         self.times = times.isEmpty && !time.isEmpty ? [time] : times
         self.pricePerHour = pricePerHour
@@ -187,7 +197,9 @@ struct ReservationListView: View {
                     NavigationLink {
                         StudentReservationDetailView(
                             reservation: reservation
-                        )
+                        ) {
+                            loadReservations()
+                        }
                     } label: {
                         reservationCard(reservation)
                             .foregroundStyle(.primary)
@@ -494,6 +506,13 @@ struct ReservationListView: View {
         _ reservation: ReservationItem
     ) -> String {
         if isRefunded(reservation) {
+            if reservation.status == "student_cancelled" {
+                if reservation.cancellationRefundPercent == 50 {
+                    return "生徒都合キャンセル・50%返金済み"
+                }
+                return "生徒都合キャンセル・全額返金済み"
+            }
+
             return "コーチ都合キャンセル・全額返金済み"
         }
 
@@ -502,7 +521,7 @@ struct ReservationListView: View {
         }
 
         if isRefundProcessing(reservation) {
-            return "全額返金の処理中です"
+            return "返金を処理しています"
         }
 
         switch reservation.status {
@@ -523,6 +542,15 @@ struct ReservationListView: View {
 
         case "coach_cancelled":
             return "コーチ都合でキャンセルされました"
+
+        case "student_cancelled":
+            if reservation.cancellationRefundPercent == 0 {
+                return "生徒都合でキャンセル済み・返金なし"
+            } else if reservation.cancellationRefundPercent == 50 {
+                return "生徒都合でキャンセル済み・50%返金"
+            } else {
+                return "生徒都合でキャンセル済み・全額返金"
+            }
 
         case "cancelled", "canceled":
             return "キャンセル済みの予約です"
@@ -613,6 +641,17 @@ struct ReservationListView: View {
                             refundStatus:
                                 data["refundStatus"] as? String
                                 ?? "",
+                            cancellationSource:
+                                data["cancellationSource"] as? String
+                                ?? "",
+                            cancellationRefundPercent:
+                                (data["cancellationRefundPercent"] as? NSNumber)?.intValue
+                                ?? data["cancellationRefundPercent"] as? Int
+                                ?? 0,
+                            refundAmount:
+                                (data["refundAmount"] as? NSNumber)?.intValue
+                                ?? data["refundAmount"] as? Int
+                                ?? 0,
                             reviewId:
                                 data["reviewId"] as? String
                                 ?? "",
@@ -636,7 +675,10 @@ struct ReservationListView: View {
     ) -> some View {
         if isRefunded(reservation) {
             Label(
-                "全額返金済み",
+                reservation.status == "student_cancelled" &&
+                reservation.cancellationRefundPercent == 50
+                ? "50%返金済み"
+                : "全額返金済み",
                 systemImage:
                     "arrow.uturn.backward.circle.fill"
             )
@@ -720,6 +762,15 @@ struct ReservationListView: View {
             .font(.caption)
             .fontWeight(.semibold)
             .foregroundStyle(.purple)
+
+        case "student_cancelled":
+            Label(
+                "生徒都合キャンセル",
+                systemImage: "minus.circle.fill"
+            )
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
 
         case "cancelled", "canceled":
             Label(
@@ -854,16 +905,31 @@ struct ReservationListView: View {
 
 private struct StudentReservationDetailView: View {
     let reservation: ReservationItem
+    let onCancellationCompleted: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
 
     @State private var reviewSubmitted: Bool
     @State private var hasReviewedCoach = false
     @State private var isCheckingCoachReview = true
     @State private var reviewEligibilityError = ""
 
-    private let db = Firestore.firestore()
+    @State private var isCancelling = false
+    @State private var showCancellationConfirmation = false
+    @State private var showCancellationResult = false
+    @State private var cancellationResultTitle = ""
+    @State private var cancellationResultMessage = ""
+    @State private var cancellationErrorMessage = ""
 
-    init(reservation: ReservationItem) {
+    private let db = Firestore.firestore()
+    private let functions = Functions.functions(region: "asia-northeast1")
+
+    init(
+        reservation: ReservationItem,
+        onCancellationCompleted: @escaping () -> Void = {}
+    ) {
         self.reservation = reservation
+        self.onCancellationCompleted = onCancellationCompleted
         _reviewSubmitted = State(
             initialValue: !reservation.reviewId.isEmpty
         )
@@ -959,6 +1025,59 @@ private struct StudentReservationDetailView: View {
                     }
                 }
 
+                if canCancelPaidReservation {
+                    VStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("キャンセル時の返金")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+
+                            Text(cancellationPolicyPreview)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Text("最終的な返金率・返金額は、キャンセル実行時にサーバー側で確定します。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button {
+                            showCancellationConfirmation = true
+                        } label: {
+                            if isCancelling {
+                                ProgressView()
+                                    .tint(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                            } else {
+                                Label(
+                                    "予約をキャンセルする",
+                                    systemImage: "xmark.circle.fill"
+                                )
+                                .fontWeight(.semibold)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                            }
+                        }
+                        .background(Color.red)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .disabled(isCancelling)
+
+                        if !cancellationErrorMessage.isEmpty {
+                            Text(cancellationErrorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .padding()
+                    .background(Color.red.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+
                 if reviewSubmitted {
                     Label(
                         "レビュー投稿済み",
@@ -1020,6 +1139,30 @@ private struct StudentReservationDetailView: View {
         .onAppear {
             checkExistingCoachReview()
         }
+        .confirmationDialog(
+            "予約をキャンセルしますか？",
+            isPresented: $showCancellationConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("予約をキャンセル", role: .destructive) {
+                requestStudentCancellation()
+            }
+
+            Button("戻る", role: .cancel) {}
+        } message: {
+            Text(cancellationPolicyPreview)
+        }
+        .alert(
+            cancellationResultTitle,
+            isPresented: $showCancellationResult
+        ) {
+            Button("OK") {
+                onCancellationCompleted()
+                dismiss()
+            }
+        } message: {
+            Text(cancellationResultMessage)
+        }
     }
 
     private func checkExistingCoachReview() {
@@ -1075,8 +1218,15 @@ private struct StudentReservationDetailView: View {
             statusMessage(
                 icon: "arrow.uturn.backward.circle.fill",
                 color: .purple,
-                title: "全額返金が完了しました",
-                message: "コーチ都合でキャンセルされた予約です"
+                title:
+                    reservation.status == "student_cancelled" &&
+                    reservation.cancellationRefundPercent == 50
+                    ? "50%返金が完了しました"
+                    : "全額返金が完了しました",
+                message:
+                    reservation.status == "student_cancelled"
+                    ? "生徒都合でキャンセルした予約です"
+                    : "コーチ都合でキャンセルされた予約です"
             )
         } else if isRefundFailed {
             statusMessage(
@@ -1089,7 +1239,7 @@ private struct StudentReservationDetailView: View {
             statusMessage(
                 icon: "arrow.triangle.2.circlepath",
                 color: .orange,
-                title: "全額返金を処理しています",
+                title: "返金を処理しています",
                 message: "返金完了までしばらくお待ちください"
             )
         } else {
@@ -1140,6 +1290,17 @@ private struct StudentReservationDetailView: View {
                 message: "返金状況をご確認ください"
             )
 
+        case "student_cancelled":
+            statusMessage(
+                icon: "minus.circle.fill",
+                color: .secondary,
+                title: "生徒都合でキャンセルしました",
+                message:
+                    reservation.cancellationRefundPercent == 0
+                    ? "キャンセル規定により返金はありません"
+                    : "返金状況をご確認ください"
+            )
+
         case "cancelled", "canceled":
             statusMessage(
                 icon: "minus.circle.fill",
@@ -1177,6 +1338,129 @@ private struct StudentReservationDetailView: View {
         )
     }
 
+    private var canCancelPaidReservation: Bool {
+        guard reservation.status == "paid",
+              reservation.paymentStatus == "paid",
+              !isCancelled,
+              !isRefundProcessing,
+              let lessonStartDate = lessonStartDate else {
+            return false
+        }
+
+        return lessonStartDate > Date()
+    }
+
+    private var cancellationPolicyPreview: String {
+        guard let lessonStartDate = lessonStartDate else {
+            return "予約日時を確認できないため、返金条件を表示できません。"
+        }
+
+        let interval = lessonStartDate.timeIntervalSinceNow
+        let twelveHours = 12.0 * 60.0 * 60.0
+        let twentyFourHours = 24.0 * 60.0 * 60.0
+
+        if interval > twentyFourHours {
+            return "レッスン開始24時間より前のため、キャンセルすると100%返金予定です。"
+        } else if interval > twelveHours {
+            let estimatedAmount = reservation.totalPrice / 2
+            return "レッスン開始12時間より前〜24時間以内のため、50%（約¥\(estimatedAmount)）返金予定です。"
+        } else if interval > 0 {
+            return "レッスン開始12時間以内のため、キャンセルしても返金はありません。"
+        } else {
+            return "レッスン開始後はキャンセルできません。"
+        }
+    }
+
+    private var lessonStartDate: Date? {
+        let normalizedDate = reservation.date
+            .replacingOccurrences(of: "/", with: "-")
+        let sortedTimes = reservation.times.sorted()
+
+        guard let firstSlot = sortedTimes.first else {
+            return nil
+        }
+
+        let normalizedSlot = firstSlot
+            .replacingOccurrences(of: "~", with: "〜")
+        let startTime = normalizedSlot
+            .components(separatedBy: "〜")
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        return dateTime(
+            date: normalizedDate,
+            time: startTime
+        )
+    }
+
+    private func requestStudentCancellation() {
+        guard !isCancelling else {
+            return
+        }
+
+        isCancelling = true
+        cancellationErrorMessage = ""
+
+        functions
+            .httpsCallable("requestStudentCancellation")
+            .call([
+                "reservationId": reservation.id
+            ]) { result, error in
+                DispatchQueue.main.async {
+                    isCancelling = false
+
+                    if let error = error {
+                        cancellationErrorMessage =
+                            "キャンセルできませんでした: \(error.localizedDescription)"
+                        return
+                    }
+
+                    guard let data =
+                            result?.data as? [String: Any] else {
+                        cancellationErrorMessage =
+                            "キャンセル結果を確認できませんでした。"
+                        return
+                    }
+
+                    let refundPercent =
+                        integerValue(data["refundPercent"])
+                    let refundAmount =
+                        integerValue(data["refundAmount"])
+
+                    cancellationResultTitle =
+                        "予約をキャンセルしました"
+
+                    switch refundPercent {
+                    case 100:
+                        cancellationResultMessage =
+                            "¥\(refundAmount)の全額返金手続きを開始しました。返金の反映まで時間がかかる場合があります。"
+
+                    case 50:
+                        cancellationResultMessage =
+                            "¥\(refundAmount)（50%）の返金手続きを開始しました。返金の反映まで時間がかかる場合があります。"
+
+                    default:
+                        cancellationResultMessage =
+                            "キャンセル規定により返金はありません。"
+                    }
+
+                    showCancellationResult = true
+                }
+            }
+    }
+
+    private func integerValue(_ value: Any?) -> Int {
+        if let value = value as? Int {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+
+        return 0
+    }
+
     private var canWriteReview: Bool {
         guard reservation.paymentStatus == "paid",
               ["paid", "completed"].contains(reservation.status),
@@ -1190,7 +1474,7 @@ private struct StudentReservationDetailView: View {
     }
 
     private var isCancelled: Bool {
-        ["coach_cancelled", "cancelled", "canceled"].contains(
+        ["coach_cancelled", "student_cancelled", "cancelled", "canceled"].contains(
             reservation.status
         )
     }
