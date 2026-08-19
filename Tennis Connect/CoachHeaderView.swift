@@ -18,11 +18,7 @@ struct CoachHeaderView: View {
 
             // MARK: - プロフィール画像
 
-            Image(systemName: "person.crop.circle.fill")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 140, height: 140)
-                .foregroundStyle(.green)
+            profileImage
 
             // MARK: - 名前
 
@@ -68,6 +64,53 @@ struct CoachHeaderView: View {
             loadRating()
         }
 
+    }
+
+    // MARK: - プロフィール画像表示
+
+    @ViewBuilder
+    private var profileImage: some View {
+
+        if !coach.imageURL.isEmpty,
+           let url = URL(string: coach.imageURL) {
+
+            AsyncImage(url: url) { phase in
+
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .failure:
+                    profilePlaceholder
+
+                case .empty:
+                    ZStack {
+                        Color.gray.opacity(0.12)
+                        ProgressView()
+                    }
+
+                @unknown default:
+                    profilePlaceholder
+                }
+            }
+            .frame(width: 140, height: 140)
+            .clipShape(Circle())
+
+        } else {
+
+            profilePlaceholder
+        }
+    }
+
+    private var profilePlaceholder: some View {
+
+        Image(systemName: "person.crop.circle.fill")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 140, height: 140)
+            .foregroundStyle(.green)
     }
 
     // MARK: - 評価表示

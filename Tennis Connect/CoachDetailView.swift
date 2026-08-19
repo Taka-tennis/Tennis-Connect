@@ -1,11 +1,3 @@
-//
-//  CoachDetailView 2.swift
-//  Tennis Connect
-//
-//  Created by 松崎徹郎 on 2026/08/15.
-//
-
-
 import SwiftUI
 import FirebaseAuth
 import FirebaseFirestore
@@ -98,14 +90,16 @@ struct CoachDetailView: View {
     }
 
     private func loadFavoriteState() {
-        guard let documentId = favoriteDocumentId else {
+        guard let studentId = Auth.auth().currentUser?.uid else {
             isFavorite = false
             return
         }
 
         db.collection("favorites")
-            .document(documentId)
-            .getDocument { snapshot, error in
+            .whereField("studentId", isEqualTo: studentId)
+            .whereField("coachId", isEqualTo: coach.id)
+            .limit(to: 1)
+            .getDocuments { snapshot, error in
                 DispatchQueue.main.async {
                     if let error {
                         favoriteError = error.localizedDescription
@@ -113,7 +107,8 @@ struct CoachDetailView: View {
                         return
                     }
 
-                    isFavorite = snapshot?.exists == true
+                    isFavorite =
+                        !(snapshot?.documents.isEmpty ?? true)
                 }
             }
     }

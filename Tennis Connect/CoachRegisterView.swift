@@ -148,8 +148,16 @@ struct CoachRegisterView: View {
         _ data: Data,
         completion: @escaping (String?) -> Void
     ) {
-        let fileName = UUID().uuidString + ".jpg"
-        let ref = storage.reference().child("coachImages/\(fileName)")
+        guard let uid = Auth.auth().currentUser?.uid else {
+            print("画像アップロード失敗: ログインが必要です")
+            completion(nil)
+            return
+        }
+
+        // ユーザーごとに保存先を固定し、
+        // プロフィール画像の変更時に同じファイルを上書きします。
+        let ref = storage.reference().child("coachImages/\(uid).jpg")
+        let previousImageURL = imageURL
 
         ref.putData(data, metadata: nil) { _, error in
             if let error = error {
@@ -158,8 +166,36 @@ struct CoachRegisterView: View {
                 return
             }
 
-            ref.downloadURL { url, _ in
-                completion(url?.absoluteString)
+            ref.downloadURL { url, error in
+                if let error = error {
+                    print("画像URL取得失敗: \(error)")
+                    completion(nil)
+                    return
+                }
+
+                guard let url else {
+                    completion(nil)
+                    return
+                }
+
+                // 旧UUID方式の画像を使っている場合は、
+                // 新しい固定パスへの移行後に旧画像を可能な範囲で削除します。
+                if !previousImageURL.isEmpty {
+                    let previousRef =
+                        storage.reference(forURL: previousImageURL)
+
+                    if previousRef.fullPath != ref.fullPath {
+                        previousRef.delete { deleteError in
+                            if let deleteError = deleteError {
+                                print(
+                                    "旧プロフィール画像の削除に失敗: \(deleteError)"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                completion(url.absoluteString)
             }
         }
     }
