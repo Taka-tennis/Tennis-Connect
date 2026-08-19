@@ -279,9 +279,11 @@ private struct InquiryView: View {
 private struct AccountDeletionCheckView: View {
 
     @State private var isChecking = false
+    @State private var isDeleting = false
     @State private var eligible: Bool?
     @State private var blockerMessages: [String] = []
     @State private var errorMessage = ""
+    @State private var showDeleteConfirmation = false
 
     private let functions = Functions.functions(
         region: "asia-northeast1"
@@ -370,6 +372,39 @@ private struct AccountDeletionCheckView: View {
                     }
                 }
 
+                if eligible == true {
+                    Button(role: .destructive) {
+                        showDeleteConfirmation = true
+                    } label: {
+                        HStack {
+                            Spacer()
+
+                            if isDeleting {
+                                ProgressView()
+                            } else {
+                                Label(
+                                    "アカウントを完全に削除",
+                                    systemImage: "trash.fill"
+                                )
+                                .fontWeight(.semibold)
+                            }
+
+                            Spacer()
+                        }
+                        .padding()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .disabled(isDeleting || isChecking)
+
+                    Text(
+                        "この操作は取り消せません。プロフィールなどのアカウントデータが削除されます。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                }
+
                 if !errorMessage.isEmpty {
                     Text(errorMessage)
                         .font(.caption)
@@ -412,6 +447,20 @@ private struct AccountDeletionCheckView: View {
         }
         .navigationTitle("アカウント削除")
         .navigationBarTitleDisplayMode(.inline)
+        .alert(
+            "アカウントを完全に削除しますか？",
+            isPresented: $showDeleteConfirmation
+        ) {
+            Button("キャンセル", role: .cancel) { }
+
+            Button("削除する", role: .destructive) {
+                deleteAccount()
+            }
+        } message: {
+            Text(
+                "この操作は取り消せません。削除条件をサーバー側でも再確認したうえで、アカウントを削除します。"
+            )
+        }
     }
 
     private func checkEligibility() {
@@ -458,6 +507,50 @@ private struct AccountDeletionCheckView: View {
                     }
 
                     eligible = canDelete
+                }
+            }
+    }
+
+    private func deleteAccount() {
+        guard Auth.auth().currentUser != nil else {
+            errorMessage =
+                "アカウント削除にはログインが必要です。"
+            return
+        }
+
+        guard eligible == true else {
+            errorMessage =
+                "先に削除条件を確認してください。"
+            return
+        }
+
+        isDeleting = true
+        errorMessage = ""
+
+        functions
+            .httpsCallable("deleteAccount")
+            .call(["confirm": true]) { _, error in
+                DispatchQueue.main.async {
+                    isDeleting = false
+
+                    if let error {
+                        errorMessage =
+                            "アカウントを削除できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    do {
+                        try Auth.auth().signOut()
+                    } catch {
+                        // サーバー側では削除済みのため、
+                        // 画面遷移を優先します。
+                    }
+
+                    NotificationCenter.default.post(
+                        name: .returnToStartScreen,
+                        object: nil
+                    )
                 }
             }
     }

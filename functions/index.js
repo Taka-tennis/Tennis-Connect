@@ -6,10 +6,12 @@ const {
 } = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
 const {initializeApp} = require("firebase-admin/app");
+const {getAuth} = require("firebase-admin/auth");
 const {
   getFirestore,
   FieldValue,
 } = require("firebase-admin/firestore");
+const {getStorage} = require("firebase-admin/storage");
 const logger = require("firebase-functions/logger");
 const Stripe = require("stripe");
 
@@ -1239,6 +1241,361 @@ function accountDeletionBlockReason(reservation) {
 }
 
 /**
+ * アカウント削除を止める予約を取得します。
+ * 生徒側・コーチ側の両方を確認し、同じ予約は1件にまとめます。
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<Array<object>>} 削除を止める予約一覧
+ */
+async function getAccountDeletionBlockers(uid, db) {
+  const [
+    studentReservationsSnap,
+    coachReservationsSnap,
+  ] = await Promise.all([
+    db.collection("reservations")
+      .where("studentId", "==", uid)
+      .get(),
+    db.collection("reservations")
+      .where("coachId", "==", uid)
+      .get(),
+  ]);
+
+  const reservationMap = new Map();
+
+  for (const document of studentReservationsSnap.docs) {
+    reservationMap.set(document.id, {
+      document,
+      role: "student",
+    });
+  }
+
+  for (const document of coachReservationsSnap.docs) {
+    const existing = reservationMap.get(document.id);
+
+    reservationMap.set(document.id, {
+      document,
+      role: existing ? "student_and_coach" : "coach",
+    });
+  }
+
+  const blockers = [];
+
+  for (const [reservationId, entry] of reservationMap.entries()) {
+    const reservation = entry.document.data();
+    const reason = accountDeletionBlockReason(reservation);
+
+    if (!reason) {
+      continue;
+    }
+
+    blockers.push({
+      reservationId,
+      role: entry.role,
+      reason,
+      status: String(reservation.status || ""),
+      paymentStatus: String(reservation.paymentStatus || ""),
+      refundStatus: String(reservation.refundStatus || ""),
+      date: String(reservation.date || ""),
+      times: Array.isArray(reservation.times) ?
+        reservation.times.map((time) => String(time)) :
+        reservation.time ? [String(reservation.time)] : [],
+    });
+  }
+
+  return blockers;
+}
+
+/**
+ * 複数Queryに一致するドキュメントを重複なく削除します。
+ *
+ * @param {Array<FirebaseFirestore.Query>} queries 削除対象Query
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<number>} 削除したドキュメント数
+ */
+async function deleteDocumentsByQueries(queries, db) {
+  const snapshots = await Promise.all(
+    queries.map((query) => query.get()),
+  );
+  const references = new Map();
+
+  for (const snapshot of snapshots) {
+    for (const document of snapshot.docs) {
+      references.set(document.ref.path, document.ref);
+    }
+  }
+
+  if (references.size === 0) {
+    return 0;
+  }
+
+  const writer = db.bulkWriter();
+
+  for (const reference of references.values()) {
+    writer.delete(reference);
+  }
+
+  await writer.close();
+  return references.size;
+}
+
+/**
+ * 退会する生徒が投稿したレビューを削除し、
+ * コーチ側の評価集計も同じTransaction内で戻します。
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<number>} 削除したレビュー数
+ */
+async function deleteReviewsWrittenByStudent(uid, db) {
+  const snapshot = await db
+    .collection("reviews")
+    .where("studentId", "==", uid)
+    .get();
+
+  let deletedCount = 0;
+
+  for (const reviewDocument of snapshot.docs) {
+    const deleted = await db.runTransaction(async (transaction) => {
+      const reviewSnap = await transaction.get(reviewDocument.ref);
+
+      if (!reviewSnap.exists) {
+        return false;
+      }
+
+      const review = reviewSnap.data();
+
+      if (review.studentId !== uid) {
+        return false;
+      }
+
+      const coachId = String(review.coachId || "");
+      const reservationId = String(
+        review.reservationId || reviewDocument.id,
+      );
+      const coachRef = coachId ?
+        db.collection("coaches").doc(coachId) :
+        null;
+      const reservationRef = reservationId ?
+        db.collection("reservations").doc(reservationId) :
+        null;
+
+      const coachSnap = coachRef ?
+        await transaction.get(coachRef) :
+        null;
+      const reservationSnap = reservationRef ?
+        await transaction.get(reservationRef) :
+        null;
+
+      if (coachRef && coachSnap?.exists) {
+        const coach = coachSnap.data();
+        const storedRatingCount = Number(
+          coach.ratingCount ?? coach.reviewCount ?? 0,
+        );
+        const currentRatingCount =
+          Number.isInteger(storedRatingCount) &&
+          storedRatingCount >= 0 ?
+            storedRatingCount : 0;
+        const storedRatingSum = Number(coach.ratingSum);
+        const fallbackAverage = Number(
+          coach.ratingAverage ?? coach.rating ?? 0,
+        );
+        const currentRatingSum =
+          Number.isFinite(storedRatingSum) &&
+          storedRatingSum >= 0 ?
+            storedRatingSum :
+            Number.isFinite(fallbackAverage) &&
+            fallbackAverage >= 0 ?
+              fallbackAverage * currentRatingCount : 0;
+        const reviewRating = Number(review.rating);
+        const safeReviewRating =
+          Number.isFinite(reviewRating) && reviewRating >= 0 ?
+            reviewRating : 0;
+        const nextRatingCount = Math.max(
+          currentRatingCount - 1,
+          0,
+        );
+        const nextRatingSum = Math.max(
+          currentRatingSum - safeReviewRating,
+          0,
+        );
+        const nextRatingAverage = nextRatingCount > 0 ?
+          Math.round(
+            (nextRatingSum / nextRatingCount) * 100,
+          ) / 100 :
+          0;
+
+        transaction.set(
+          coachRef,
+          {
+            ratingSum: nextRatingSum,
+            ratingAverage: nextRatingAverage,
+            ratingCount: nextRatingCount,
+            rating: nextRatingAverage,
+            reviewCount: nextRatingCount,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
+
+      if (reservationRef && reservationSnap?.exists) {
+        transaction.set(
+          reservationRef,
+          {
+            reviewId: FieldValue.delete(),
+            reviewSubmittedAt: FieldValue.delete(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
+
+      transaction.delete(reviewDocument.ref);
+      return true;
+    });
+
+    if (deleted) {
+      deletedCount += 1;
+    }
+  }
+
+  return deletedCount;
+}
+
+/**
+ * 退会するコーチに対するレビューを削除します。
+ * 各生徒のレビュー済みマーカーも同時に削除します。
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<number>} 削除したレビュー数
+ */
+async function deleteReviewsForCoach(uid, db) {
+  const snapshot = await db
+    .collection("reviews")
+    .where("coachId", "==", uid)
+    .get();
+
+  if (snapshot.empty) {
+    return 0;
+  }
+
+  const writer = db.bulkWriter();
+
+  for (const reviewDocument of snapshot.docs) {
+    const review = reviewDocument.data();
+    const studentId = String(review.studentId || "");
+
+    writer.delete(reviewDocument.ref);
+
+    if (studentId) {
+      writer.delete(
+        db.collection("students")
+          .doc(studentId)
+          .collection("reviewedCoaches")
+          .doc(uid),
+      );
+    }
+  }
+
+  await writer.close();
+  return snapshot.size;
+}
+
+/**
+ * 予約そのものは取引履歴として残し、
+ * 退会するユーザーを特定できるUIDだけを取り除きます。
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<number>} 更新した予約数
+ */
+async function anonymizeReservationsForDeletedAccount(uid, db) {
+  const [
+    studentReservationsSnap,
+    coachReservationsSnap,
+  ] = await Promise.all([
+    db.collection("reservations")
+      .where("studentId", "==", uid)
+      .get(),
+    db.collection("reservations")
+      .where("coachId", "==", uid)
+      .get(),
+  ]);
+
+  const updates = new Map();
+
+  for (const document of studentReservationsSnap.docs) {
+    updates.set(document.ref.path, {
+      reference: document.ref,
+      data: {
+        studentId: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    });
+  }
+
+  for (const document of coachReservationsSnap.docs) {
+    const existing = updates.get(document.ref.path);
+
+    updates.set(document.ref.path, {
+      reference: document.ref,
+      data: {
+        ...(existing?.data || {}),
+        coachId: FieldValue.delete(),
+        coachName: "退会済みコーチ",
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    });
+  }
+
+  if (updates.size === 0) {
+    return 0;
+  }
+
+  const writer = db.bulkWriter();
+
+  for (const entry of updates.values()) {
+    writer.set(
+      entry.reference,
+      entry.data,
+      {merge: true},
+    );
+  }
+
+  await writer.close();
+  return updates.size;
+}
+
+/**
+ * 固定パスのコーチプロフィール画像を削除します。
+ * ファイルが存在しない場合は正常扱いにします。
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @return {Promise<void>}
+ */
+async function deleteCoachProfileImage(uid) {
+  const file = getStorage()
+    .bucket()
+    .file(`coachImages/${uid}.jpg`);
+
+  try {
+    await file.delete();
+  } catch (error) {
+    const statusCode = Number(
+      error.code || error.statusCode || 0,
+    );
+
+    if (statusCode === 404) {
+      return;
+    }
+
+    throw error;
+  }
+}
+
+/**
  * アカウント削除が可能か確認します。
  * 生徒側・コーチ側の両方の予約を確認します。
  */
@@ -1253,60 +1610,7 @@ exports.checkAccountDeletionEligibility = onCall(
 
     const uid = request.auth.uid;
     const db = getFirestore();
-
-    const [
-      studentReservationsSnap,
-      coachReservationsSnap,
-    ] = await Promise.all([
-      db.collection("reservations")
-        .where("studentId", "==", uid)
-        .get(),
-      db.collection("reservations")
-        .where("coachId", "==", uid)
-        .get(),
-    ]);
-
-    const reservationMap = new Map();
-
-    for (const document of studentReservationsSnap.docs) {
-      reservationMap.set(document.id, {
-        document,
-        role: "student",
-      });
-    }
-
-    for (const document of coachReservationsSnap.docs) {
-      const existing = reservationMap.get(document.id);
-
-      reservationMap.set(document.id, {
-        document,
-        role: existing ? "student_and_coach" : "coach",
-      });
-    }
-
-    const blockers = [];
-
-    for (const [reservationId, entry] of reservationMap.entries()) {
-      const reservation = entry.document.data();
-      const reason = accountDeletionBlockReason(reservation);
-
-      if (!reason) {
-        continue;
-      }
-
-      blockers.push({
-        reservationId,
-        role: entry.role,
-        reason,
-        status: String(reservation.status || ""),
-        paymentStatus: String(reservation.paymentStatus || ""),
-        refundStatus: String(reservation.refundStatus || ""),
-        date: String(reservation.date || ""),
-        times: Array.isArray(reservation.times) ?
-          reservation.times.map((time) => String(time)) :
-          reservation.time ? [String(reservation.time)] : [],
-      });
-    }
+    const blockers = await getAccountDeletionBlockers(uid, db);
 
     logger.info("アカウント削除可否を確認しました。", {
       uid,
@@ -1318,6 +1622,120 @@ exports.checkAccountDeletionEligibility = onCall(
       eligible: blockers.length === 0,
       blockers,
     };
+  },
+);
+
+/**
+ * アカウント本削除を行います。
+ * 予約条件をサーバー側でも再確認し、
+ * 関連データを削除・匿名化した後にAuthenticationを削除します。
+ */
+exports.deleteAccount = onCall(
+  {timeoutSeconds: 120},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "アカウント削除にはログインが必要です。",
+      );
+    }
+
+    if (request.data?.confirm !== true) {
+      throw new HttpsError(
+        "invalid-argument",
+        "アカウント削除の確認が必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+
+    const blockers = await getAccountDeletionBlockers(uid, db);
+
+    if (blockers.length > 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        blockers[0].reason ||
+          "現在はアカウントを削除できません。",
+        {
+          blockers,
+        },
+      );
+    }
+
+    try {
+      const writtenReviewCount =
+        await deleteReviewsWrittenByStudent(uid, db);
+      const coachReviewCount =
+        await deleteReviewsForCoach(uid, db);
+
+      const deletedRelatedDocumentCount =
+        await deleteDocumentsByQueries(
+          [
+            db.collection("favorites")
+              .where("studentId", "==", uid),
+            db.collection("favorites")
+              .where("coachId", "==", uid),
+            db.collection("messages")
+              .where("studentId", "==", uid),
+            db.collection("messages")
+              .where("coachId", "==", uid),
+            db.collection("notifications")
+              .where("recipientId", "==", uid),
+            db.collection("notifications")
+              .where("studentId", "==", uid),
+            db.collection("notifications")
+              .where("coachId", "==", uid),
+            db.collection("inquiries")
+              .where("userId", "==", uid),
+          ],
+          db,
+        );
+
+      const anonymizedReservationCount =
+        await anonymizeReservationsForDeletedAccount(uid, db);
+
+      await db.recursiveDelete(
+        db.collection("students").doc(uid),
+      );
+      await db.recursiveDelete(
+        db.collection("coachAvailability").doc(uid),
+      );
+      await db.recursiveDelete(
+        db.collection("coaches").doc(uid),
+      );
+
+      await deleteCoachProfileImage(uid);
+
+      await getAuth().deleteUser(uid);
+
+      logger.info("アカウントを削除しました。", {
+        uid,
+        writtenReviewCount,
+        coachReviewCount,
+        deletedRelatedDocumentCount,
+        anonymizedReservationCount,
+      });
+
+      return {
+        deleted: true,
+      };
+    } catch (error) {
+      if (error instanceof HttpsError) {
+        throw error;
+      }
+
+      logger.error("アカウント削除に失敗しました。", {
+        uid,
+        message: error.message,
+        stack: error.stack,
+      });
+
+      throw new HttpsError(
+        "internal",
+        "アカウントを削除できませんでした。",
+      );
+    }
   },
 );
 
