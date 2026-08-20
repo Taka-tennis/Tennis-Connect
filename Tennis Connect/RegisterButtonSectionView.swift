@@ -10,7 +10,8 @@ struct RegisterButtonSectionView: View {
     @Binding var price: String
     @Binding var imageURL: String
     @Binding var introduction: String
-    @Binding var specialty: String
+    @Binding var tennisExperience: String
+    @Binding var coachingExperience: String
     @Binding var availableTimes: String
     @Binding var ageGroup: String
     @Binding var showSuccessAlert: Bool
@@ -19,12 +20,10 @@ struct RegisterButtonSectionView: View {
 
     @State private var registrationError = ""
 
-    let db = Firestore.firestore()
+    private let db = Firestore.firestore()
 
     var body: some View {
-
         Section {
-
             Button("登録する") {
                 registerCoach()
             }
@@ -32,9 +31,8 @@ struct RegisterButtonSectionView: View {
             if !registrationError.isEmpty {
                 Text(registrationError)
                     .font(.caption)
-                    .foregroundColor(.red)
+                    .foregroundStyle(.red)
             }
-
         }
         .alert("登録完了", isPresented: $showSuccessAlert) {
             Button("OK") {
@@ -46,7 +44,6 @@ struct RegisterButtonSectionView: View {
     }
 
     private func registerCoach() {
-
         guard let uid = Auth.auth().currentUser?.uid else {
             registrationError = "コーチ登録にはログインが必要です"
             return
@@ -57,17 +54,28 @@ struct RegisterButtonSectionView: View {
         let coachRef = db.collection("coaches").document(uid)
         let batch = db.batch()
 
+        let trimmedCareer =
+            career.trimmingCharacters(in: .whitespacesAndNewlines)
+
         batch.setData(
             [
                 "coachId": coachRef.documentID,
                 "ownerId": uid,
                 "name": name,
                 "area": area,
-                "career": career,
+                "career": trimmedCareer,
+                "careers": normalizedCareers(from: career),
+                "tennisExperience":
+                    tennisExperience.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                "coachingExperience":
+                    coachingExperience.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
                 "price": Int(price) ?? 0,
                 "imageURL": imageURL,
                 "introduction": introduction,
-                "specialty": specialty,
                 "rating": 5.0,
                 "reviewCount": 0,
                 "availableTimes": availabilityEntries,
@@ -77,7 +85,6 @@ struct RegisterButtonSectionView: View {
         )
 
         for (date, times) in groupedAvailability {
-
             let dateRef = db.collection("coachAvailability")
                 .document(coachRef.documentID)
                 .collection("dates")
@@ -90,21 +97,36 @@ struct RegisterButtonSectionView: View {
         }
 
         batch.commit { error in
+            DispatchQueue.main.async {
+                if let error {
+                    print("登録失敗: \(error)")
+                    registrationError =
+                        "登録に失敗しました: \(error.localizedDescription)"
+                    return
+                }
 
-            if let error = error {
-                print("登録失敗: \(error)")
-                registrationError =
-                    "登録に失敗しました: \(error.localizedDescription)"
-                return
+                print("登録完了: \(coachRef.documentID)")
+                showSuccessAlert = true
             }
-
-            print("登録完了: \(coachRef.documentID)")
-            showSuccessAlert = true
         }
     }
 
-    private var availabilityEntries: [String] {
+    private func normalizedCareers(
+        from value: String
+    ) -> [String] {
+        value
+            .components(separatedBy: .newlines)
+            .map {
+                $0.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+            }
+            .filter {
+                !$0.isEmpty
+            }
+    }
 
+    private var availabilityEntries: [String] {
         availableTimes
             .split(separator: ",")
             .map(String.init)
@@ -112,11 +134,9 @@ struct RegisterButtonSectionView: View {
     }
 
     private var groupedAvailability: [String: [String]] {
-
         var grouped: [String: [String]] = [:]
 
         for entry in availabilityEntries {
-
             let parts = entry.split(
                 separator: " ",
                 maxSplits: 1

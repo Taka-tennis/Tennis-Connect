@@ -32,6 +32,61 @@ struct HomeView: View {
                 let fetchedCoaches = snapshot.documents.map { document in
                     let data = document.data()
 
+                    let savedCareers =
+                        (data["careers"] as? [String] ?? [])
+                            .map {
+                                $0.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                )
+                            }
+                            .filter {
+                                !$0.isEmpty &&
+                                $0 != "経歴未登録"
+                            }
+
+                    let legacyCareer =
+                        (data["career"] as? String ?? "")
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+
+                    let careers: [String]
+
+                    if !savedCareers.isEmpty {
+                        careers = savedCareers
+                    } else if !legacyCareer.isEmpty {
+                        careers = legacyCareer
+                            .components(separatedBy: .newlines)
+                            .map {
+                                $0.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                )
+                            }
+                            .filter {
+                                !$0.isEmpty
+                            }
+                    } else {
+                        careers = ["経歴未登録"]
+                    }
+
+                    let tennisExperience =
+                        (data["tennisExperience"] as? String ?? "")
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+
+                    let coachingExperience =
+                        (data["coachingExperience"] as? String ?? "")
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+
+                    let introduction =
+                        (data["introduction"] as? String ?? "")
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+
                     return Coach(
                         id: document.documentID,
                         name: data["name"] as? String ?? "名前未登録",
@@ -46,11 +101,22 @@ struct HomeView: View {
                             ("15:00", true),
                             ("16:00", false)
                         ],
-                        ageGroup: data["ageGroup"] as? String ?? "年代未登録",
-                        careers: data["careers"] as? [String] ?? ["経歴未登録"],
-                        tennisExperience: data["tennisExperience"] as? String ?? "未登録",
-                        coachingExperience: data["coachingExperience"] as? String ?? "未登録",
-                        introduction: data["introduction"] as? String ?? "自己紹介はまだありません。"
+                        ageGroup:
+                            data["ageGroup"] as? String
+                            ?? "年代未登録",
+                        careers: careers,
+                        tennisExperience:
+                            tennisExperience.isEmpty
+                                ? "未登録"
+                                : tennisExperience,
+                        coachingExperience:
+                            coachingExperience.isEmpty
+                                ? "未登録"
+                                : coachingExperience,
+                        introduction:
+                            introduction.isEmpty
+                                ? "自己紹介はまだありません。"
+                                : introduction
                     )
                 }
 

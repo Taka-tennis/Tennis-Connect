@@ -12,7 +12,8 @@ struct CoachRegisterView: View {
     @State private var career = ""
     @State private var price = ""
     @State private var introduction = ""
-    @State private var specialty = ""
+    @State private var tennisExperience = ""
+    @State private var coachingExperience = ""
     @State private var availableTimes = ""
     @State private var selectedItem: PhotosPickerItem?
     @State private var selectedImage: Image?
@@ -54,7 +55,9 @@ struct CoachRegisterView: View {
                             area: $area,
                             career: $career,
                             price: $price,
-                            ageGroup: $ageGroup
+                            ageGroup: $ageGroup,
+                            tennisExperience: $tennisExperience,
+                            coachingExperience: $coachingExperience
                         )
 
                         ProfileSectionView(
@@ -63,15 +66,16 @@ struct CoachRegisterView: View {
                             imageData: $imageData,
                             imageURL: $imageURL,
                             introduction: $introduction,
-                            specialty: $specialty,
                             uploadImage: uploadImage
                         )
 
                         if isExistingCoach {
                             Section("空き時間") {
-                                Text("空き日程は、コーチホームの「空き日程管理」から変更できます")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                Text(
+                                    "空き日程は、コーチホームの「空き日程管理」から変更できます"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
 
                             updateButtonSection
@@ -89,7 +93,8 @@ struct CoachRegisterView: View {
                                 price: $price,
                                 imageURL: $imageURL,
                                 introduction: $introduction,
-                                specialty: $specialty,
+                                tennisExperience: $tennisExperience,
+                                coachingExperience: $coachingExperience,
                                 availableTimes: $availableTimes,
                                 ageGroup: $ageGroup,
                                 showSuccessAlert: $showSuccessAlert
@@ -98,14 +103,21 @@ struct CoachRegisterView: View {
                     }
                 }
             }
-            .navigationTitle(isExistingCoach ? "プロフィール編集" : "コーチ登録")
+            .navigationTitle(
+                isExistingCoach
+                    ? "プロフィール編集"
+                    : "コーチ登録"
+            )
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 if !hasLoadedCoach {
                     loadCoachProfile()
                 }
             }
-            .alert("更新完了", isPresented: $showUpdateAlert) {
+            .alert(
+                "更新完了",
+                isPresented: $showUpdateAlert
+            ) {
                 Button("OK") {
                     dismiss()
                 }
@@ -154,20 +166,20 @@ struct CoachRegisterView: View {
             return
         }
 
-        // ユーザーごとに保存先を固定し、
-        // プロフィール画像の変更時に同じファイルを上書きします。
-        let ref = storage.reference().child("coachImages/\(uid).jpg")
+        let ref = storage.reference()
+            .child("coachImages/\(uid).jpg")
+
         let previousImageURL = imageURL
 
         ref.putData(data, metadata: nil) { _, error in
-            if let error = error {
+            if let error {
                 print("アップロード失敗: \(error)")
                 completion(nil)
                 return
             }
 
             ref.downloadURL { url, error in
-                if let error = error {
+                if let error {
                     print("画像URL取得失敗: \(error)")
                     completion(nil)
                     return
@@ -178,15 +190,15 @@ struct CoachRegisterView: View {
                     return
                 }
 
-                // 旧UUID方式の画像を使っている場合は、
-                // 新しい固定パスへの移行後に旧画像を可能な範囲で削除します。
                 if !previousImageURL.isEmpty {
                     let previousRef =
-                        storage.reference(forURL: previousImageURL)
+                        storage.reference(
+                            forURL: previousImageURL
+                        )
 
                     if previousRef.fullPath != ref.fullPath {
                         previousRef.delete { deleteError in
-                            if let deleteError = deleteError {
+                            if let deleteError {
                                 print(
                                     "旧プロフィール画像の削除に失敗: \(deleteError)"
                                 )
@@ -204,7 +216,8 @@ struct CoachRegisterView: View {
         guard let uid = Auth.auth().currentUser?.uid else {
             isLoadingCoach = false
             hasLoadedCoach = true
-            profileErrorMessage = "プロフィールの確認にはログインが必要です"
+            profileErrorMessage =
+                "プロフィールの確認にはログインが必要です"
             return
         }
 
@@ -215,9 +228,10 @@ struct CoachRegisterView: View {
                     isLoadingCoach = false
                     hasLoadedCoach = true
 
-                    if let error = error {
+                    if let error {
                         profileErrorMessage =
-                            "プロフィールを取得できませんでした: \(error.localizedDescription)"
+                            "プロフィールを取得できませんでした: " +
+                            error.localizedDescription
                         return
                     }
 
@@ -227,67 +241,149 @@ struct CoachRegisterView: View {
                     }
 
                     isExistingCoach = true
-                    name = data["name"] as? String ?? ""
-                    area = data["area"] as? String ?? ""
-                    career = data["career"] as? String ?? ""
-                    introduction = data["introduction"] as? String ?? ""
-                    specialty = data["specialty"] as? String ?? ""
-                    imageURL = data["imageURL"] as? String ?? ""
-                    ageGroup = data["ageGroup"] as? String ?? "20代"
+
+                    name =
+                        data["name"] as? String ?? ""
+
+                    area =
+                        data["area"] as? String ?? ""
+
+                    career =
+                        loadedCareer(from: data)
+
+                    tennisExperience =
+                        data["tennisExperience"] as? String ?? ""
+
+                    coachingExperience =
+                        data["coachingExperience"] as? String ?? ""
+
+                    introduction =
+                        data["introduction"] as? String ?? ""
+
+                    imageURL =
+                        data["imageURL"] as? String ?? ""
+
+                    ageGroup =
+                        data["ageGroup"] as? String ?? "20代"
 
                     if let savedPrice = data["price"] as? Int {
                         price = String(savedPrice)
-                    } else if let savedPrice = data["price"] as? NSNumber {
+                    } else if let savedPrice =
+                                data["price"] as? NSNumber {
                         price = savedPrice.stringValue
                     } else {
-                        price = data["price"] as? String ?? ""
+                        price =
+                            data["price"] as? String ?? ""
                     }
 
-                    if let savedTimes = data["availableTimes"] as? [String] {
+                    if let savedTimes =
+                        data["availableTimes"] as? [String] {
                         selectedLessonTimes = savedTimes
-                        availableTimes = savedTimes.joined(separator: ",")
+                        availableTimes =
+                            savedTimes.joined(separator: ",")
                     }
+
+                    profileErrorMessage = ""
                 }
             }
     }
 
     private func updateCoachProfile() {
         guard let uid = Auth.auth().currentUser?.uid else {
-            profileErrorMessage = "プロフィールの更新にはログインが必要です"
+            profileErrorMessage =
+                "プロフィールの更新にはログインが必要です"
             return
         }
 
         profileErrorMessage = ""
         isSavingProfile = true
 
+        let trimmedCareer =
+            career.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        let profileData: [String: Any] = [
+            "coachId": uid,
+            "ownerId": uid,
+            "name": name,
+            "area": area,
+            "career": trimmedCareer,
+            "careers": normalizedCareers(from: career),
+            "tennisExperience":
+                tennisExperience.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
+            "coachingExperience":
+                coachingExperience.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
+            "price": Int(price) ?? 0,
+            "imageURL": imageURL,
+            "introduction": introduction,
+            "ageGroup": ageGroup,
+
+            // 旧プロフィールで使っていた項目は
+            // 今回の仕様変更に合わせて削除します。
+            "specialty": FieldValue.delete()
+        ]
+
         db.collection("coaches")
             .document(uid)
             .setData(
-                [
-                    "coachId": uid,
-                    "ownerId": uid,
-                    "name": name,
-                    "area": area,
-                    "career": career,
-                    "price": Int(price) ?? 0,
-                    "imageURL": imageURL,
-                    "introduction": introduction,
-                    "specialty": specialty,
-                    "ageGroup": ageGroup
-                ],
+                profileData,
                 merge: true
             ) { error in
                 DispatchQueue.main.async {
                     isSavingProfile = false
 
-                    if let error = error {
+                    if let error {
                         profileErrorMessage =
-                            "更新できませんでした: \(error.localizedDescription)"
+                            "更新できませんでした: " +
+                            error.localizedDescription
                         return
                     }
 
                     showUpdateAlert = true
                 }
+            }
+    }
+
+    private func loadedCareer(
+        from data: [String: Any]
+    ) -> String {
+        if let careers = data["careers"] as? [String] {
+            let cleaned = careers
+                .map {
+                    $0.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                }
+                .filter {
+                    !$0.isEmpty &&
+                    $0 != "経歴未登録"
+                }
+
+            if !cleaned.isEmpty {
+                return cleaned.joined(separator: "\n")
+            }
+        }
+
+        return data["career"] as? String ?? ""
+    }
+
+    private func normalizedCareers(
+        from value: String
+    ) -> [String] {
+        value
+            .components(separatedBy: .newlines)
+            .map {
+                $0.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+            }
+            .filter {
+                !$0.isEmpty
             }
     }
 }

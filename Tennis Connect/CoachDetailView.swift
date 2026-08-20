@@ -23,7 +23,6 @@ struct CoachDetailView: View {
 
                 CoachProfileSection(coach: coach)
 
-                CoachSkillSection()
 
                 CoachVideoSection()
 

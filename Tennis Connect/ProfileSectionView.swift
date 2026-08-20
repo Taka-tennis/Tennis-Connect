@@ -2,55 +2,109 @@ import SwiftUI
 import PhotosUI
 
 struct ProfileSectionView: View {
-    
+
     @Binding var selectedItem: PhotosPickerItem?
     @Binding var selectedImage: Image?
     @Binding var imageData: Data?
     @Binding var imageURL: String
 
     @Binding var introduction: String
-    @Binding var specialty: String
 
     let uploadImage: (Data, @escaping (String?) -> Void) -> Void
 
     var body: some View {
         Section("プロフィール") {
-            PhotosPicker(
-                selection: $selectedItem,
-                matching: .images
-            ) {
-                if let selectedImage {
-                    selectedImage
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 120, height: 120)
-                        .clipShape(Circle())
-                } else {
-                    Image(systemName: "person.circle.fill")
-                        .resizable()
-                        .frame(width: 120, height: 120)
-                        .foregroundColor(.gray)
+            HStack {
+                Spacer()
+
+                PhotosPicker(
+                    selection: $selectedItem,
+                    matching: .images
+                ) {
+                    profileImage
                 }
-            }.onChange(of: selectedItem) { _ in
+
+                Spacer()
+            }
+            .onChange(of: selectedItem) { _ in
                 Task {
-                    if let data = try? await selectedItem?.loadTransferable(type: Data.self) {
-                        imageData = data
-                        
-                        if let uiImage = UIImage(data: data) {
-                            selectedImage = Image(uiImage: uiImage)
+                    guard let data =
+                            try? await selectedItem?
+                                .loadTransferable(type: Data.self) else {
+                        return
+                    }
+
+                    imageData = data
+
+                    if let uiImage = UIImage(data: data) {
+                        selectedImage = Image(uiImage: uiImage)
+                    }
+
+                    uploadImage(data) { url in
+                        guard let url else {
+                            return
                         }
-                        
-                        uploadImage(data) { url in
-                            if let url = url {
-                                imageURL = url
-                                print("画像URL:", url)
-                            }
+
+                        DispatchQueue.main.async {
+                            imageURL = url
                         }
                     }
                 }
             }
-            TextField("自己紹介", text: $introduction)
-            TextField("得意レッスン", text: $specialty)
+
+            TextField(
+                "自己紹介",
+                text: $introduction,
+                axis: .vertical
+            )
+            .lineLimit(3...8)
         }
+    }
+
+    @ViewBuilder
+    private var profileImage: some View {
+        if let selectedImage {
+            selectedImage
+                .resizable()
+                .scaledToFill()
+                .frame(width: 120, height: 120)
+                .clipShape(Circle())
+
+        } else if !imageURL.isEmpty,
+                  let url = URL(string: imageURL) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .failure:
+                    placeholderImage
+
+                case .empty:
+                    ZStack {
+                        Color.gray.opacity(0.12)
+                        ProgressView()
+                    }
+
+                @unknown default:
+                    placeholderImage
+                }
+            }
+            .frame(width: 120, height: 120)
+            .clipShape(Circle())
+
+        } else {
+            placeholderImage
+        }
+    }
+
+    private var placeholderImage: some View {
+        Image(systemName: "person.circle.fill")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 120, height: 120)
+            .foregroundStyle(.gray)
     }
 }
