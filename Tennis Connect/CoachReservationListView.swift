@@ -17,6 +17,8 @@ struct CoachReservationListView: View {
         let status: String
         let paymentStatus: String
         let refundStatus: String
+        let cancellationSource: String
+        let cancellationRefundPercent: Int
         let totalPrice: Int
         let createdAt: Timestamp?
     }
@@ -482,6 +484,11 @@ struct CoachReservationListView: View {
                                 status: data["status"] as? String ?? "pending",
                                 paymentStatus: data["paymentStatus"] as? String ?? "",
                                 refundStatus: data["refundStatus"] as? String ?? "",
+                                cancellationSource: data["cancellationSource"] as? String ?? "",
+                                cancellationRefundPercent:
+                                    (data["cancellationRefundPercent"] as? NSNumber)?.intValue
+                                    ?? (data["cancellationRefundPercent"] as? Int)
+                                    ?? 0,
                                 totalPrice: data["totalPrice"] as? Int ?? 0,
                                 createdAt: data["createdAt"] as? Timestamp
                             )
@@ -711,10 +718,21 @@ struct CoachReservationListView: View {
     private func statusBadge(_ reservation: Reservation) -> some View {
         if reservation.paymentStatus == "refunded" ||
             reservation.refundStatus == "succeeded" {
-            Label("全額返金済み", systemImage: "arrow.uturn.backward.circle.fill")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.purple)
+
+            let refundLabel =
+                isStudentCancellation(reservation) &&
+                reservation.cancellationRefundPercent == 50
+                ? "50%返金済み"
+                : "全額返金済み"
+
+            Label(
+                refundLabel,
+                systemImage: "arrow.uturn.backward.circle.fill"
+            )
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.purple)
+
         } else if reservation.paymentStatus == "refund_failed" ||
                     ["failed", "canceled", "failed_to_create"].contains(
                         reservation.refundStatus
@@ -723,11 +741,20 @@ struct CoachReservationListView: View {
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(.red)
+
         } else if isRefundProcessing(reservation) {
             Label("返金処理中", systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(.orange)
+
+        } else if isStudentCancellation(reservation) &&
+                    reservation.cancellationRefundPercent == 0 {
+            Label("返金なし", systemImage: "minus.circle.fill")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+
         } else {
             statusBadgeForReservationStatus(reservation.status)
         }
@@ -772,6 +799,12 @@ struct CoachReservationListView: View {
                 .fontWeight(.semibold)
                 .foregroundStyle(.purple)
 
+        case "student_cancelled":
+            Label("生徒都合キャンセル", systemImage: "minus.circle.fill")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+
         case "rejected":
             Label("却下済み", systemImage: "xmark.circle.fill")
                 .font(.caption)
@@ -787,8 +820,19 @@ struct CoachReservationListView: View {
     }
 
     private func statusDescription(_ reservation: Reservation) -> String {
+        let studentCancelled = isStudentCancellation(reservation)
+
         if reservation.paymentStatus == "refunded" ||
             reservation.refundStatus == "succeeded" {
+
+            if studentCancelled {
+                if reservation.cancellationRefundPercent == 50 {
+                    return "生徒都合キャンセル・50%返金済み"
+                }
+
+                return "生徒都合キャンセル・全額返金済み"
+            }
+
             return "コーチ都合キャンセル・全額返金済み"
         }
 
@@ -796,10 +840,20 @@ struct CoachReservationListView: View {
             ["failed", "canceled", "failed_to_create"].contains(
                 reservation.refundStatus
             ) {
-            return "返金状況を運営が確認します"
+            return studentCancelled
+                ? "生徒都合キャンセル・返金状況を確認中"
+                : "返金状況を運営が確認します"
         }
 
         if isRefundProcessing(reservation) {
+            if studentCancelled {
+                if reservation.cancellationRefundPercent == 50 {
+                    return "生徒都合キャンセル・50%返金処理中"
+                }
+
+                return "生徒都合キャンセル・全額返金処理中"
+            }
+
             return "コーチ都合キャンセル・全額返金処理中"
         }
 
@@ -816,11 +870,24 @@ struct CoachReservationListView: View {
             return "キャンセルされた予約"
         case "coach_cancelled":
             return "コーチ都合でキャンセルした予約"
+        case "student_cancelled":
+            if reservation.cancellationRefundPercent == 0 {
+                return "生徒都合キャンセル・返金なし"
+            } else if reservation.cancellationRefundPercent == 50 {
+                return "生徒都合キャンセル・50%返金"
+            } else {
+                return "生徒都合キャンセル・全額返金"
+            }
         case "rejected":
             return "却下した予約"
         default:
             return "確認が必要な予約申請"
         }
+    }
+
+    private func isStudentCancellation(_ reservation: Reservation) -> Bool {
+        reservation.status == "student_cancelled" ||
+        reservation.cancellationSource == "student"
     }
 
     private func displayDate(_ value: String) -> String {
