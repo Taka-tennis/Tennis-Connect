@@ -142,10 +142,25 @@ private struct CoachTabDashboardView: View {
     @State private var unreadChatCount = 0
     @State private var messageListener: ListenerRegistration?
 
+    @State private var isSameDayAvailable = false
+    @State private var todayAvailableTimeCount = 0
+    @State private var isLoadingSameDayStatus = false
+    @State private var isUpdatingSameDayStatus = false
+    @State private var sameDayErrorMessage = ""
+    @State private var showSameDayAlert = false
+    @State private var sameDayAlertMessage = ""
+
     private let db = Firestore.firestore()
     private let columns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12)
+    ]
+
+    private let blockingReservationStatuses: Set<String> = [
+        "pending",
+        "confirmed",
+        "paid",
+        "reserved"
     ]
 
     var body: some View {
@@ -154,6 +169,8 @@ private struct CoachTabDashboardView: View {
                 Text("🎾 コーチホーム")
                     .font(.largeTitle)
                     .fontWeight(.bold)
+
+                sameDayAvailabilityCard
 
                 LazyVGrid(columns: columns, spacing: 12) {
                     Button {
@@ -252,6 +269,17 @@ private struct CoachTabDashboardView: View {
         .onAppear {
             startReservationListener()
             startUnreadMessageListener()
+            loadSameDayAvailabilityState()
+        }
+        .onChange(of: selectedTab) { newValue in
+            if newValue == 0 {
+                loadSameDayAvailabilityState()
+            }
+        }
+        .alert("本日の受付", isPresented: $showSameDayAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(sameDayAlertMessage)
         }
         .onDisappear {
             reservationListener?.remove()
@@ -259,6 +287,354 @@ private struct CoachTabDashboardView: View {
             messageListener?.remove()
             messageListener = nil
         }
+    }
+
+    private var sameDayAvailabilityCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(
+                    systemName: isSameDayAvailable
+                        ? "bolt.circle.fill"
+                        : "bolt.circle"
+                )
+                .font(.title2)
+                .foregroundStyle(
+                    isSameDayAvailable ? .green : .secondary
+                )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(
+                        isSameDayAvailable
+                            ? "本日レッスン可能として掲載中"
+                            : "本日のレッスン受付"
+                    )
+                    .font(.headline)
+
+                    if isLoadingSameDayStatus {
+                        Text("本日の空き枠を確認中…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("現在の予約可能な空き枠：\(todayAvailableTimeCount)件")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+            }
+
+            Button {
+                toggleSameDayAvailability()
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isUpdatingSameDayStatus {
+                        ProgressView()
+                    } else {
+                        Image(
+                            systemName: isSameDayAvailable
+                                ? "stop.circle.fill"
+                                : "bolt.fill"
+                        )
+
+                        Text(
+                            isSameDayAvailable
+                                ? "本日の受付を終了する"
+                                : "本日レッスン可能にする"
+                        )
+                        .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(isSameDayAvailable ? .red : .green)
+            .disabled(
+                isLoadingSameDayStatus ||
+                isUpdatingSameDayStatus ||
+                (!isSameDayAvailable && todayAvailableTimeCount == 0)
+            )
+
+            if todayAvailableTimeCount == 0 &&
+                !isLoadingSameDayStatus {
+                Button {
+                    selectedTab = 2
+                } label: {
+                    Label(
+                        "本日の空き時間を設定する",
+                        systemImage: "calendar.badge.plus"
+                    )
+                    .font(.subheadline)
+                }
+            }
+
+            if !sameDayErrorMessage.isEmpty {
+                Text(sameDayErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding()
+        .background(
+            isSameDayAvailable
+                ? Color.green.opacity(0.10)
+                : Color(.systemGray6)
+        )
+        .cornerRadius(16)
+    }
+
+    private func loadSameDayAvailabilityState() {
+        guard let uid = Auth.auth().currentUser?.uid else {
+            isSameDayAvailable = false
+            todayAvailableTimeCount = 0
+            sameDayErrorMessage = "ログインが必要です"
+            return
+        }
+
+        isLoadingSameDayStatus = true
+        sameDayErrorMessage = ""
+
+        let dateKey = firestoreDate(Date())
+        let todayRef = db
+            .collection("coachAvailability")
+            .document(uid)
+            .collection("dates")
+            .document(dateKey)
+
+        Task {
+            do {
+                let todaySnapshot = try await todayRef.getDocument()
+
+                let savedTimes =
+                    todaySnapshot.data()?["times"] as? [String] ?? []
+
+                let savedSameDayAvailable =
+                    todaySnapshot.data()?["sameDayAvailable"] as? Bool ?? false
+
+                let reservationSnapshot = try await db
+                    .collection("reservations")
+                    .whereField("coachId", isEqualTo: uid)
+                    .getDocuments()
+
+                let reservedTimes = blockedTimes(
+                    for: dateKey,
+                    documents: reservationSnapshot.documents
+                )
+
+                let actualAvailableTimes =
+                    Set(savedTimes)
+                        .subtracting(reservedTimes)
+                        .filter { isFutureTimeSlot($0, dateKey: dateKey) }
+
+                if savedSameDayAvailable && actualAvailableTimes.isEmpty {
+                    try? await todayRef.setData(
+                        ["sameDayAvailable": false],
+                        merge: true
+                    )
+                }
+
+                await MainActor.run {
+                    todayAvailableTimeCount = actualAvailableTimes.count
+                    isSameDayAvailable =
+                        savedSameDayAvailable &&
+                        !actualAvailableTimes.isEmpty
+                    isLoadingSameDayStatus = false
+                    sameDayErrorMessage = ""
+                }
+
+            } catch {
+                await MainActor.run {
+                    isLoadingSameDayStatus = false
+                    isSameDayAvailable = false
+                    todayAvailableTimeCount = 0
+                    sameDayErrorMessage =
+                        "本日の受付状況を取得できませんでした: " +
+                        error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func toggleSameDayAvailability() {
+        guard let uid = Auth.auth().currentUser?.uid else {
+            sameDayErrorMessage = "本日の受付設定にはログインが必要です"
+            return
+        }
+
+        isUpdatingSameDayStatus = true
+        sameDayErrorMessage = ""
+
+        let dateKey = firestoreDate(Date())
+        let todayRef = db
+            .collection("coachAvailability")
+            .document(uid)
+            .collection("dates")
+            .document(dateKey)
+
+        if isSameDayAvailable {
+            todayRef.setData(
+                ["sameDayAvailable": false],
+                merge: true
+            ) { error in
+                DispatchQueue.main.async {
+                    isUpdatingSameDayStatus = false
+
+                    if let error {
+                        sameDayErrorMessage =
+                            "本日の受付を終了できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    isSameDayAvailable = false
+                    sameDayAlertMessage =
+                        "「本日レッスン可能コーチ」への掲載を終了しました。"
+                    showSameDayAlert = true
+                }
+            }
+
+            return
+        }
+
+        Task {
+            do {
+                let todaySnapshot = try await todayRef.getDocument()
+
+                let savedTimes =
+                    todaySnapshot.data()?["times"] as? [String] ?? []
+
+                let reservationSnapshot = try await db
+                    .collection("reservations")
+                    .whereField("coachId", isEqualTo: uid)
+                    .getDocuments()
+
+                let reservedTimes = blockedTimes(
+                    for: dateKey,
+                    documents: reservationSnapshot.documents
+                )
+
+                let actualAvailableTimes =
+                    Set(savedTimes)
+                        .subtracting(reservedTimes)
+                        .filter { isFutureTimeSlot($0, dateKey: dateKey) }
+
+                guard !actualAvailableTimes.isEmpty else {
+                    await MainActor.run {
+                        todayAvailableTimeCount = 0
+                        isSameDayAvailable = false
+                        isUpdatingSameDayStatus = false
+                        sameDayErrorMessage =
+                            "本日の予約可能な空き枠がありません。空き日程から本日の時間を登録してください。"
+                    }
+                    return
+                }
+
+                try await todayRef.setData(
+                    ["sameDayAvailable": true],
+                    merge: true
+                )
+
+                await MainActor.run {
+                    todayAvailableTimeCount = actualAvailableTimes.count
+                    isSameDayAvailable = true
+                    isUpdatingSameDayStatus = false
+                    sameDayErrorMessage = ""
+                    sameDayAlertMessage =
+                        "本日の受付をONにしました。「本日レッスン可能コーチ」への掲載対象になります。"
+                    showSameDayAlert = true
+                }
+
+            } catch {
+                await MainActor.run {
+                    isUpdatingSameDayStatus = false
+                    sameDayErrorMessage =
+                        "本日の受付設定を更新できませんでした: " +
+                        error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func blockedTimes(
+        for dateKey: String,
+        documents: [QueryDocumentSnapshot]
+    ) -> Set<String> {
+        var result: Set<String> = []
+
+        for document in documents {
+            let data = document.data()
+
+            let reservationDate =
+                (data["date"] as? String ?? "")
+                    .replacingOccurrences(of: "/", with: "-")
+
+            guard reservationDate == dateKey else {
+                continue
+            }
+
+            let status = data["status"] as? String ?? ""
+
+            guard blockingReservationStatuses.contains(status) else {
+                continue
+            }
+
+            let savedTimes = data["times"] as? [String] ?? []
+            let legacyTime = data["time"] as? String ?? ""
+
+            let reservationTimes =
+                savedTimes.isEmpty
+                    ? (legacyTime.isEmpty ? [] : [legacyTime])
+                    : savedTimes
+
+            for value in reservationTimes {
+                if let start = startTime(from: value) {
+                    result.insert(start)
+                }
+            }
+        }
+
+        return result
+    }
+
+    private func startTime(from value: String) -> String? {
+        let normalized =
+            value.replacingOccurrences(of: "~", with: "〜")
+
+        let firstPart =
+            normalized
+                .components(separatedBy: "〜")
+                .first?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? ""
+
+        return firstPart.isEmpty ? nil : firstPart
+    }
+
+    private func isFutureTimeSlot(
+        _ value: String,
+        dateKey: String
+    ) -> Bool {
+        guard let start = startTime(from: value) else {
+            return false
+        }
+
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        guard let slotDate = formatter.date(
+            from: "\(dateKey) \(start)"
+        ) else {
+            return false
+        }
+
+        return slotDate > Date()
     }
 
     private func startReservationListener() {
@@ -403,6 +779,8 @@ private struct CoachTabDashboardView: View {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
@@ -917,7 +1295,6 @@ private struct CoachSalesView: View {
         _ sale: SaleItem
     ) -> some View {
         if sale.isRefunded {
-
             let refundText: String = {
                 if sale.netAmount == 0 {
                     return "全額返金済み"
@@ -945,7 +1322,6 @@ private struct CoachSalesView: View {
             .foregroundStyle(.purple)
 
         } else if sale.isRefundFailed {
-
             Label(
                 "返金確認中",
                 systemImage: "exclamationmark.triangle.fill"
@@ -953,7 +1329,6 @@ private struct CoachSalesView: View {
             .foregroundStyle(.red)
 
         } else if sale.isRefundProcessing {
-
             Label(
                 "返金処理中",
                 systemImage: "arrow.triangle.2.circlepath"
@@ -961,7 +1336,6 @@ private struct CoachSalesView: View {
             .foregroundStyle(.orange)
 
         } else {
-
             Label(
                 "支払い済み",
                 systemImage: "checkmark.circle.fill"

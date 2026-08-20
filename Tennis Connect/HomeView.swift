@@ -1,4 +1,4 @@
-// 修正版：画面内ヘッダーの左に戻るボタン、右に通知ベルを表示
+// 修正版：本日レッスン可能コーチをコーチ側のON/OFFと連動し、日付検索も安全化
 
 import SwiftUI
 import FirebaseAuth
@@ -9,7 +9,9 @@ struct HomeView: View {
     let unreadNotificationCount: Int
 
     @State private var coaches: [Coach] = []
-    @State private var searchText = ""
+    @State private var sameDayCoaches: [Coach] = []
+    @State private var isLoadingSameDayCoaches = false
+    @State private var sameDayErrorMessage = ""
     @State private var isLoggedIn = false
     @State private var showLogin = false
 
@@ -55,6 +57,8 @@ struct HomeView: View {
                 await MainActor.run {
                     coaches = fetchedCoaches
                 }
+
+                loadSameDayCoaches(from: fetchedCoaches)
 
             } catch {
                 print("コーチ取得エラー: \(error.localizedDescription)")
@@ -144,7 +148,6 @@ struct HomeView: View {
             .padding(.bottom, 6)
 
             ScrollView {
-
                 VStack(alignment: .leading, spacing: 20) {
 
                     NavigationLink {
@@ -164,93 +167,91 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
 
-                    TextField(
-                        "コーチ・地域・駅名で検索",
-                        text: $searchText
-                    )
+                    NavigationLink {
+                        StudentCoachSearchView(coaches: coaches)
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.title2)
+                                .foregroundStyle(.blue)
+                                .frame(width: 38, height: 38)
+                                .background(Color.blue.opacity(0.1))
+                                .clipShape(Circle())
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("コーチを探す")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+
+                                Text("地域・駅名・希望日から検索")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                        }
                         .padding()
-                        .background(Color.gray.opacity(0.15))
-                        .cornerRadius(12)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(14)
+                    }
+                    .buttonStyle(.plain)
 
-                    VStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 12) {
 
-                        Text("🔥 今日レッスンできます")
+                        Text("🔥 本日レッスン可能コーチ")
                             .font(.title2)
                             .bold()
 
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(coaches) { coach in
-                                NavigationLink {
-                                    CoachDetailView(coach: coach)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 8) {
+                        if isLoadingSameDayCoaches {
+                            HStack {
+                                Spacer()
+                                ProgressView("本日受付中のコーチを確認中…")
+                                Spacer()
+                            }
+                            .padding(.vertical, 28)
 
-                                        AsyncImage(url: URL(string: coach.imageURL)) { phase in
-                                            switch phase {
-                                            case .success(let image):
-                                                image
-                                                    .resizable()
-                                                    .scaledToFill()
+                        } else if sameDayCoaches.isEmpty {
+                            VStack(spacing: 10) {
+                                Image(systemName: "figure.tennis")
+                                    .font(.system(size: 34))
+                                    .foregroundStyle(.secondary)
 
-                                            case .failure:
-                                                ZStack {
-                                                    Color.gray.opacity(0.15)
+                                Text("現在、本日レッスン可能なコーチはいません")
+                                    .font(.headline)
+                                    .multilineTextAlignment(.center)
 
-                                                    Image(systemName: "person.crop.circle.fill")
-                                                        .font(.system(size: 45))
-                                                        .foregroundColor(.gray)
-                                                }
+                                Text("時間をおいてもう一度確認してみてください")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 28)
+                            .padding(.horizontal)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(14)
 
-                                            case .empty:
-                                                ZStack {
-                                                    Color.gray.opacity(0.15)
-                                                    ProgressView()
-                                                }
-
-                                            @unknown default:
-                                                EmptyView()
-                                            }
-                                        }
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 130)
-                                        .clipped()
-                                        .cornerRadius(12)
-
-                                        Text(coach.name)
-                                            .font(.headline)
-                                            .foregroundColor(.primary)
-                                            .lineLimit(1)
-
-                                        Text(coach.careers.first ?? "経歴未登録")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-
-                                        Label(coach.area, systemImage: "mappin.and.ellipse")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-
-                                        Text("¥\(coach.price) / 1時間")
-                                            .font(.subheadline)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.blue)
+                        } else {
+                            LazyVGrid(columns: columns, spacing: 16) {
+                                ForEach(sameDayCoaches) { coach in
+                                    NavigationLink {
+                                        CoachDetailView(coach: coach)
+                                    } label: {
+                                        CoachGridCard(coach: coach)
                                     }
-                                    .padding(10)
-                                    .background(Color.white)
-                                    .cornerRadius(14)
-                                    .shadow(
-                                        color: Color.black.opacity(0.08),
-                                        radius: 5,
-                                        x: 0,
-                                        y: 2
-                                    )
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
-                    }
 
+                        if !sameDayErrorMessage.isEmpty {
+                            Text(sameDayErrorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
                 }
                 .padding()
             }
@@ -264,6 +265,523 @@ struct HomeView: View {
                 isLoggedIn = true
             }
         }
+    }
+
+    private func loadSameDayCoaches(from coaches: [Coach]) {
+        let dateKey = firestoreDate(Date())
+        let now = Date()
+
+        isLoadingSameDayCoaches = true
+        sameDayErrorMessage = ""
+        sameDayCoaches = []
+
+        Task {
+            var availableCoaches: [Coach] = []
+            var didEncounterError = false
+
+            for coach in coaches {
+                do {
+                    let snapshot = try await db
+                        .collection("coachAvailability")
+                        .document(coach.id)
+                        .collection("dates")
+                        .document(dateKey)
+                        .getDocument()
+
+                    let data = snapshot.data() ?? [:]
+                    let isSameDayAvailable =
+                        data["sameDayAvailable"] as? Bool ?? false
+                    let times =
+                        data["times"] as? [String] ?? []
+
+                    guard isSameDayAvailable else {
+                        continue
+                    }
+
+                    let hasFutureTime = times.contains { time in
+                        guard let lessonDate = lessonDate(
+                            dateKey: dateKey,
+                            time: time
+                        ) else {
+                            return false
+                        }
+
+                        return lessonDate > now
+                    }
+
+                    if hasFutureTime {
+                        availableCoaches.append(coach)
+                    }
+
+                } catch {
+                    didEncounterError = true
+                    print(
+                        "本日レッスン可能コーチ取得エラー " +
+                        "\(coach.id): \(error.localizedDescription)"
+                    )
+                }
+            }
+
+            await MainActor.run {
+                sameDayCoaches = availableCoaches
+                isLoadingSameDayCoaches = false
+
+                sameDayErrorMessage = didEncounterError
+                    ? "一部のコーチ情報を取得できませんでした。再度お試しください。"
+                    : ""
+            }
+        }
+    }
+
+    private func firestoreDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func lessonDate(
+        dateKey: String,
+        time: String
+    ) -> Date? {
+        let normalizedTime =
+            time.replacingOccurrences(of: "~", with: "〜")
+                .components(separatedBy: "〜")
+                .first?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? time
+
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        return formatter.date(
+            from: "\(dateKey) \(normalizedTime)"
+        )
+    }
+}
+
+private struct StudentCoachSearchView: View {
+    let coaches: [Coach]
+
+    @State private var searchText = ""
+    @State private var isDateFilterEnabled = false
+    @State private var selectedDate =
+        Calendar.current.startOfDay(for: Date())
+    @State private var availableCoachIDs: Set<String> = []
+    @State private var isCheckingAvailability = false
+    @State private var availabilityErrorMessage = ""
+
+    private let db = Firestore.firestore()
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
+
+    private var filteredCoaches: [Coach] {
+        let keyword = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        return coaches.filter { coach in
+            let matchesKeyword =
+                keyword.isEmpty ||
+                coach.name.localizedCaseInsensitiveContains(keyword) ||
+                coach.area.localizedCaseInsensitiveContains(keyword) ||
+                coach.careers
+                    .joined(separator: " ")
+                    .localizedCaseInsensitiveContains(keyword)
+
+            let matchesDate =
+                !isDateFilterEnabled ||
+                availableCoachIDs.contains(coach.id)
+
+            return matchesKeyword && matchesDate
+        }
+    }
+
+    private var resultTitle: String {
+        if isDateFilterEnabled {
+            return "\(displayDate(selectedDate))に予約可能なコーチ"
+        }
+
+        return searchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+            ? "コーチ一覧"
+            : "検索結果"
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+
+                    TextField(
+                        "コーチ名・地域・駅名で検索",
+                        text: $searchText
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityLabel("検索文字を消去")
+                    }
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 50)
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Label(
+                            "レッスン希望日",
+                            systemImage: "calendar"
+                        )
+                        .font(.headline)
+
+                        Spacer()
+
+                        Toggle(
+                            "",
+                            isOn: $isDateFilterEnabled
+                        )
+                        .labelsHidden()
+                    }
+
+                    if isDateFilterEnabled {
+                        DatePicker(
+                            "日付を選択",
+                            selection: $selectedDate,
+                            in: Calendar.current.startOfDay(for: Date())...,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+                        .environment(
+                            \.locale,
+                            Locale(identifier: "ja_JP")
+                        )
+
+                        if isCheckingAvailability {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("空き日程を確認中…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text(
+                                isToday(selectedDate)
+                                    ? "本日は「本日レッスン可能」をONにしていて、これから空き枠があるコーチのみ表示します"
+                                    : "\(displayDate(selectedDate))に空き枠があるコーチのみ表示します"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+
+                        if !availabilityErrorMessage.isEmpty {
+                            Text(availabilityErrorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    } else {
+                        Text("ONにすると、希望日に空き枠があるコーチだけに絞り込めます")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(14)
+
+                Text(resultTitle)
+                    .font(.title2)
+                    .bold()
+
+                if isCheckingAvailability && isDateFilterEnabled {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.large)
+
+                        Text("予約可能なコーチを確認しています")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 44)
+
+                } else if filteredCoaches.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 34))
+                            .foregroundStyle(.secondary)
+
+                        Text("条件に合うコーチが見つかりません")
+                            .font(.headline)
+
+                        Text(
+                            isDateFilterEnabled
+                                ? "別の日付や検索条件でお試しください"
+                                : "検索条件を変えてお試しください"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 44)
+
+                } else {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(filteredCoaches) { coach in
+                            NavigationLink {
+                                CoachDetailView(coach: coach)
+                            } label: {
+                                CoachGridCard(coach: coach)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("コーチを探す")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: isDateFilterEnabled) { isEnabled in
+            if isEnabled {
+                loadAvailableCoachesForSelectedDate()
+            } else {
+                availableCoachIDs = []
+                availabilityErrorMessage = ""
+                isCheckingAvailability = false
+            }
+        }
+        .onChange(of: selectedDate) { _ in
+            guard isDateFilterEnabled else {
+                return
+            }
+
+            loadAvailableCoachesForSelectedDate()
+        }
+    }
+
+    private func loadAvailableCoachesForSelectedDate() {
+        let dateKey = firestoreDate(selectedDate)
+        let targetIsToday = isToday(selectedDate)
+        let now = Date()
+
+        isCheckingAvailability = true
+        availabilityErrorMessage = ""
+        availableCoachIDs = []
+
+        Task {
+            var fetchedAvailableCoachIDs: Set<String> = []
+            var didEncounterError = false
+
+            for coach in coaches {
+                do {
+                    let snapshot = try await db
+                        .collection("coachAvailability")
+                        .document(coach.id)
+                        .collection("dates")
+                        .document(dateKey)
+                        .getDocument()
+
+                    let data = snapshot.data() ?? [:]
+                    let times =
+                        data["times"] as? [String] ?? []
+
+                    guard !times.isEmpty else {
+                        continue
+                    }
+
+                    if targetIsToday {
+                        let isSameDayAvailable =
+                            data["sameDayAvailable"] as? Bool ?? false
+
+                        guard isSameDayAvailable else {
+                            continue
+                        }
+
+                        let hasFutureTime = times.contains { time in
+                            guard let lessonDate = lessonDate(
+                                dateKey: dateKey,
+                                time: time
+                            ) else {
+                                return false
+                            }
+
+                            return lessonDate > now
+                        }
+
+                        if hasFutureTime {
+                            fetchedAvailableCoachIDs.insert(coach.id)
+                        }
+
+                    } else {
+                        fetchedAvailableCoachIDs.insert(coach.id)
+                    }
+
+                } catch {
+                    didEncounterError = true
+                    print(
+                        "空き日程取得エラー " +
+                        "\(coach.id): \(error.localizedDescription)"
+                    )
+                }
+            }
+
+            await MainActor.run {
+                guard isDateFilterEnabled,
+                      firestoreDate(selectedDate) == dateKey else {
+                    return
+                }
+
+                availableCoachIDs = fetchedAvailableCoachIDs
+                isCheckingAvailability = false
+
+                if didEncounterError {
+                    availabilityErrorMessage =
+                        "一部の空き日程を取得できませんでした。再度お試しください。"
+                } else {
+                    availabilityErrorMessage = ""
+                }
+            }
+        }
+    }
+
+    private func firestoreDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func isToday(_ date: Date) -> Bool {
+        let calendar = Calendar(identifier: .gregorian)
+        return calendar.isDate(date, inSameDayAs: Date())
+    }
+
+    private func lessonDate(
+        dateKey: String,
+        time: String
+    ) -> Date? {
+        let normalizedTime =
+            time.replacingOccurrences(of: "~", with: "〜")
+                .components(separatedBy: "〜")
+                .first?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? time
+
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        return formatter.date(
+            from: "\(dateKey) \(normalizedTime)"
+        )
+    }
+
+    private func displayDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "yyyy/M/d"
+        return formatter.string(from: date)
+    }
+}
+
+private struct CoachGridCard: View {
+    let coach: Coach
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+
+            AsyncImage(url: URL(string: coach.imageURL)) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .failure:
+                    ZStack {
+                        Color.gray.opacity(0.15)
+
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: 45))
+                            .foregroundColor(.gray)
+                    }
+
+                case .empty:
+                    ZStack {
+                        Color.gray.opacity(0.15)
+                        ProgressView()
+                    }
+
+                @unknown default:
+                    EmptyView()
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 130)
+            .clipped()
+            .cornerRadius(12)
+
+            Text(coach.name)
+                .font(.headline)
+                .foregroundColor(.primary)
+                .lineLimit(1)
+
+            Text(coach.careers.first ?? "経歴未登録")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+
+            Label(coach.area, systemImage: "mappin.and.ellipse")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+
+            Text("¥\(coach.price) / 1時間")
+                .font(.subheadline)
+                .fontWeight(.bold)
+                .foregroundColor(.blue)
+        }
+        .padding(10)
+        .background(Color.white)
+        .cornerRadius(14)
+        .shadow(
+            color: Color.black.opacity(0.08),
+            radius: 5,
+            x: 0,
+            y: 2
+        )
     }
 }
 
@@ -296,9 +814,6 @@ struct LessonCard: View {
 
             Text(price)
                 .bold()
-
-
-
         }
         .padding()
         .background(Color(.systemGray6))
