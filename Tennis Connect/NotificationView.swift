@@ -222,9 +222,11 @@ struct NotificationView: View {
                         .filter { notification in
                             switch audience {
                             case .student:
-                                return notification.type != "reservationRequested"
+                                return notification.type != "reservationRequested" &&
+                                    notification.type != "studentCancellation"
                             case .coach:
-                                return notification.type == "reservationRequested"
+                                return notification.type == "reservationRequested" ||
+                                    notification.type == "studentCancellation"
                             }
                         } ?? []
 
@@ -272,8 +274,13 @@ struct NotificationView: View {
              "coachCancellationRefundFailed":
             showStudentReservations = true
 
-        case "reservationRequested":
+        case "reservationRequested",
+             "studentCancellation":
             showCoachReservations = true
+
+        case "studentCancellationRefunded",
+             "studentCancellationRefundFailed":
+            showStudentReservations = true
 
         default:
             break
@@ -392,6 +399,12 @@ struct NotificationView: View {
             return "xmark.circle.fill"
         case "reservationRequested":
             return "calendar.badge.plus"
+        case "studentCancellation":
+            return "calendar.badge.minus"
+        case "studentCancellationRefunded":
+            return "checkmark.seal.fill"
+        case "studentCancellationRefundFailed":
+            return "exclamationmark.triangle.fill"
         case "coachCancellationRefundStarted":
             return "arrow.uturn.backward.circle.fill"
         case "coachCancellationRefunded":
@@ -411,6 +424,12 @@ struct NotificationView: View {
             return .red
         case "reservationRequested":
             return .orange
+        case "studentCancellation":
+            return .red
+        case "studentCancellationRefunded":
+            return .green
+        case "studentCancellationRefundFailed":
+            return .red
         case "coachCancellationRefundStarted":
             return .orange
         case "coachCancellationRefunded":
