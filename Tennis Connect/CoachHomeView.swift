@@ -917,24 +917,51 @@ private struct CoachSalesView: View {
         _ sale: SaleItem
     ) -> some View {
         if sale.isRefunded {
+
+            let refundText: String = {
+                if sale.netAmount == 0 {
+                    return "全額返金済み"
+                }
+
+                guard sale.originalAmount > 0 else {
+                    return "一部返金済み"
+                }
+
+                let percentage = Int(
+                    (
+                        Double(sale.effectiveRefundAmount) /
+                        Double(sale.originalAmount) *
+                        100
+                    ).rounded()
+                )
+
+                return "\(percentage)%返金済み"
+            }()
+
             Label(
-                "全額返金済み",
+                refundText,
                 systemImage: "arrow.uturn.backward.circle.fill"
             )
             .foregroundStyle(.purple)
+
         } else if sale.isRefundFailed {
+
             Label(
                 "返金確認中",
                 systemImage: "exclamationmark.triangle.fill"
             )
             .foregroundStyle(.red)
+
         } else if sale.isRefundProcessing {
+
             Label(
                 "返金処理中",
                 systemImage: "arrow.triangle.2.circlepath"
             )
             .foregroundStyle(.orange)
+
         } else {
+
             Label(
                 "支払い済み",
                 systemImage: "checkmark.circle.fill"
