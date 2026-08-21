@@ -63,6 +63,7 @@
 		13971202302F41000031C537 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = 13971201302F41000031C537 /* FirebaseFunctions */; };
 		1397120430304ECF0031C537 /* ReviewSubmissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120330304ECF0031C537 /* ReviewSubmissionView.swift */; };
 		139712083031CB1B0031C537 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139712073031CB1B0031C537 /* SettingsView.swift */; };
+		1397120A303813FC0031C537 /* CoachVideoUploadSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13971209303813FC0031C537 /* CoachVideoUploadSection.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -119,6 +120,7 @@
 		139711FE302B262A0031C537 /* NotificationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationView.swift; sourceTree = "<group>"; };
 		1397120330304ECF0031C537 /* ReviewSubmissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSubmissionView.swift; sourceTree = "<group>"; };
 		139712073031CB1B0031C537 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		13971209303813FC0031C537 /* CoachVideoUploadSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachVideoUploadSection.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -174,6 +176,7 @@
 				1397120330304ECF0031C537 /* ReviewSubmissionView.swift */,
 				139711E0301A44890031C537 /* ReservationDetailView.swift */,
 				139711BA3018E3D00031C537 /* CoachHomeView.swift */,
+				13971209303813FC0031C537 /* CoachVideoUploadSection.swift */,
 				07134EEB301341A600A87536 /* ProfileDetailView.swift */,
 				07134EE930133D6A00A87536 /* SampleData.swift */,
 				07134EDF3011F4B800A87536 /* SearchView.swift */,
@@ -324,6 +327,7 @@
 				1397120430304ECF0031C537 /* ReviewSubmissionView.swift in Sources */,
 				07134EE63011F59700A87536 /* ProfileView.swift in Sources */,
 				139711B73018D5D70031C537 /* TimePickerView.swift in Sources */,
+				1397120A303813FC0031C537 /* CoachVideoUploadSection.swift in Sources */,
 				07134EEC301341A600A87536 /* ProfileDetailView.swift in Sources */,
 				139711D7301A365F0031C537 /* BookingConfirmView.swift in Sources */,
 				139711E3301EFEBB0031C537 /* BasicInfoSectionView.swift in Sources */,

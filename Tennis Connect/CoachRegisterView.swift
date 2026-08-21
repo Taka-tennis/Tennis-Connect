@@ -70,6 +70,8 @@ struct CoachRegisterView: View {
                         )
 
                         if isExistingCoach {
+                            CoachVideoUploadSection()
+
                             Section("空き時間") {
                                 Text(
                                     "空き日程は、コーチホームの「空き日程管理」から変更できます"

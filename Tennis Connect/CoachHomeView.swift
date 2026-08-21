@@ -3,6 +3,7 @@
 import SwiftUI
 import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 
 struct CoachHomeView: View {
 
@@ -880,11 +881,20 @@ private struct CoachMyPageView: View {
                 }
             }
 
-            Section("管理") {
+            Section("売上・入金") {
                 NavigationLink {
                     CoachSalesView()
                 } label: {
                     Label("売上管理", systemImage: "yensign.circle")
+                }
+
+                NavigationLink {
+                    CoachConnectSetupView()
+                } label: {
+                    Label(
+                        "売上受取設定",
+                        systemImage: "building.columns.circle"
+                    )
                 }
             }
 
@@ -896,6 +906,773 @@ private struct CoachMyPageView: View {
                 .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+private struct CoachConnectSetupView: View {
+
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var accountCreated = false
+    @State private var detailsSubmitted = false
+    @State private var payoutsEnabled = false
+    @State private var transfersStatus = "inactive"
+    @State private var readyForPayouts = false
+    @State private var disabledReason = ""
+    @State private var currentlyDueCount = 0
+    @State private var pastDueCount = 0
+
+    @State private var isLoading = false
+    @State private var isOpeningOnboarding = false
+    @State private var errorMessage = ""
+
+    @State private var walletPendingAmount = 0
+    @State private var walletAvailableAmount = 0
+    @State private var walletTotalCoachEarnings = 0
+    @State private var walletTotalPlatformFee = 0
+    @State private var walletPendingCount = 0
+    @State private var walletAvailableCount = 0
+    @State private var walletNextAvailableAtMillis: Double?
+    @State private var isLoadingWallet = false
+    @State private var walletErrorMessage = ""
+    @State private var walletProcessingAmount = 0
+    @State private var walletPaidOutAmount = 0
+
+    @State private var isRequestingPayout = false
+    @State private var showPayoutConfirmation = false
+    @State private var showPayoutResult = false
+    @State private var payoutResultMessage = ""
+
+    private let functions = Functions.functions(
+        region: "asia-northeast1"
+    )
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                statusCard
+
+                if readyForPayouts {
+                    walletSummaryCard
+                }
+
+                VStack(alignment: .leading, spacing: 0) {
+                    connectStatusRow(
+                        title: "本人確認情報",
+                        isComplete: detailsSubmitted
+                    )
+
+                    Divider()
+                        .padding(.leading, 44)
+
+                    connectStatusRow(
+                        title: "銀行口座への出金",
+                        isComplete: payoutsEnabled
+                    )
+
+                    Divider()
+                        .padding(.leading, 44)
+
+                    connectStatusRow(
+                        title: "売上受取機能",
+                        isComplete: transfersStatus == "active"
+                    )
+                }
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                if currentlyDueCount > 0 || pastDueCount > 0 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(
+                            "追加の確認が必要です",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+
+                        Text(
+                            "Stripeで確認が必要な項目があります。" +
+                            "下のボタンから設定を続けてください。"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                        if pastDueCount > 0 {
+                            Text("期限超過の確認項目：\(pastDueCount)件")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.10))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+
+                if !disabledReason.isEmpty {
+                    Text("Stripe確認状況：\(disabledReason)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
+
+                Button {
+                    openStripeOnboarding()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        if isOpeningOnboarding {
+                            ProgressView()
+                        } else {
+                            Label(
+                                onboardingButtonTitle,
+                                systemImage: readyForPayouts
+                                    ? "checkmark.seal.fill"
+                                    : "building.columns.fill"
+                            )
+                            .fontWeight(.semibold)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(readyForPayouts ? .green : .blue)
+                .disabled(
+                    isLoading ||
+                    isOpeningOnboarding ||
+                    readyForPayouts
+                )
+
+                Button {
+                    refreshConnectAndWallet()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label(
+                            "設定状況を更新",
+                            systemImage: "arrow.clockwise"
+                        )
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    isLoading ||
+                    isLoadingWallet ||
+                    isOpeningOnboarding
+                )
+
+                if !walletErrorMessage.isEmpty {
+                    Text(walletErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
+
+                Text(
+                    "本人確認や銀行口座情報の登録はStripeの安全な画面で行います。" +
+                    "Tennis Connectが銀行口座番号や本人確認書類を保存することはありません。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+            }
+            .padding()
+        }
+        .navigationTitle("売上受取設定")
+        .navigationBarTitleDisplayMode(.inline)
+        .overlay {
+            if isLoading && !accountCreated {
+                ProgressView("設定状況を確認中…")
+                    .padding()
+                    .background(.regularMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .onAppear {
+            refreshConnectAndWallet()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .active {
+                refreshConnectAndWallet()
+            }
+        }
+        .alert(
+            "銀行口座へ出金しますか？",
+            isPresented: $showPayoutConfirmation
+        ) {
+            Button("キャンセル", role: .cancel) { }
+
+            Button("出金する") {
+                requestCoachPayout()
+            }
+        } message: {
+            Text(
+                "¥\(walletAvailableAmount.formatted())を" +
+                "登録済みの銀行口座へ出金します。"
+            )
+        }
+        .alert(
+            "出金手続き",
+            isPresented: $showPayoutResult
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(payoutResultMessage)
+        }
+    }
+
+    private var walletSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(
+                    "売上残高",
+                    systemImage: "wallet.pass.fill"
+                )
+                .font(.headline)
+
+                Spacer()
+
+                if isLoadingWallet {
+                    ProgressView()
+                }
+            }
+
+            HStack(spacing: 12) {
+                walletAmountCard(
+                    title: "売上予定",
+                    amount: walletPendingAmount,
+                    detail: walletPendingCount > 0
+                        ? "\(walletPendingCount)件"
+                        : "対象なし",
+                    color: .orange
+                )
+
+                walletAmountCard(
+                    title: "出金可能",
+                    amount: walletAvailableAmount,
+                    detail: walletAvailableCount > 0
+                        ? "\(walletAvailableCount)件"
+                        : "対象なし",
+                    color: .green
+                )
+            }
+
+            if let nextAvailableDate = walletNextAvailableDate {
+                Label(
+                    "次回出金可能：\(walletDateText(nextAvailableDate))",
+                    systemImage: "clock.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            HStack {
+                Text("累計コーチ受取額")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("¥\(walletTotalCoachEarnings.formatted())")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+
+            HStack {
+                Text("Tennis Connect手数料")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("¥\(walletTotalPlatformFee.formatted())")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+
+            if walletProcessingAmount > 0 {
+                HStack {
+                    Label(
+                        "出金処理中",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+
+                    Spacer()
+
+                    Text("¥\(walletProcessingAmount.formatted())")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if walletPaidOutAmount > 0 {
+                HStack {
+                    Label(
+                        "出金済み",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.green)
+
+                    Spacer()
+
+                    Text("¥\(walletPaidOutAmount.formatted())")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            Button {
+                showPayoutConfirmation = true
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isRequestingPayout {
+                        ProgressView()
+                    } else {
+                        Label(
+                            walletAvailableAmount > 0
+                                ? "銀行口座へ出金する"
+                                : "出金可能な売上はありません",
+                            systemImage: "banknote.fill"
+                        )
+                        .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .disabled(
+                walletAvailableAmount <= 0 ||
+                !readyForPayouts ||
+                isRequestingPayout ||
+                isLoadingWallet
+            )
+
+            Text(
+                "手数料は10%です。コーチ受取額は返金後の決済額の90%で、" +
+                "レッスン終了24時間後に出金可能になります。"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func walletAmountCard(
+        title: String,
+        amount: Int,
+        detail: String,
+        color: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("¥\(amount.formatted())")
+                .font(.title2)
+                .fontWeight(.bold)
+                .foregroundStyle(color)
+
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var walletNextAvailableDate: Date? {
+        guard let milliseconds = walletNextAvailableAtMillis else {
+            return nil
+        }
+
+        return Date(timeIntervalSince1970: milliseconds / 1000)
+    }
+
+    private func walletDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "M/d（E）HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private var statusCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: statusIcon)
+                .font(.system(size: 52))
+                .foregroundStyle(statusColor)
+
+            Text(statusTitle)
+                .font(.title3)
+                .fontWeight(.bold)
+                .multilineTextAlignment(.center)
+
+            Text(statusMessage)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .padding(.horizontal)
+        .background(statusColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var statusIcon: String {
+        if readyForPayouts {
+            return "checkmark.seal.fill"
+        }
+
+        if accountCreated {
+            return "clock.badge.exclamationmark.fill"
+        }
+
+        return "building.columns.circle.fill"
+    }
+
+    private var statusColor: Color {
+        if readyForPayouts {
+            return .green
+        }
+
+        if accountCreated {
+            return .orange
+        }
+
+        return .blue
+    }
+
+    private var statusTitle: String {
+        if readyForPayouts {
+            return "売上を受け取れる状態です"
+        }
+
+        if accountCreated {
+            return "売上受取設定を完了してください"
+        }
+
+        return "売上を受け取る設定を始めましょう"
+    }
+
+    private var statusMessage: String {
+        if readyForPayouts {
+            return "Stripe Connectの本人確認と出金設定が完了しています。"
+        }
+
+        if accountCreated {
+            return "Stripeの画面で本人確認と銀行口座登録を続けてください。"
+        }
+
+        return "コーチの売上を銀行口座へ受け取るために、Stripe Connectの設定が必要です。"
+    }
+
+    private var onboardingButtonTitle: String {
+        if readyForPayouts {
+            return "設定完了"
+        }
+
+        if accountCreated {
+            return "本人確認・口座登録を続ける"
+        }
+
+        return "売上受取設定を始める"
+    }
+
+    private func connectStatusRow(
+        title: String,
+        isComplete: Bool
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(
+                systemName: isComplete
+                    ? "checkmark.circle.fill"
+                    : "circle"
+            )
+            .foregroundStyle(isComplete ? .green : .secondary)
+            .font(.title3)
+
+            Text(title)
+                .font(.subheadline)
+
+            Spacer()
+
+            Text(isComplete ? "完了" : "未完了")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(isComplete ? .green : .secondary)
+        }
+        .padding()
+    }
+
+    private func refreshConnectAndWallet() {
+        loadConnectStatus()
+        loadWalletSummary()
+    }
+
+    private func loadWalletSummary() {
+        guard Auth.auth().currentUser != nil else {
+            walletErrorMessage =
+                "売上残高の確認にはログインが必要です。"
+            return
+        }
+
+        guard !isLoadingWallet else {
+            return
+        }
+
+        isLoadingWallet = true
+        walletErrorMessage = ""
+
+        functions
+            .httpsCallable("getCoachWalletSummary")
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    isLoadingWallet = false
+
+                    if let error {
+                        walletErrorMessage =
+                            "売上残高を確認できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    guard let data =
+                            result?.data as? [String: Any] else {
+                        walletErrorMessage =
+                            "売上残高の情報を読み取れませんでした。"
+                        return
+                    }
+
+                    walletPendingAmount =
+                        intValue(data["pendingAmount"])
+                    walletAvailableAmount =
+                        intValue(data["availableAmount"])
+                    walletTotalCoachEarnings =
+                        intValue(data["totalCoachEarnings"])
+                    walletTotalPlatformFee =
+                        intValue(data["totalPlatformFee"])
+                    walletProcessingAmount =
+                        intValue(data["processingAmount"])
+                    walletPaidOutAmount =
+                        intValue(data["paidOutAmount"])
+                    walletPendingCount =
+                        intValue(data["pendingCount"])
+                    walletAvailableCount =
+                        intValue(data["availableCount"])
+
+                    if let number =
+                        data["nextAvailableAtMillis"] as? NSNumber {
+                        walletNextAvailableAtMillis =
+                            number.doubleValue
+                    } else if let value =
+                                data["nextAvailableAtMillis"] as? Double {
+                        walletNextAvailableAtMillis = value
+                    } else {
+                        walletNextAvailableAtMillis = nil
+                    }
+
+                    walletErrorMessage = ""
+                }
+            }
+    }
+
+    private func requestCoachPayout() {
+        guard Auth.auth().currentUser != nil else {
+            walletErrorMessage =
+                "出金にはログインが必要です。"
+            return
+        }
+
+        guard walletAvailableAmount > 0 else {
+            walletErrorMessage =
+                "現在、出金可能な売上はありません。"
+            return
+        }
+
+        isRequestingPayout = true
+        walletErrorMessage = ""
+
+        functions
+            .httpsCallable("requestCoachPayout")
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    isRequestingPayout = false
+
+                    if let error {
+                        walletErrorMessage =
+                            "出金できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    let data =
+                        result?.data as? [String: Any] ?? [:]
+                    let amount =
+                        intValue(data["amount"])
+                    let serverMessage =
+                        data["message"] as? String ??
+                        "銀行口座への出金手続きを開始しました。"
+
+                    payoutResultMessage =
+                        amount > 0
+                            ? "¥\(amount.formatted())\n\(serverMessage)"
+                            : serverMessage
+                    showPayoutResult = true
+
+                    loadWalletSummary()
+                }
+            }
+    }
+
+    private func loadConnectStatus() {
+        guard Auth.auth().currentUser != nil else {
+            errorMessage = "売上受取設定にはログインが必要です。"
+            return
+        }
+
+        guard !isLoading else {
+            return
+        }
+
+        isLoading = true
+        errorMessage = ""
+
+        functions
+            .httpsCallable("getCoachConnectStatus")
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    isLoading = false
+
+                    if let error {
+                        errorMessage =
+                            "設定状況を確認できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    guard let data =
+                            result?.data as? [String: Any] else {
+                        errorMessage =
+                            "Stripe Connectの状態を読み取れませんでした。"
+                        return
+                    }
+
+                    applyConnectStatus(data)
+                }
+            }
+    }
+
+    private func openStripeOnboarding() {
+        guard Auth.auth().currentUser != nil else {
+            errorMessage = "売上受取設定にはログインが必要です。"
+            return
+        }
+
+        isOpeningOnboarding = true
+        errorMessage = ""
+
+        functions
+            .httpsCallable("createCoachConnectOnboardingLink")
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    isOpeningOnboarding = false
+
+                    if let error {
+                        errorMessage =
+                            "本人確認ページを開けませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    guard
+                        let data = result?.data as? [String: Any],
+                        let urlString = data["onboardingUrl"] as? String,
+                        let url = URL(string: urlString)
+                    else {
+                        errorMessage =
+                            "本人確認ページのURLを取得できませんでした。"
+                        return
+                    }
+
+                    applyConnectStatus(data)
+                    openURL(url)
+                }
+            }
+    }
+
+    private func applyConnectStatus(
+        _ data: [String: Any]
+    ) {
+        accountCreated =
+            boolValue(data["accountCreated"]) ||
+            data["onboardingUrl"] != nil
+        detailsSubmitted = boolValue(data["detailsSubmitted"])
+        payoutsEnabled = boolValue(data["payoutsEnabled"])
+        transfersStatus =
+            data["transfersStatus"] as? String ?? "inactive"
+        readyForPayouts = boolValue(data["readyForPayouts"])
+        disabledReason =
+            data["disabledReason"] as? String ?? ""
+        currentlyDueCount = intValue(data["currentlyDueCount"])
+        pastDueCount = intValue(data["pastDueCount"])
+    }
+
+    private func boolValue(_ value: Any?) -> Bool {
+        if let bool = value as? Bool {
+            return bool
+        }
+
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+
+        return false
+    }
+
+    private func intValue(_ value: Any?) -> Int {
+        if let int = value as? Int {
+            return int
+        }
+
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+
+        return 0
     }
 }
 

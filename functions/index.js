@@ -22,11 +22,486 @@ const stripeSecretKey = defineSecret("STRIPE_SECRET_KEY");
 const stripeWebhookSecret = defineSecret(
   "STRIPE_WEBHOOK_SECRET",
 );
+const stripeConnectWebhookSecret = defineSecret(
+  "STRIPE_CONNECT_WEBHOOK_SECRET",
+);
 
 setGlobalOptions({
   region: REGION,
   maxInstances: 10,
 });
+
+const PLATFORM_FEE_PERCENT = 10;
+const COACH_SHARE_PERCENT = 90;
+const COACH_PAYOUT_HOLD_HOURS = 24;
+
+
+/**
+ * Stripe Connectの状態をアプリ用の安全な形に整えます。
+ * StripeのアカウントID自体はクライアントへ返しません。
+ *
+ * @param {object} account Stripe Connected Account
+ * @return {object} Connect状態
+ */
+function coachConnectStatusFromAccount(account) {
+  const transfersStatus = String(
+    account.capabilities?.transfers || "inactive",
+  );
+  const currentlyDue = Array.isArray(
+    account.requirements?.currently_due,
+  ) ?
+    account.requirements.currently_due :
+    [];
+  const pastDue = Array.isArray(
+    account.requirements?.past_due,
+  ) ?
+    account.requirements.past_due :
+    [];
+  const disabledReason = String(
+    account.requirements?.disabled_reason || "",
+  );
+  const detailsSubmitted = Boolean(account.details_submitted);
+  const payoutsEnabled = Boolean(account.payouts_enabled);
+  const readyForPayouts =
+    detailsSubmitted &&
+    payoutsEnabled &&
+    transfersStatus === "active" &&
+    !disabledReason;
+
+  return {
+    detailsSubmitted,
+    payoutsEnabled,
+    transfersStatus,
+    readyForPayouts,
+    disabledReason,
+    currentlyDueCount: currentlyDue.length,
+    pastDueCount: pastDue.length,
+  };
+}
+
+/**
+ * Firebase UIDに紐づくStripe Connectアカウントを取得します。
+ * 未作成なら、日本のコーチ向けConnected Accountを作成します。
+ *
+ * - Stripeが本人確認情報を収集
+ * - Express Dashboardを利用
+ * - tennis-connectがStripe手数料と負残高リスクを負担
+ * - transfersのみを要求し、決済自体はプラットフォーム側で行う
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @param {object} coach コーチプロフィール
+ * @param {Stripe} stripe Stripeクライアント
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<object>} Stripe Connected Account
+ */
+async function getOrCreateCoachConnectAccount(
+  uid,
+  coach,
+  stripe,
+  db,
+) {
+  const connectRef = db
+    .collection("stripeConnectAccounts")
+    .doc(uid);
+  const connectSnap = await connectRef.get();
+  const savedAccountId = String(
+    connectSnap.data()?.stripeAccountId || "",
+  ).trim();
+
+  if (savedAccountId) {
+    try {
+      return await stripe.accounts.retrieve(savedAccountId);
+    } catch (error) {
+      if (error?.code !== "resource_missing") {
+        throw error;
+      }
+
+      logger.warn(
+        "保存済みのStripe Connectアカウントが見つかりません。",
+        {
+          uid,
+          stripeAccountId: savedAccountId,
+        },
+      );
+    }
+  }
+
+  let email = "";
+
+  try {
+    const user = await getAuth().getUser(uid);
+    email = String(user.email || "").trim();
+  } catch (error) {
+    logger.warn("Firebaseユーザー情報を取得できませんでした。", {
+      uid,
+      firebaseErrorMessage: error?.message || String(error),
+      firebaseErrorCode: error?.code || "",
+    });
+  }
+
+  const coachName = String(coach.name || "")
+    .trim()
+    .slice(0, 100);
+
+  const accountParams = {
+    display_name: coachName || "Tennis Connect Coach",
+    identity: {
+      country: "jp",
+    },
+    configuration: {
+      recipient: {
+        capabilities: {
+          stripe_balance: {
+            stripe_transfers: {
+              requested: true,
+            },
+          },
+        },
+      },
+    },
+    dashboard: "express",
+    defaults: {
+      currency: "jpy",
+      locales: ["ja-JP"],
+      responsibilities: {
+        fees_collector: "application",
+        losses_collector: "application",
+      },
+      profile: {
+        product_description:
+          "Tennis coaching services provided through Tennis Connect.",
+      },
+    },
+    metadata: {
+      firebaseUid: uid,
+      platformRole: "coach",
+    },
+    include: [
+      "configuration.recipient",
+      "identity",
+      "requirements",
+      "defaults",
+    ],
+  };
+
+  if (email) {
+    accountParams.contact_email = email;
+  }
+
+  logger.info("Stripe Accounts v2でコーチ口座作成を開始します。", {
+    uid,
+    country: "JP",
+  });
+
+  const response = await fetch(
+    "https://api.stripe.com/v2/core/accounts",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${stripeSecretKey.value()}`,
+        "Content-Type": "application/json",
+        "Stripe-Version": "2026-07-29.dahlia",
+        "Idempotency-Key": `coach_connect_account_${uid}_v3`,
+      },
+      body: JSON.stringify(accountParams),
+      signal: AbortSignal.timeout(15000),
+    },
+  );
+
+  const rawBody = await response.text();
+
+  let v2Account;
+
+  try {
+    v2Account = JSON.parse(rawBody);
+  } catch (_) {
+    throw new Error(
+      `Stripe Accounts v2の応答を解析できませんでした。` +
+      ` status=${response.status} body=${rawBody.slice(0, 500)}`,
+    );
+  }
+
+  if (!response.ok) {
+    const stripeMessage =
+      v2Account?.error?.message ||
+      v2Account?.message ||
+      "Stripe Accounts v2でアカウントを作成できませんでした。";
+    const stripeCode =
+      v2Account?.error?.code ||
+      v2Account?.code ||
+      "";
+
+    const error = new Error(stripeMessage);
+    error.code = stripeCode;
+    error.statusCode = response.status;
+    error.type =
+      v2Account?.error?.type ||
+      v2Account?.type ||
+      "StripeAccountsV2Error";
+    error.param =
+      v2Account?.error?.param ||
+      v2Account?.param ||
+      "";
+    error.requestId =
+      response.headers.get("request-id") || "";
+    throw error;
+  }
+
+  const accountId = String(v2Account?.id || "").trim();
+
+  if (!accountId) {
+    throw new Error(
+      "Stripe Accounts v2の応答にアカウントIDがありません。",
+    );
+  }
+
+  logger.info("Stripe Accounts v2のアカウント作成が完了しました。", {
+    uid,
+    stripeAccountId: accountId,
+  });
+
+  // Accounts v2で作成したIDは、多くのAccounts v1 APIでも利用できます。
+  // 既存の状態判定・Account Link処理を壊さないため、
+  // v1 Account形式で取得し直して以降の処理へ渡します。
+  const account = await stripe.accounts.retrieve(accountId);
+  const status = coachConnectStatusFromAccount(account);
+
+  await connectRef.set(
+    {
+      stripeAccountId: accountId,
+      country: String(account.country || "JP"),
+      accountsApiVersion: "v2",
+      ...status,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    {merge: true},
+  );
+
+  logger.info("コーチ用Stripe Connectアカウントを保存しました。", {
+    uid,
+    stripeAccountId: accountId,
+  });
+
+  return account;
+}
+
+/**
+ * コーチ本人がStripeの本人確認・銀行口座登録へ進むための
+ * 1回限りのAccount Linkを発行します。
+ */
+exports.createCoachConnectOnboardingLink = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "売上受取設定にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const coachRef = db.collection("coaches").doc(uid);
+    const coachSnap = await coachRef.get();
+
+    if (!coachSnap.exists) {
+      throw new HttpsError(
+        "failed-precondition",
+        "先にコーチプロフィールを登録してください。",
+      );
+    }
+
+    const stripe = new Stripe(stripeSecretKey.value(), {
+      maxNetworkRetries: 0,
+      timeout: 15000,
+    });
+    let account;
+
+    try {
+      account = await getOrCreateCoachConnectAccount(
+        uid,
+        coachSnap.data(),
+        stripe,
+        db,
+      );
+    } catch (error) {
+      logger.error("Stripe Connectアカウント準備に失敗しました。", {
+        uid,
+        stripeErrorMessage: error?.message || String(error),
+        stripeErrorCode: error?.code || "",
+        stripeErrorType: error?.type || "",
+        stripeErrorParam: error?.param || "",
+        stripeErrorStatusCode: error?.statusCode || null,
+        stripeRequestId: error?.requestId || "",
+      });
+
+      throw new HttpsError(
+        "internal",
+        "売上受取用アカウントを準備できませんでした。",
+      );
+    }
+
+    const projectId =
+      process.env.GCLOUD_PROJECT ||
+      process.env.GOOGLE_CLOUD_PROJECT ||
+      "tennis-connect-3f6bd";
+    const resultUrl =
+      `https://${REGION}-${projectId}` +
+      ".cloudfunctions.net/connectOnboardingResult";
+
+    let accountLink;
+
+    try {
+      accountLink = await stripe.accountLinks.create({
+        account: account.id,
+        refresh_url: `${resultUrl}?result=refresh`,
+        return_url: `${resultUrl}?result=return`,
+        type: "account_onboarding",
+      });
+    } catch (error) {
+      logger.error("Stripe Account Linkの作成に失敗しました。", {
+        uid,
+        stripeAccountId: account.id,
+        stripeErrorMessage: error?.message || String(error),
+        stripeErrorCode: error?.code || "",
+        stripeErrorType: error?.type || "",
+        stripeErrorParam: error?.param || "",
+        stripeErrorStatusCode: error?.statusCode || null,
+        stripeRequestId: error?.requestId || "",
+      });
+
+      throw new HttpsError(
+        "internal",
+        "本人確認ページを開けませんでした。",
+      );
+    }
+
+    return {
+      onboardingUrl: accountLink.url,
+      ...coachConnectStatusFromAccount(account),
+    };
+  },
+);
+
+/**
+ * コーチ本人のStripe Connect状態を最新化して返します。
+ * 銀行口座情報などの機微情報は返しません。
+ */
+exports.getCoachConnectStatus = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "売上受取設定の確認にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const connectRef = db
+      .collection("stripeConnectAccounts")
+      .doc(uid);
+    const connectSnap = await connectRef.get();
+    const stripeAccountId = String(
+      connectSnap.data()?.stripeAccountId || "",
+    ).trim();
+
+    if (!stripeAccountId) {
+      return {
+        accountCreated: false,
+        detailsSubmitted: false,
+        payoutsEnabled: false,
+        transfersStatus: "inactive",
+        readyForPayouts: false,
+        disabledReason: "",
+        currentlyDueCount: 0,
+        pastDueCount: 0,
+      };
+    }
+
+    const stripe = new Stripe(stripeSecretKey.value(), {
+      maxNetworkRetries: 0,
+      timeout: 15000,
+    });
+    let account;
+
+    try {
+      account = await stripe.accounts.retrieve(stripeAccountId);
+    } catch (error) {
+      logger.error("Stripe Connect状態の取得に失敗しました。", {
+        uid,
+        stripeAccountId,
+        stripeErrorMessage: error?.message || String(error),
+        stripeErrorCode: error?.code || "",
+        stripeErrorType: error?.type || "",
+        stripeErrorParam: error?.param || "",
+        stripeErrorStatusCode: error?.statusCode || null,
+        stripeRequestId: error?.requestId || "",
+      });
+
+      throw new HttpsError(
+        "internal",
+        "売上受取設定の状態を確認できませんでした。",
+      );
+    }
+
+    const status = coachConnectStatusFromAccount(account);
+
+    await connectRef.set(
+      {
+        country: String(account.country || "JP"),
+        ...status,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+
+    return {
+      accountCreated: true,
+      ...status,
+    };
+  },
+);
+
+/**
+ * Stripe-hosted onboardingから戻ったときに表示するページです。
+ * Account Linkは再利用できないため、期限切れ時はアプリから
+ * 新しいリンクを発行してもらいます。
+ */
+exports.connectOnboardingResult = onRequest(
+  (request, response) => {
+    const shouldRetry = request.query.result === "refresh";
+    const title = shouldRetry ?
+      "本人確認リンクの有効期限が切れました" :
+      "売上受取設定を受け付けました";
+    const message = shouldRetry ?
+      "Tennis Connectアプリに戻って、もう一度「売上受取設定」を開いてください。" :
+      "Tennis Connectアプリに戻って、設定状況をご確認ください。";
+
+    response
+      .status(200)
+      .set("Content-Type", "text/html; charset=utf-8")
+      .send(`<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+</head>
+<body style="
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  text-align: center;
+  padding: 48px 20px;
+  line-height: 1.6;
+">
+  <h1>${title}</h1>
+  <p>${message}</p>
+</body>
+</html>`);
+  },
+);
 
 /**
  * Checkout Sessionに保存した予約IDを取得します。
@@ -1429,6 +1904,475 @@ exports.requestStudentCancellation = onCall(
   },
 );
 
+/**
+ * Stripe Connectの連結アカウントIDから、
+ * Tennis Connect側のコーチConnectドキュメントを取得します。
+ *
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @param {string} stripeAccountId Stripe Connected Account ID
+ * @return {Promise<object|null>} Connect情報
+ */
+async function findCoachConnectByStripeAccountId(
+  db,
+  stripeAccountId,
+) {
+  if (!stripeAccountId) {
+    return null;
+  }
+
+  const snapshot = await db
+    .collection("stripeConnectAccounts")
+    .where("stripeAccountId", "==", stripeAccountId)
+    .limit(1)
+    .get();
+
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const document = snapshot.docs[0];
+
+  return {
+    uid: document.id,
+    ref: document.ref,
+    data: document.data() || {},
+  };
+}
+
+/**
+ * payoutオブジェクトからTennis Connect側の
+ * payoutRequestを特定します。
+ *
+ * Stripe Payout作成時にmetadataへpayoutRequestIdを
+ * 保存しているため、それを最優先で使います。
+ *
+ * @param {FirebaseFirestore.DocumentReference} connectRef Connect参照
+ * @param {object} payout Stripe Payout
+ * @return {Promise<object|null>} payoutRequest情報
+ */
+async function findCoachPayoutRequestForWebhook(
+  connectRef,
+  payout,
+) {
+  const metadataRequestId = String(
+    payout.metadata?.payoutRequestId || "",
+  ).trim();
+
+  if (metadataRequestId) {
+    const requestRef = connectRef
+      .collection("payoutRequests")
+      .doc(metadataRequestId);
+    const requestSnap = await requestRef.get();
+
+    if (requestSnap.exists) {
+      return {
+        id: requestSnap.id,
+        ref: requestRef,
+        data: requestSnap.data() || {},
+      };
+    }
+  }
+
+  const payoutId = String(payout.id || "").trim();
+
+  if (!payoutId) {
+    return null;
+  }
+
+  const snapshot = await connectRef
+    .collection("payoutRequests")
+    .where("stripePayoutId", "==", payoutId)
+    .limit(1)
+    .get();
+
+  if (snapshot.empty) {
+    return null;
+  }
+
+  const document = snapshot.docs[0];
+
+  return {
+    id: document.id,
+    ref: document.ref,
+    data: document.data() || {},
+  };
+}
+
+/**
+ * Stripe ConnectのPayoutイベントを
+ * Firestoreの出金状態へ反映します。
+ *
+ * payout.created / payout.updated / payout.paid / payout.failed
+ * すべてでPayoutオブジェクトのstatusを基準に処理します。
+ *
+ * @param {object} event Stripe Event
+ * @return {Promise<void>}
+ */
+async function handleCoachPayoutWebhookEvent(event) {
+  const db = getFirestore();
+  const payout = event.data?.object || {};
+  const stripeAccountId = String(
+    event.account || "",
+  ).trim();
+  const payoutId = String(payout.id || "").trim();
+  const payoutStatus = String(
+    payout.status || "",
+  ).trim();
+
+  if (!stripeAccountId || !payoutId) {
+    logger.warn(
+      "Connect Payoutイベントに必要な情報がありません。",
+      {
+        eventId: event.id,
+        eventType: event.type,
+        stripeAccountId,
+        payoutId,
+      },
+    );
+    return;
+  }
+
+  const connect = await findCoachConnectByStripeAccountId(
+    db,
+    stripeAccountId,
+  );
+
+  if (!connect) {
+    // Tennis Connectと紐付いていないテスト用Connectアカウント等の
+    // イベントはエラーにせず無視します。
+    logger.info(
+      "Tennis Connect未登録のConnected Accountイベントです。",
+      {
+        eventId: event.id,
+        eventType: event.type,
+        stripeAccountId,
+        payoutId,
+      },
+    );
+    return;
+  }
+
+  const payoutRequest =
+    await findCoachPayoutRequestForWebhook(
+      connect.ref,
+      payout,
+    );
+
+  if (!payoutRequest) {
+    logger.warn(
+      "Payoutに対応するpayoutRequestが見つかりません。",
+      {
+        uid: connect.uid,
+        eventId: event.id,
+        eventType: event.type,
+        stripeAccountId,
+        payoutId,
+        payoutStatus,
+      },
+    );
+    return;
+  }
+
+  const reservationIds = Array.isArray(
+    payoutRequest.data.reservationIds,
+  ) ?
+    payoutRequest.data.reservationIds :
+    [];
+
+  const commonPayoutUpdate = {
+    stripePayoutId: payoutId,
+    stripePayoutStatus: payoutStatus,
+    lastStripePayoutEventId: event.id,
+    lastStripePayoutEventType: event.type,
+    lastStripePayoutEventCreated:
+      Number(event.created || 0),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+
+  if (payoutStatus === "paid") {
+    await payoutRequest.ref.set(
+      {
+        ...commonPayoutUpdate,
+        status: "paid",
+        paidAt: FieldValue.serverTimestamp(),
+        failureCode: FieldValue.delete(),
+        failureMessage: FieldValue.delete(),
+        errorMessage: FieldValue.delete(),
+      },
+      {merge: true},
+    );
+
+    await updateReservationsForCoachPayout(
+      db,
+      reservationIds,
+      {
+        coachPayoutStatus: "paid",
+        coachPayoutPaidAt: FieldValue.serverTimestamp(),
+        coachStripePayoutId: payoutId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    );
+
+    const latestConnectSnap = await connect.ref.get();
+    const latestConnectData =
+      latestConnectSnap.data() || {};
+    const activeRequestId = String(
+      latestConnectData.activePayoutRequestId || "",
+    ).trim();
+    const retryRequestId = String(
+      latestConnectData.retryPayoutRequestId || "",
+    ).trim();
+
+    const connectUpdate = {
+      lastPayoutPaidAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    if (activeRequestId === payoutRequest.id) {
+      connectUpdate.activePayoutRequestId =
+        FieldValue.delete();
+    }
+
+    if (retryRequestId === payoutRequest.id) {
+      connectUpdate.retryPayoutRequestId =
+        FieldValue.delete();
+    }
+
+    await connect.ref.set(
+      connectUpdate,
+      {merge: true},
+    );
+
+    logger.info(
+      "コーチの銀行出金が完了しました。",
+      {
+        uid: connect.uid,
+        payoutRequestId: payoutRequest.id,
+        stripePayoutId: payoutId,
+        amount: Number(payout.amount || 0),
+        currency: String(payout.currency || ""),
+      },
+    );
+
+    return;
+  }
+
+  if (
+    payoutStatus === "failed" ||
+    payoutStatus === "canceled"
+  ) {
+    const failureCode = String(
+      payout.failure_code || "",
+    );
+    const failureMessage = String(
+      payout.failure_message || "",
+    );
+
+    await payoutRequest.ref.set(
+      {
+        ...commonPayoutUpdate,
+        status: "payout_failed",
+        failedAt: FieldValue.serverTimestamp(),
+        failureCode,
+        failureMessage,
+      },
+      {merge: true},
+    );
+
+    await updateReservationsForCoachPayout(
+      db,
+      reservationIds,
+      {
+        coachPayoutStatus: "payout_failed",
+        coachStripePayoutId: payoutId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    );
+
+    await connect.ref.set(
+      {
+        activePayoutRequestId: FieldValue.delete(),
+        retryPayoutRequestId: payoutRequest.id,
+        lastPayoutFailedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+
+    logger.error(
+      "コーチの銀行出金が失敗しました。",
+      {
+        uid: connect.uid,
+        payoutRequestId: payoutRequest.id,
+        stripePayoutId: payoutId,
+        failureCode,
+        failureMessage,
+      },
+    );
+
+    return;
+  }
+
+  // pending / in_transit などは「出金処理中」として保持します。
+  await payoutRequest.ref.set(
+    {
+      ...commonPayoutUpdate,
+      status: "payout_pending",
+    },
+    {merge: true},
+  );
+
+  await updateReservationsForCoachPayout(
+    db,
+    reservationIds,
+    {
+      coachPayoutStatus: "payout_pending",
+      coachStripePayoutId: payoutId,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+  );
+
+  await connect.ref.set(
+    {
+      activePayoutRequestId: payoutRequest.id,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    {merge: true},
+  );
+
+  logger.info(
+    "コーチの銀行出金は処理中です。",
+    {
+      uid: connect.uid,
+      payoutRequestId: payoutRequest.id,
+      stripePayoutId: payoutId,
+      payoutStatus,
+    },
+  );
+}
+
+/**
+ * Stripe Connect専用Payout Webhook。
+ *
+ * Stripe Dashboardでは必ず
+ * 「Events on Connected accounts / 連結アカウントのイベント」
+ * として登録します。
+ *
+ * 対象:
+ * - payout.created
+ * - payout.updated
+ * - payout.paid
+ * - payout.failed
+ */
+exports.stripeConnectPayoutWebhook = onRequest(
+  {
+    secrets: [
+      stripeSecretKey,
+      stripeConnectWebhookSecret,
+    ],
+    invoker: "public",
+  },
+  async (request, response) => {
+    if (request.method !== "POST") {
+      response.status(405).send("Method Not Allowed");
+      return;
+    }
+
+    const signature =
+      request.headers["stripe-signature"];
+
+    if (typeof signature !== "string") {
+      response
+        .status(400)
+        .send("Stripe signature is missing");
+      return;
+    }
+
+    const stripe = new Stripe(
+      stripeSecretKey.value(),
+    );
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        request.rawBody,
+        signature,
+        stripeConnectWebhookSecret.value(),
+      );
+    } catch (error) {
+      logger.error(
+        "Stripe Connect Webhookの署名確認に失敗しました。",
+        {
+          message: error?.message || String(error),
+        },
+      );
+
+      response
+        .status(400)
+        .send("Webhook signature failed");
+      return;
+    }
+
+    try {
+      const supportedTypes = new Set([
+        "payout.created",
+        "payout.updated",
+        "payout.paid",
+        "payout.failed",
+      ]);
+
+      if (supportedTypes.has(event.type)) {
+        await handleCoachPayoutWebhookEvent(event);
+      } else {
+        logger.info(
+          "未処理のStripe Connectイベントです。",
+          {
+            eventId: event.id,
+            type: event.type,
+            account: event.account || "",
+          },
+        );
+      }
+
+      // Webhook受信履歴を残します。
+      await getFirestore()
+        .collection("stripeConnectWebhookEvents")
+        .doc(event.id)
+        .set(
+          {
+            type: event.type,
+            stripeAccountId:
+              String(event.account || ""),
+            objectId:
+              String(event.data?.object?.id || ""),
+            livemode: Boolean(event.livemode),
+            processedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+      response
+        .status(200)
+        .json({received: true});
+    } catch (error) {
+      logger.error(
+        "Stripe Connect Payout Webhookの処理に失敗しました。",
+        {
+          eventId: event?.id || "",
+          type: event?.type || "",
+          account: event?.account || "",
+          message: error?.message || String(error),
+        },
+      );
+
+      response
+        .status(500)
+        .send("Webhook handling failed");
+    }
+  },
+);
+
 exports.stripeWebhook = onRequest(
   {
     secrets: [stripeSecretKey, stripeWebhookSecret],
@@ -1695,6 +2639,1207 @@ function lessonEndDateFromReservation(reservation) {
 
   return new Date(startDate.getTime() + 60 * 60 * 1000);
 }
+
+
+/**
+ * 予約1件について、Tennis Connect手数料10%と
+ * コーチ受取額90%を計算します。
+ *
+ * 完了済み返金だけを売上から差し引きます。
+ * 返金処理中・返金失敗中は出金可能にしません。
+ *
+ * @param {object} reservation 予約データ
+ * @param {Date} now 現在日時
+ * @return {object} ウォレット計算結果
+ */
+function coachWalletAmountsForReservation(
+  reservation,
+  now = new Date(),
+) {
+  const status = String(reservation.status || "");
+  const paymentStatus = String(
+    reservation.paymentStatus || "",
+  );
+  const refundStatus = String(
+    reservation.refundStatus || "",
+  );
+
+  const originalAmount = Math.max(
+    0,
+    Math.floor(
+      Number(
+        reservation.amountPaid ||
+        reservation.totalPrice ||
+        0,
+      ),
+    ),
+  );
+
+  const result = {
+    originalAmount,
+    refundAmount: 0,
+    netPaidAmount: 0,
+    platformFeeAmount: 0,
+    coachAmount: 0,
+    payoutAvailableAt: null,
+    state: "not_eligible",
+    reason: "",
+  };
+
+  if (originalAmount <= 0) {
+    result.reason = "支払い金額がありません。";
+    return result;
+  }
+
+  const hasPaidRecord =
+    ["paid", "partially_refunded", "refunded"].includes(
+      paymentStatus,
+    ) ||
+    (
+      paymentStatus === "" &&
+      status === "paid"
+    );
+
+  if (!hasPaidRecord) {
+    result.reason = "支払い完了前です。";
+    return result;
+  }
+
+  if (status === "coach_cancelled") {
+    result.reason = "コーチ都合キャンセルのため売上対象外です。";
+    return result;
+  }
+
+  const refundIsUnresolved =
+    ["refund_processing", "refund_failed"].includes(
+      paymentStatus,
+    ) ||
+    [
+      "creating",
+      "pending",
+      "requires_action",
+      "failed",
+      "canceled",
+      "failed_to_create",
+    ].includes(refundStatus);
+
+  if (refundIsUnresolved) {
+    result.state = "pending";
+    result.reason = "返金処理の確定待ちです。";
+    return result;
+  }
+
+  const refundSucceeded =
+    refundStatus === "succeeded" ||
+    ["partially_refunded", "refunded"].includes(
+      paymentStatus,
+    );
+
+  let completedRefundAmount = 0;
+
+  if (refundSucceeded) {
+    completedRefundAmount = Math.max(
+      0,
+      Math.floor(Number(reservation.refundAmount || 0)),
+    );
+
+    if (
+      paymentStatus === "refunded" &&
+      completedRefundAmount <= 0
+    ) {
+      completedRefundAmount = originalAmount;
+    }
+
+    completedRefundAmount = Math.min(
+      completedRefundAmount,
+      originalAmount,
+    );
+  }
+
+  const netPaidAmount = Math.max(
+    0,
+    originalAmount - completedRefundAmount,
+  );
+
+  if (netPaidAmount <= 0) {
+    result.refundAmount = completedRefundAmount;
+    result.reason = "全額返金済みです。";
+    return result;
+  }
+
+  const coachAmount = Math.floor(
+    netPaidAmount * COACH_SHARE_PERCENT / 100,
+  );
+  const platformFeeAmount =
+    netPaidAmount - coachAmount;
+
+  result.refundAmount = completedRefundAmount;
+  result.netPaidAmount = netPaidAmount;
+  result.platformFeeAmount = platformFeeAmount;
+  result.coachAmount = coachAmount;
+
+  const lessonEndDate =
+    lessonEndDateFromReservation(reservation);
+
+  if (!lessonEndDate) {
+    result.state = "pending";
+    result.reason = "レッスン終了日時を確認できません。";
+    return result;
+  }
+
+  const payoutAvailableAt = new Date(
+    lessonEndDate.getTime() +
+    COACH_PAYOUT_HOLD_HOURS * 60 * 60 * 1000,
+  );
+
+  result.payoutAvailableAt = payoutAvailableAt;
+
+  if (now < payoutAvailableAt) {
+    result.state = "pending";
+    result.reason =
+      `レッスン終了${COACH_PAYOUT_HOLD_HOURS}時間後に` +
+      "出金可能になります。";
+    return result;
+  }
+
+  result.state = "available";
+  result.reason = "";
+  return result;
+}
+
+/**
+ * payout requestに紐づく予約をまとめて更新します。
+ *
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @param {Array<string>} reservationIds 予約ID
+ * @param {object} values 更新内容
+ * @return {Promise<void>}
+ */
+async function updateReservationsForCoachPayout(
+  db,
+  reservationIds,
+  values,
+) {
+  const chunks = [];
+
+  for (let index = 0; index < reservationIds.length; index += 400) {
+    chunks.push(reservationIds.slice(index, index + 400));
+  }
+
+  for (const chunk of chunks) {
+    const batch = db.batch();
+
+    for (const reservationId of chunk) {
+      batch.set(
+        db.collection("reservations").doc(reservationId),
+        values,
+        {merge: true},
+      );
+    }
+
+    await batch.commit();
+  }
+}
+
+/**
+ * Connected Accountの銀行出金をmanualにします。
+ * Tennis Connectの「出金する」操作をした時だけ銀行送金されるようにします。
+ *
+ * @param {string} stripeAccountId Connected Account ID
+ * @return {Promise<void>}
+ */
+async function ensureManualPayoutSchedule(stripeAccountId) {
+  const body = new URLSearchParams();
+  body.set(
+    "payments[payouts][schedule][interval]",
+    "manual",
+  );
+
+  const response = await fetch(
+    "https://api.stripe.com/v1/balance_settings",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${stripeSecretKey.value()}`,
+        "Stripe-Account": stripeAccountId,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+      signal: AbortSignal.timeout(15000),
+    },
+  );
+
+  if (response.ok) {
+    return;
+  }
+
+  const rawBody = await response.text();
+  let parsed = {};
+
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch (_) {
+    // JSONではない場合はrawBodyをそのまま使用します。
+  }
+
+  const error = new Error(
+    parsed?.error?.message ||
+    "銀行口座への出金スケジュールを設定できませんでした。",
+  );
+  error.code = parsed?.error?.code || "";
+  error.statusCode = response.status;
+  throw error;
+}
+
+/**
+ * Stripe残高から指定通貨のavailable金額を取得します。
+ *
+ * @param {object} balance Stripe Balance
+ * @param {string} currency 通貨
+ * @return {number} available残高
+ */
+function availableBalanceAmount(balance, currency) {
+  const target = String(currency || "").toLowerCase();
+
+  return (balance.available || []).reduce(
+    (total, item) => {
+      if (
+        String(item.currency || "").toLowerCase() === target
+      ) {
+        return total + Number(item.amount || 0);
+      }
+
+      return total;
+    },
+    0,
+  );
+}
+
+/**
+ * Transfer済みだが銀行Payoutまで完了していない
+ * payoutRequestを探します。
+ *
+ * 途中でFunctionが失敗しても、Transferを二重実行せず
+ * 続きのPayoutだけ再開するために使います。
+ *
+ * @param {FirebaseFirestore.DocumentReference} connectRef Connect参照
+ * @return {Promise<object|null>} 回復対象
+ */
+async function findRecoverableCoachPayoutRequest(connectRef) {
+  const snapshot = await connectRef
+    .collection("payoutRequests")
+    .get();
+
+  const recoverableStatuses = new Set([
+    "transfer_succeeded",
+    "waiting_for_stripe_balance",
+    "payout_failed",
+  ]);
+
+  const candidates = snapshot.docs
+    .map((document) => {
+      const data = document.data() || {};
+      const createdAtMillis =
+        data.createdAt?.toMillis?.() ||
+        data.updatedAt?.toMillis?.() ||
+        0;
+
+      return {
+        id: document.id,
+        data,
+        createdAtMillis,
+      };
+    })
+    .filter((item) => {
+      const status = String(item.data.status || "");
+      const transferId = String(
+        item.data.stripeTransferId || "",
+      ).trim();
+      const amount = Number(item.data.amount || 0);
+
+      return (
+        recoverableStatuses.has(status) &&
+        transferId &&
+        amount > 0
+      );
+    })
+    .sort(
+      (first, second) =>
+        second.createdAtMillis - first.createdAtMillis,
+    );
+
+  return candidates[0] || null;
+}
+
+/**
+ * 進行中のpayoutをStripeから再確認し、
+ * paid / failed をFirestoreへ反映します。
+ *
+ * @param {string} uid コーチUID
+ * @param {FirebaseFirestore.DocumentReference} connectRef Connect参照
+ * @param {object} connectData Connectデータ
+ * @param {Stripe} stripe Stripeクライアント
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @return {Promise<void>}
+ */
+async function reconcileActiveCoachPayout(
+  uid,
+  connectRef,
+  connectData,
+  stripe,
+  db,
+) {
+  const activeRequestId = String(
+    connectData.activePayoutRequestId || "",
+  ).trim();
+
+  if (!activeRequestId) {
+    return;
+  }
+
+  const payoutRef = connectRef
+    .collection("payoutRequests")
+    .doc(activeRequestId);
+  const payoutSnap = await payoutRef.get();
+
+  if (!payoutSnap.exists) {
+    await connectRef.set(
+      {
+        activePayoutRequestId: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+    return;
+  }
+
+  const payoutData = payoutSnap.data() || {};
+  const payoutId = String(payoutData.stripePayoutId || "").trim();
+  const stripeAccountId = String(
+    connectData.stripeAccountId || "",
+  ).trim();
+
+  if (!payoutId || !stripeAccountId) {
+    return;
+  }
+
+  let payout;
+
+  try {
+    payout = await stripe.payouts.retrieve(
+      payoutId,
+      {
+        stripeAccount: stripeAccountId,
+      },
+    );
+  } catch (error) {
+    logger.warn("Stripe Payout状態を取得できませんでした。", {
+      uid,
+      payoutRequestId: activeRequestId,
+      stripePayoutId: payoutId,
+      stripeErrorMessage: error?.message || String(error),
+      stripeErrorCode: error?.code || "",
+    });
+    return;
+  }
+
+  const reservationIds = Array.isArray(
+    payoutData.reservationIds,
+  ) ?
+    payoutData.reservationIds :
+    [];
+
+  if (payout.status === "paid") {
+    await payoutRef.set(
+      {
+        status: "paid",
+        paidAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+
+    await updateReservationsForCoachPayout(
+      db,
+      reservationIds,
+      {
+        coachPayoutStatus: "paid",
+        coachPayoutPaidAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    );
+
+    await connectRef.set(
+      {
+        activePayoutRequestId: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+
+    return;
+  }
+
+  if (["failed", "canceled"].includes(payout.status)) {
+    await payoutRef.set(
+      {
+        status: "payout_failed",
+        stripePayoutStatus: payout.status,
+        failureCode: payout.failure_code || "",
+        failureMessage: payout.failure_message || "",
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+
+    await updateReservationsForCoachPayout(
+      db,
+      reservationIds,
+      {
+        coachPayoutStatus: "payout_failed",
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    );
+
+    await connectRef.set(
+      {
+        activePayoutRequestId: FieldValue.delete(),
+        retryPayoutRequestId: activeRequestId,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+  }
+}
+
+/**
+ * コーチ本人向けの売上残高サマリーを返します。
+ *
+ * 手数料10%、コーチ受取90%、レッスン終了24時間後という
+ * 出金条件に加え、出金処理中・出金済みの金額も返します。
+ */
+exports.getCoachWalletSummary = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "売上残高の確認にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const connectRef = db
+      .collection("stripeConnectAccounts")
+      .doc(uid);
+    const connectSnap = await connectRef.get();
+    const connectData = connectSnap.data() || {};
+
+    if (connectSnap.exists && connectData.stripeAccountId) {
+      try {
+        const stripe = new Stripe(stripeSecretKey.value(), {
+          maxNetworkRetries: 1,
+          timeout: 15000,
+        });
+
+        await reconcileActiveCoachPayout(
+          uid,
+          connectRef,
+          connectData,
+          stripe,
+          db,
+        );
+      } catch (error) {
+        logger.warn("出金状態の再確認に失敗しました。", {
+          uid,
+          stripeErrorMessage: error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+        });
+      }
+    }
+
+    let refreshedConnectSnap = await connectRef.get();
+    let refreshedConnectData =
+      refreshedConnectSnap.data() || {};
+    let retryPayoutRequestId = String(
+      refreshedConnectData.retryPayoutRequestId || "",
+    ).trim();
+
+    if (!retryPayoutRequestId) {
+      const recoverable =
+        await findRecoverableCoachPayoutRequest(connectRef);
+
+      if (recoverable) {
+        retryPayoutRequestId = recoverable.id;
+
+        await connectRef.set(
+          {
+            retryPayoutRequestId,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        refreshedConnectSnap = await connectRef.get();
+        refreshedConnectData =
+          refreshedConnectSnap.data() || {};
+      }
+    }
+
+    let retryablePayoutAmount = 0;
+    let retryablePayoutCount = 0;
+
+    if (retryPayoutRequestId) {
+      const retrySnap = await connectRef
+        .collection("payoutRequests")
+        .doc(retryPayoutRequestId)
+        .get();
+
+      if (retrySnap.exists) {
+        const retryData = retrySnap.data() || {};
+        const retryStatus = String(retryData.status || "");
+
+        if (
+          [
+            "transfer_succeeded",
+            "waiting_for_stripe_balance",
+            "payout_failed",
+          ].includes(retryStatus)
+        ) {
+          retryablePayoutAmount =
+            Number(retryData.amount || 0);
+          retryablePayoutCount =
+            Array.isArray(retryData.reservationIds) ?
+              retryData.reservationIds.length :
+              0;
+        }
+      }
+    }
+
+    const snapshot = await db
+      .collection("reservations")
+      .where("coachId", "==", uid)
+      .get();
+
+    const now = new Date();
+    let pendingAmount = 0;
+    let availableAmount = retryablePayoutAmount;
+    let processingAmount = 0;
+    let paidOutAmount = 0;
+    let totalCoachEarnings = 0;
+    let totalPlatformFee = 0;
+    let pendingCount = 0;
+    let availableCount = retryablePayoutCount;
+    let processingCount = 0;
+    let nextAvailableAt = null;
+
+    for (const document of snapshot.docs) {
+      const data = document.data();
+      const wallet = coachWalletAmountsForReservation(
+        data,
+        now,
+      );
+
+      if (wallet.coachAmount <= 0) {
+        continue;
+      }
+
+      totalCoachEarnings += wallet.coachAmount;
+      totalPlatformFee += wallet.platformFeeAmount;
+
+      const coachPayoutStatus = String(
+        data.coachPayoutStatus || "",
+      );
+      const coachPayoutRequestId = String(
+        data.coachPayoutRequestId || "",
+      ).trim();
+
+      if (coachPayoutStatus === "paid") {
+        paidOutAmount += Number(
+          data.coachPayoutAmount || wallet.coachAmount,
+        );
+        continue;
+      }
+
+      if (
+        coachPayoutRequestId &&
+        coachPayoutRequestId === retryPayoutRequestId
+      ) {
+        // retryablePayoutAmountとして上でまとめて加算済みです。
+        continue;
+      }
+
+      if (
+        [
+          "claimed",
+          "transferred",
+          "payout_pending",
+        ].includes(coachPayoutStatus)
+      ) {
+        processingAmount += Number(
+          data.coachPayoutAmount || wallet.coachAmount,
+        );
+        processingCount += 1;
+        continue;
+      }
+
+      if (coachPayoutStatus === "payout_failed") {
+        // retryPayoutRequestIdの金額として上で加算するため、
+        // ここでは二重計上しません。
+        continue;
+      }
+
+      if (wallet.state === "available") {
+        availableAmount += wallet.coachAmount;
+        availableCount += 1;
+        continue;
+      }
+
+      if (wallet.state === "pending") {
+        pendingAmount += wallet.coachAmount;
+        pendingCount += 1;
+
+        if (
+          wallet.payoutAvailableAt &&
+          (
+            !nextAvailableAt ||
+            wallet.payoutAvailableAt < nextAvailableAt
+          )
+        ) {
+          nextAvailableAt = wallet.payoutAvailableAt;
+        }
+      }
+    }
+
+    return {
+      currency: "jpy",
+      platformFeePercent: PLATFORM_FEE_PERCENT,
+      coachSharePercent: COACH_SHARE_PERCENT,
+      payoutHoldHours: COACH_PAYOUT_HOLD_HOURS,
+      pendingAmount,
+      availableAmount,
+      processingAmount,
+      paidOutAmount,
+      totalCoachEarnings,
+      totalPlatformFee,
+      pendingCount,
+      availableCount,
+      processingCount,
+      nextAvailableAtMillis:
+        nextAvailableAt ?
+          nextAvailableAt.getTime() :
+          null,
+    };
+  },
+);
+
+/**
+ * コーチが「銀行口座へ出金する」を押した時の処理です。
+ *
+ * 新規の出金では、
+ * 1. Tennis ConnectのStripe残高 -> Connected AccountへTransfer
+ * 2. Connected Account -> 登録済み銀行口座へPayout
+ *
+ * の順で実行します。
+ *
+ * Payoutだけ失敗した場合はTransferをやり直さず、
+ * 次回の出金操作で同じ残高からPayoutだけ再試行します。
+ */
+exports.requestCoachPayout = onCall(
+  {
+    secrets: [stripeSecretKey],
+    invoker: "public",
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "出金にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const connectRef = db
+      .collection("stripeConnectAccounts")
+      .doc(uid);
+
+    const lockTimeoutMillis = 5 * 60 * 1000;
+
+    await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(connectRef);
+
+      if (!snap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "先に売上受取設定を完了してください。",
+        );
+      }
+
+      const data = snap.data() || {};
+      const locked = Boolean(data.payoutInProgress);
+      const lockAt = data.payoutLockAt?.toDate?.();
+      const lockIsFresh =
+        lockAt &&
+        Date.now() - lockAt.getTime() < lockTimeoutMillis;
+
+      if (locked && lockIsFresh) {
+        throw new HttpsError(
+          "aborted",
+          "すでに出金処理中です。少し待ってから更新してください。",
+        );
+      }
+
+      transaction.set(
+        connectRef,
+        {
+          payoutInProgress: true,
+          payoutLockAt: new Date(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+    });
+
+    try {
+      const connectSnap = await connectRef.get();
+      const connectData = connectSnap.data() || {};
+      const stripeAccountId = String(
+        connectData.stripeAccountId || "",
+      ).trim();
+
+      if (!stripeAccountId) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Stripeの受取アカウントがありません。",
+        );
+      }
+
+      const stripe = new Stripe(stripeSecretKey.value(), {
+        maxNetworkRetries: 1,
+        timeout: 15000,
+      });
+      const account = await stripe.accounts.retrieve(
+        stripeAccountId,
+      );
+      const connectStatus =
+        coachConnectStatusFromAccount(account);
+
+      if (!connectStatus.readyForPayouts) {
+        throw new HttpsError(
+          "failed-precondition",
+          "本人確認または銀行口座設定が完了していません。",
+        );
+      }
+
+      await ensureManualPayoutSchedule(stripeAccountId);
+
+      let retryRequestId = String(
+        connectData.retryPayoutRequestId || "",
+      ).trim();
+
+      if (!retryRequestId) {
+        const recoverable =
+          await findRecoverableCoachPayoutRequest(connectRef);
+
+        if (recoverable) {
+          retryRequestId = recoverable.id;
+
+          await connectRef.set(
+            {
+              retryPayoutRequestId: retryRequestId,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+      }
+
+      let payoutRef;
+      let payoutRequestId;
+      let reservationIds = [];
+      let payoutAmount = 0;
+      let transferId = "";
+
+      if (retryRequestId) {
+        payoutRequestId = retryRequestId;
+        payoutRef = connectRef
+          .collection("payoutRequests")
+          .doc(payoutRequestId);
+
+        const retrySnap = await payoutRef.get();
+
+        if (!retrySnap.exists) {
+          await connectRef.set(
+            {
+              retryPayoutRequestId: FieldValue.delete(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+          throw new HttpsError(
+            "failed-precondition",
+            "再出金データを確認できませんでした。もう一度お試しください。",
+          );
+        }
+
+        const retryData = retrySnap.data() || {};
+        reservationIds = Array.isArray(
+          retryData.reservationIds,
+        ) ?
+          retryData.reservationIds :
+          [];
+        payoutAmount = Number(retryData.amount || 0);
+        transferId = String(
+          retryData.stripeTransferId || "",
+        );
+
+        if (!transferId || payoutAmount <= 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "再出金データが不完全です。",
+          );
+        }
+      } else {
+        const reservationSnapshot = await db
+          .collection("reservations")
+          .where("coachId", "==", uid)
+          .get();
+
+        const now = new Date();
+        const eligible = [];
+
+        for (const document of reservationSnapshot.docs) {
+          const data = document.data();
+          const wallet =
+            coachWalletAmountsForReservation(data, now);
+          const existingRequestId = String(
+            data.coachPayoutRequestId || "",
+          ).trim();
+          const existingStatus = String(
+            data.coachPayoutStatus || "",
+          );
+
+          if (
+            wallet.state === "available" &&
+            wallet.coachAmount > 0 &&
+            !existingRequestId &&
+            !existingStatus
+          ) {
+            eligible.push({
+              id: document.id,
+              amount: wallet.coachAmount,
+            });
+          }
+        }
+
+        payoutAmount = eligible.reduce(
+          (total, item) => total + item.amount,
+          0,
+        );
+        reservationIds = eligible.map((item) => item.id);
+
+        if (payoutAmount <= 0 || reservationIds.length === 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "現在、出金可能な売上はありません。",
+          );
+        }
+
+        const platformBalance = await stripe.balance.retrieve();
+        const platformAvailableJpy =
+          availableBalanceAmount(platformBalance, "jpy");
+
+        if (platformAvailableJpy < payoutAmount) {
+          throw new HttpsError(
+            "failed-precondition",
+            "Stripe側で売上金がまだ利用可能残高になっていません。" +
+            "時間をおいてからもう一度お試しください。",
+          );
+        }
+
+        payoutRef = connectRef
+          .collection("payoutRequests")
+          .doc();
+        payoutRequestId = payoutRef.id;
+
+        await payoutRef.set({
+          coachId: uid,
+          amount: payoutAmount,
+          currency: "jpy",
+          reservationIds,
+          status: "creating",
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        await updateReservationsForCoachPayout(
+          db,
+          reservationIds,
+          {
+            coachPayoutRequestId: payoutRequestId,
+            coachPayoutStatus: "claimed",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        );
+
+        try {
+          const transfer = await stripe.transfers.create(
+            {
+              amount: payoutAmount,
+              currency: "jpy",
+              destination: stripeAccountId,
+              description:
+                "Tennis Connect coach earnings",
+              metadata: {
+                coachUid: uid,
+                payoutRequestId,
+              },
+            },
+            {
+              idempotencyKey:
+                `coach_payout_transfer_${payoutRequestId}`,
+            },
+          );
+
+          transferId = transfer.id;
+
+          await payoutRef.set(
+            {
+              status: "transfer_succeeded",
+              stripeTransferId: transfer.id,
+              transferredAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          await updateReservationsForCoachPayout(
+            db,
+            reservationIds,
+            {
+              coachPayoutStatus: "transferred",
+              coachPayoutAmount: 0,
+              coachStripeTransferId: transfer.id,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+          );
+
+          // 各予約の90%額を保存します。
+          for (const reservationId of reservationIds) {
+            const reservationRef = db
+              .collection("reservations")
+              .doc(reservationId);
+            const reservationSnap = await reservationRef.get();
+
+            if (!reservationSnap.exists) {
+              continue;
+            }
+
+            const wallet = coachWalletAmountsForReservation(
+              reservationSnap.data(),
+              now,
+            );
+
+            await reservationRef.set(
+              {
+                coachPayoutAmount: wallet.coachAmount,
+                updatedAt: FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+        } catch (error) {
+          await payoutRef.set(
+            {
+              status: "transfer_failed",
+              errorMessage: error?.message || String(error),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          for (const reservationId of reservationIds) {
+            await db
+              .collection("reservations")
+              .doc(reservationId)
+              .set(
+                {
+                  coachPayoutRequestId: FieldValue.delete(),
+                  coachPayoutStatus: FieldValue.delete(),
+                  coachPayoutAmount: FieldValue.delete(),
+                  updatedAt: FieldValue.serverTimestamp(),
+                },
+                {merge: true},
+              );
+          }
+
+          throw error;
+        }
+      }
+
+      const connectedBalance = await stripe.balance.retrieve(
+        {},
+        {
+          stripeAccount: stripeAccountId,
+        },
+      );
+      const connectedAvailableJpy =
+        availableBalanceAmount(connectedBalance, "jpy");
+
+      if (connectedAvailableJpy < payoutAmount) {
+        await payoutRef.set(
+          {
+            status: "waiting_for_stripe_balance",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        await connectRef.set(
+          {
+            retryPayoutRequestId: payoutRequestId,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        await updateReservationsForCoachPayout(
+          db,
+          reservationIds,
+          {
+            coachPayoutStatus: "transferred",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        );
+
+        return {
+          success: true,
+          status: "waiting_for_stripe_balance",
+          amount: payoutAmount,
+          message:
+            "売上をStripeのコーチ残高へ移しました。" +
+            "Stripe側で利用可能になり次第、銀行口座への出金を再実行できます。",
+        };
+      }
+
+      try {
+        const payout = await stripe.payouts.create(
+          {
+            amount: payoutAmount,
+            currency: "jpy",
+            method: "standard",
+            description:
+              "Tennis Connect coach payout",
+            metadata: {
+              coachUid: uid,
+              payoutRequestId,
+            },
+          },
+          {
+            stripeAccount: stripeAccountId,
+            idempotencyKey:
+              `coach_bank_payout_${payoutRequestId}`,
+          },
+        );
+
+        await payoutRef.set(
+          {
+            status: "payout_pending",
+            stripePayoutId: payout.id,
+            stripePayoutStatus: payout.status || "pending",
+            payoutCreatedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        await updateReservationsForCoachPayout(
+          db,
+          reservationIds,
+          {
+            coachPayoutStatus: "payout_pending",
+            coachStripePayoutId: payout.id,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        );
+
+        await connectRef.set(
+          {
+            retryPayoutRequestId: FieldValue.delete(),
+            activePayoutRequestId: payoutRequestId,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          success: true,
+          status: "payout_pending",
+          amount: payoutAmount,
+          message:
+            "銀行口座への出金手続きを開始しました。",
+        };
+      } catch (error) {
+        await payoutRef.set(
+          {
+            status: "payout_failed",
+            errorMessage: error?.message || String(error),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        await connectRef.set(
+          {
+            retryPayoutRequestId: payoutRequestId,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        await updateReservationsForCoachPayout(
+          db,
+          reservationIds,
+          {
+            coachPayoutStatus: "payout_failed",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        );
+
+        throw error;
+      }
+    } catch (error) {
+      if (error instanceof HttpsError) {
+        throw error;
+      }
+
+      logger.error("コーチ出金処理に失敗しました。", {
+        uid,
+        stripeErrorMessage: error?.message || String(error),
+        stripeErrorCode: error?.code || "",
+        stripeErrorType: error?.type || "",
+        stripeErrorParam: error?.param || "",
+        stripeErrorStatusCode: error?.statusCode || "",
+      });
+
+      throw new HttpsError(
+        "internal",
+        "出金処理を開始できませんでした。",
+      );
+    } finally {
+      await connectRef.set(
+        {
+          payoutInProgress: false,
+          payoutLockAt: FieldValue.delete(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+    }
+  },
+);
 
 /**
  * アカウント削除前に、未処理の予約が残っていないか確認します。
