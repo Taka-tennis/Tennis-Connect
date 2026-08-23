@@ -738,16 +738,28 @@ async function markReservationRefund(refund, eventId) {
     const storedSource = String(
       reservation.cancellationSource || "",
     );
-    const cancellationSource =
+    let cancellationSource = "coach";
+
+    if (
+      metadataSource === "weather" ||
+      storedSource === "weather" ||
+      reservation.status === "weather_cancelled"
+    ) {
+      cancellationSource = "weather";
+    } else if (
       metadataSource === "student" ||
       storedSource === "student" ||
-      reservation.status === "student_cancelled" ?
-        "student" :
-        "coach";
+      reservation.status === "student_cancelled"
+    ) {
+      cancellationSource = "student";
+    }
 
-    const cancellationStatus = cancellationSource === "student" ?
-      "student_cancelled" :
-      "coach_cancelled";
+    const cancellationStatus =
+      cancellationSource === "student" ?
+        "student_cancelled" :
+        cancellationSource === "weather" ?
+          "weather_cancelled" :
+          "coach_cancelled";
     const refundStatus = String(refund.status || "pending");
     const refundAmount = Number(refund.amount || 0);
     const amountPaid = Number(
@@ -787,7 +799,105 @@ async function markReservationRefund(refund, eventId) {
       update.paymentStatus = "refund_processing";
     }
 
+    if (cancellationSource === "weather") {
+      if (refundStatus === "succeeded") {
+        update.weatherCancellationStatus = "completed";
+      } else if (
+        refundStatus === "failed" ||
+        refundStatus === "canceled"
+      ) {
+        update.weatherCancellationStatus = "refund_failed";
+      } else {
+        update.weatherCancellationStatus = "refund_processing";
+      }
+    }
+
     transaction.set(reservationRef, update, {merge: true});
+
+    if (cancellationSource === "weather") {
+      const weatherNotifications = [];
+
+      if (refundStatus === "succeeded") {
+        if (reservation.studentId) {
+          weatherNotifications.push({
+            id: `weather_refund_succeeded_student_${reservationId}`,
+            recipientId: reservation.studentId,
+            type: "weatherCancellationRefundedToStudent",
+          });
+        }
+
+        if (reservation.coachId) {
+          weatherNotifications.push({
+            id: `weather_refund_succeeded_coach_${reservationId}`,
+            recipientId: reservation.coachId,
+            type: "weatherCancellationRefundedToCoach",
+          });
+        }
+
+        for (const item of weatherNotifications) {
+          transaction.set(
+            db.collection("notifications").doc(item.id),
+            {
+              recipientId: item.recipientId,
+              coachId: reservation.coachId || "",
+              studentId: reservation.studentId || "",
+              reservationId,
+              type: item.type,
+              title: "雨天・施設都合キャンセルの返金が完了しました",
+              message:
+                "双方合意でキャンセルした予約の全額返金が完了しました。",
+              date: reservation.date || "",
+              times: reservation.times || [],
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+      } else if (
+        refundStatus === "failed" ||
+        refundStatus === "canceled"
+      ) {
+        if (reservation.studentId) {
+          weatherNotifications.push({
+            id: `weather_refund_failed_student_${reservationId}`,
+            recipientId: reservation.studentId,
+            type: "weatherCancellationRefundFailedToStudent",
+          });
+        }
+
+        if (reservation.coachId) {
+          weatherNotifications.push({
+            id: `weather_refund_failed_coach_${reservationId}`,
+            recipientId: reservation.coachId,
+            type: "weatherCancellationRefundFailedToCoach",
+          });
+        }
+
+        for (const item of weatherNotifications) {
+          transaction.set(
+            db.collection("notifications").doc(item.id),
+            {
+              recipientId: item.recipientId,
+              coachId: reservation.coachId || "",
+              studentId: reservation.studentId || "",
+              reservationId,
+              type: item.type,
+              title: "雨天キャンセルの返金状況をご確認ください",
+              message:
+                "全額返金を完了できませんでした。運営が確認します。",
+              date: reservation.date || "",
+              times: reservation.times || [],
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+      }
+
+      return;
+    }
 
     let notificationId = "";
     let notificationType = "";
@@ -912,6 +1022,13 @@ exports.submitReservationRequest = onCall(
       throw new HttpsError(
         "invalid-argument",
         "コーチ情報がありません。",
+      );
+    }
+
+    if (coachId === request.auth.uid) {
+      throw new HttpsError(
+        "failed-precondition",
+        "自分自身のコーチ枠は予約できません。",
       );
     }
 
@@ -1164,6 +1281,13 @@ exports.createCheckoutSession = onCall(
       );
     }
 
+    if (reservation.coachId === request.auth.uid) {
+      throw new HttpsError(
+        "failed-precondition",
+        "自分自身へのレッスン料金は支払えません。",
+      );
+    }
+
     if (
       !["confirmed", "approved"].includes(
         reservation.status,
@@ -1375,6 +1499,27 @@ exports.requestCoachRefund = onCall(
           throw new HttpsError(
             "permission-denied",
             "この予約を返金する権限がありません。",
+          );
+        }
+
+        if (
+          String(data.weatherCancellationStatus || "") ===
+            "pending"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "雨天・施設都合のキャンセル申請が回答待ちです。" +
+            "先に申請への回答または取り下げを完了してください。",
+          );
+        }
+
+        if (
+          data.status === "weather_cancelled" ||
+          data.cancellationSource === "weather"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "この予約は雨天・施設都合の双方合意キャンセルとして処理されています。",
           );
         }
 
@@ -1612,6 +1757,17 @@ exports.requestStudentCancellation = onCall(
           throw new HttpsError(
             "permission-denied",
             "この予約はキャンセルできません。",
+          );
+        }
+
+        if (
+          String(data.weatherCancellationStatus || "") ===
+            "pending"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "雨天・施設都合のキャンセル申請が回答待ちです。" +
+            "先に申請への回答または取り下げを完了してください。",
           );
         }
 
@@ -1899,6 +2055,724 @@ exports.requestStudentCancellation = onCall(
       refundStatus: String(
         refund.status || "pending",
       ),
+      refundId: refund.id,
+    };
+  },
+);
+
+/**
+ * 雨天・施設都合によるキャンセルを相手へ申請します。
+ * 申請できるのは、支払い済み予約の開始24時間前から開始前までです。
+ * この時点では予約・売上・空き枠・返金状態を変更しません。
+ */
+exports.requestWeatherCancellation = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "雨天キャンセルの申請にはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+
+    return db.runTransaction(async (transaction) => {
+      const reservationSnap = await transaction.get(
+        reservationRef,
+      );
+
+      if (!reservationSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "予約が見つかりません。",
+        );
+      }
+
+      const data = reservationSnap.data();
+      const isStudent = data.studentId === uid;
+      const isCoach = data.coachId === uid;
+
+      if (!isStudent && !isCoach) {
+        throw new HttpsError(
+          "permission-denied",
+          "この予約の雨天キャンセルは申請できません。",
+        );
+      }
+
+      if (
+        data.status !== "paid" ||
+        data.paymentStatus !== "paid"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "支払い済みで実施前の予約だけ申請できます。",
+        );
+      }
+
+      const lessonStartDate =
+        lessonStartDateFromReservation(data);
+
+      if (!lessonStartDate) {
+        throw new HttpsError(
+          "failed-precondition",
+          "予約日時を確認できませんでした。",
+        );
+      }
+
+      const millisecondsUntilLesson =
+        lessonStartDate.getTime() - Date.now();
+      const twentyFourHours = 24 * 60 * 60 * 1000;
+
+      if (millisecondsUntilLesson <= 0) {
+        throw new HttpsError(
+          "failed-precondition",
+          "レッスン開始後は新しく申請できません。",
+        );
+      }
+
+      if (millisecondsUntilLesson > twentyFourHours) {
+        throw new HttpsError(
+          "failed-precondition",
+          "雨天・施設都合の申請はレッスン開始24時間前から利用できます。",
+        );
+      }
+
+      const weatherStatus = String(
+        data.weatherCancellationStatus || "",
+      );
+
+      if (weatherStatus === "pending") {
+        if (data.weatherCancellationRequestedBy === uid) {
+          return {
+            requested: true,
+            alreadyPending: true,
+            requesterRole:
+              String(data.weatherCancellationRequesterRole || ""),
+          };
+        }
+
+        throw new HttpsError(
+          "failed-precondition",
+          "相手から雨天・施設都合の申請が届いています。" +
+          "先に同意または拒否を選んでください。",
+        );
+      }
+
+      const requesterRole = isStudent ? "student" : "coach";
+      const counterpartRole = isStudent ? "coach" : "student";
+      const counterpartId = isStudent ?
+        String(data.coachId || "") :
+        String(data.studentId || "");
+
+      if (!counterpartId) {
+        throw new HttpsError(
+          "failed-precondition",
+          "相手のアカウント情報を確認できませんでした。",
+        );
+      }
+
+      transaction.set(
+        reservationRef,
+        {
+          weatherCancellationStatus: "pending",
+          weatherCancellationReason: "weather_or_facility",
+          weatherCancellationRequestedBy: uid,
+          weatherCancellationRequesterRole: requesterRole,
+          weatherCancellationRequestedAt:
+            FieldValue.serverTimestamp(),
+          weatherCancellationRespondedBy: FieldValue.delete(),
+          weatherCancellationResponderRole: FieldValue.delete(),
+          weatherCancellationRespondedAt: FieldValue.delete(),
+          weatherCancellationRejectedAt: FieldValue.delete(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      const notificationRef = db
+        .collection("notifications")
+        .doc(`weather_cancel_request_${reservationId}`);
+      const notificationType = isStudent ?
+        "weatherCancellationRequestToCoach" :
+        "weatherCancellationRequestToStudent";
+      const requesterName = isStudent ? "生徒" : "コーチ";
+
+      transaction.set(
+        notificationRef,
+        {
+          recipientId: counterpartId,
+          coachId: data.coachId || "",
+          studentId: data.studentId || "",
+          reservationId,
+          type: notificationType,
+          title: "雨天・施設都合のキャンセル申請",
+          message:
+            `${requesterName}から全額返金のキャンセル申請が` +
+            "届きました。同意または拒否を選んでください。",
+          date: data.date || "",
+          times: Array.isArray(data.times) ?
+            data.times :
+            data.time ? [data.time] : [],
+          isRead: false,
+          createdAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      return {
+        requested: true,
+        alreadyPending: false,
+        requesterRole,
+        counterpartRole,
+      };
+    });
+  },
+);
+
+/**
+ * 自分が送った雨天・施設都合キャンセル申請を取り下げます。
+ * 取り下げ時点では予約・支払い・売上・空き枠を変更しません。
+ */
+exports.withdrawWeatherCancellation = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "雨天キャンセル申請の取り下げにはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+
+    return db.runTransaction(async (transaction) => {
+      const reservationSnap = await transaction.get(
+        reservationRef,
+      );
+
+      if (!reservationSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "予約が見つかりません。",
+        );
+      }
+
+      const data = reservationSnap.data();
+
+      if (
+        data.studentId !== uid &&
+        data.coachId !== uid
+      ) {
+        throw new HttpsError(
+          "permission-denied",
+          "この予約の申請は取り下げできません。",
+        );
+      }
+
+      if (
+        String(data.weatherCancellationStatus || "") !==
+          "pending"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "取り下げできる雨天キャンセル申請はありません。",
+        );
+      }
+
+      if (data.weatherCancellationRequestedBy !== uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "相手から届いた申請は取り下げできません。同意または拒否を選んでください。",
+        );
+      }
+
+      if (
+        data.status !== "paid" ||
+        data.paymentStatus !== "paid"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "この予約はすでに別の処理が行われています。",
+        );
+      }
+
+      const requesterRole = String(
+        data.weatherCancellationRequesterRole || "",
+      );
+      const counterpartId = requesterRole === "student" ?
+        String(data.coachId || "") :
+        String(data.studentId || "");
+
+      transaction.set(
+        reservationRef,
+        {
+          weatherCancellationStatus: "withdrawn",
+          weatherCancellationWithdrawnBy: uid,
+          weatherCancellationWithdrawnAt:
+            FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      if (counterpartId) {
+        const notificationRef = db
+          .collection("notifications")
+          .doc(`weather_cancel_withdrawn_${reservationId}`);
+
+        transaction.set(
+          notificationRef,
+          {
+            recipientId: counterpartId,
+            coachId: data.coachId || "",
+            studentId: data.studentId || "",
+            reservationId,
+            type: requesterRole === "student" ?
+              "weatherCancellationWithdrawnToCoach" :
+              "weatherCancellationWithdrawnToStudent",
+            title: "雨天キャンセル申請が取り下げられました",
+            message:
+              "雨天・施設都合のキャンセル申請は取り下げられ、予約はそのまま継続します。",
+            date: data.date || "",
+            times: Array.isArray(data.times) ?
+              data.times :
+              data.time ? [data.time] : [],
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
+
+      return {
+        withdrawn: true,
+        reservationId,
+      };
+    });
+  },
+);
+
+/**
+ * 相手から届いた雨天・施設都合キャンセル申請へ回答します。
+ * 拒否した場合は予約を維持します。
+ * 同意した場合のみ予約をキャンセルし、100%返金を開始します。
+ */
+exports.respondWeatherCancellation = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "雨天キャンセルへの回答にはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+    const approve = request.data?.approve;
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    if (typeof approve !== "boolean") {
+      throw new HttpsError(
+        "invalid-argument",
+        "同意または拒否を選択してください。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+
+    const prepared = await db.runTransaction(
+      async (transaction) => {
+        const reservationSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!reservationSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const data = reservationSnap.data();
+        const isStudent = data.studentId === uid;
+        const isCoach = data.coachId === uid;
+
+        if (!isStudent && !isCoach) {
+          throw new HttpsError(
+            "permission-denied",
+            "この申請へ回答する権限がありません。",
+          );
+        }
+
+        if (
+          String(data.weatherCancellationStatus || "") !==
+            "pending"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "現在回答できる雨天キャンセル申請はありません。",
+          );
+        }
+
+        if (data.weatherCancellationRequestedBy === uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "申請した本人は同意できません。" +
+            "相手の回答をお待ちください。",
+          );
+        }
+
+        const requesterRole = String(
+          data.weatherCancellationRequesterRole || "",
+        );
+        const expectedResponderRole =
+          requesterRole === "student" ? "coach" : "student";
+        const actualResponderRole = isStudent ? "student" : "coach";
+
+        if (expectedResponderRole !== actualResponderRole) {
+          throw new HttpsError(
+            "permission-denied",
+            "この申請へ回答する権限がありません。",
+          );
+        }
+
+        if (
+          data.status !== "paid" ||
+          data.paymentStatus !== "paid"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "この予約はすでに別の処理が行われています。",
+          );
+        }
+
+        const lessonEndDate = lessonEndDateFromReservation(data);
+
+        if (!lessonEndDate || lessonEndDate.getTime() <= Date.now()) {
+          throw new HttpsError(
+            "failed-precondition",
+            "レッスン終了後は雨天キャンセル申請へ回答できません。",
+          );
+        }
+
+        const requesterId = String(
+          data.weatherCancellationRequestedBy || "",
+        );
+
+        if (!approve) {
+          transaction.set(
+            reservationRef,
+            {
+              weatherCancellationStatus: "rejected",
+              weatherCancellationRespondedBy: uid,
+              weatherCancellationResponderRole:
+                actualResponderRole,
+              weatherCancellationRespondedAt:
+                FieldValue.serverTimestamp(),
+              weatherCancellationRejectedAt:
+                FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          if (requesterId) {
+            const requesterIsStudent = requesterRole === "student";
+            const notificationRef = db
+              .collection("notifications")
+              .doc(`weather_cancel_rejected_${reservationId}`);
+
+            transaction.set(
+              notificationRef,
+              {
+                recipientId: requesterId,
+                coachId: data.coachId || "",
+                studentId: data.studentId || "",
+                reservationId,
+                type: requesterIsStudent ?
+                  "weatherCancellationRejectedToStudent" :
+                  "weatherCancellationRejectedToCoach",
+                title: "雨天キャンセル申請は同意されませんでした",
+                message:
+                  "予約はキャンセルされず、そのまま継続します。" +
+                  "必要に応じて相手とチャットで確認してください。",
+                date: data.date || "",
+                times: Array.isArray(data.times) ?
+                  data.times :
+                  data.time ? [data.time] : [],
+                isRead: false,
+                createdAt: FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+
+          return {
+            approved: false,
+            requesterRole,
+          };
+        }
+
+        if (!data.stripePaymentIntentId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "決済情報を確認できませんでした。",
+          );
+        }
+
+        const amountPaid = Number(
+          data.amountPaid || data.totalPrice || 0,
+        );
+
+        if (!Number.isInteger(amountPaid) || amountPaid <= 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "支払い金額を確認できませんでした。",
+          );
+        }
+
+        const times = Array.isArray(data.times) ?
+          data.times.map((time) => String(time)) :
+          data.time ? [String(data.time)] : [];
+        const dateId = String(data.date || "")
+          .replaceAll("/", "-");
+
+        transaction.set(
+          reservationRef,
+          {
+            status: "weather_cancelled",
+            cancellationSource: "weather",
+            cancellationRefundPercent: 100,
+            cancellationRefundAmountExpected: amountPaid,
+            cancelledAt: FieldValue.serverTimestamp(),
+            weatherCancelledAt: FieldValue.serverTimestamp(),
+            weatherCancellationStatus: "approved",
+            weatherCancellationRespondedBy: uid,
+            weatherCancellationResponderRole:
+              actualResponderRole,
+            weatherCancellationRespondedAt:
+              FieldValue.serverTimestamp(),
+            weatherCancellationApprovedAt:
+              FieldValue.serverTimestamp(),
+            refundRequestedBy: uid,
+            refundRequestedAt: FieldValue.serverTimestamp(),
+            paymentStatus: "refund_processing",
+            refundStatus: "creating",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        if (data.coachId && dateId && times.length > 0) {
+          const availabilityRef = db
+            .collection("coachAvailability")
+            .doc(data.coachId)
+            .collection("dates")
+            .doc(dateId);
+
+          transaction.set(
+            availabilityRef,
+            {
+              times: FieldValue.arrayUnion(...times),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        if (requesterId) {
+          const requesterIsStudent = requesterRole === "student";
+          const notificationRef = db
+            .collection("notifications")
+            .doc(`weather_cancel_approved_${reservationId}`);
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: requesterId,
+              coachId: data.coachId || "",
+              studentId: data.studentId || "",
+              reservationId,
+              type: requesterIsStudent ?
+                "weatherCancellationApprovedToStudent" :
+                "weatherCancellationApprovedToCoach",
+              title: "雨天・施設都合キャンセルに同意されました",
+              message:
+                "予約をキャンセルし、全額返金の手続きを開始します。",
+              date: data.date || "",
+              times,
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          ...data,
+          approved: true,
+          amountPaid,
+          times,
+          requesterRole,
+        };
+      },
+    );
+
+    if (!prepared.approved) {
+      return {
+        approved: false,
+        reservationId,
+      };
+    }
+
+    const stripe = new Stripe(stripeSecretKey.value());
+    let refund;
+
+    try {
+      refund = await stripe.refunds.create(
+        {
+          payment_intent: prepared.stripePaymentIntentId,
+          metadata: {
+            reservationId,
+            coachId: prepared.coachId || "",
+            studentId: prepared.studentId || "",
+            cancellationSource: "weather",
+            refundPercent: "100",
+          },
+        },
+        {
+          idempotencyKey: `weather_refund_${reservationId}`,
+        },
+      );
+    } catch (error) {
+      await reservationRef.set(
+        {
+          paymentStatus: "refund_failed",
+          refundStatus: "failed_to_create",
+          weatherCancellationStatus: "refund_failed",
+          refundError: error.message,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      const batch = db.batch();
+      const recipients = [
+        {
+          id: prepared.studentId || "",
+          suffix: "student",
+          type: "weatherCancellationRefundFailedToStudent",
+        },
+        {
+          id: prepared.coachId || "",
+          suffix: "coach",
+          type: "weatherCancellationRefundFailedToCoach",
+        },
+      ];
+
+      for (const recipient of recipients) {
+        if (!recipient.id) {
+          continue;
+        }
+
+        batch.set(
+          db.collection("notifications")
+            .doc(
+              `weather_refund_create_failed_${recipient.suffix}_` +
+              reservationId,
+            ),
+          {
+            recipientId: recipient.id,
+            coachId: prepared.coachId || "",
+            studentId: prepared.studentId || "",
+            reservationId,
+            type: recipient.type,
+            title: "雨天キャンセルの返金状況をご確認ください",
+            message:
+              "全額返金を開始できませんでした。運営が確認します。",
+            date: prepared.date || "",
+            times: prepared.times || [],
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
+
+      await batch.commit();
+
+      logger.error("雨天キャンセルの返金作成に失敗しました。", {
+        reservationId,
+        message: error.message,
+      });
+
+      throw new HttpsError(
+        "internal",
+        "予約は双方合意でキャンセルされましたが、" +
+        "返金処理を開始できませんでした。",
+      );
+    }
+
+    await markReservationRefund(
+      refund,
+      `callable_weather_cancel_${reservationId}`,
+    );
+
+    logger.info("雨天・施設都合キャンセルが成立しました。", {
+      reservationId,
+      studentId: prepared.studentId || "",
+      coachId: prepared.coachId || "",
+      refundId: refund.id,
+      refundStatus: refund.status,
+    });
+
+    return {
+      approved: true,
+      reservationId,
+      refundPercent: 100,
+      refundAmount: Number(refund.amount || prepared.amountPaid || 0),
+      refundStatus: String(refund.status || "pending"),
       refundId: refund.id,
     };
   },
@@ -3872,6 +4746,7 @@ function accountDeletionBlockReason(reservation) {
     [
       "coach_cancelled",
       "student_cancelled",
+      "weather_cancelled",
       "cancelled",
       "canceled",
     ].includes(status)

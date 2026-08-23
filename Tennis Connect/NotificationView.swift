@@ -220,14 +220,7 @@ struct NotificationView: View {
                             )
                         }
                         .filter { notification in
-                            switch audience {
-                            case .student:
-                                return notification.type != "reservationRequested" &&
-                                    notification.type != "studentCancellation"
-                            case .coach:
-                                return notification.type == "reservationRequested" ||
-                                    notification.type == "studentCancellation"
-                            }
+                            shouldShowNotification(notification)
                         } ?? []
 
                     loadedNotifications.sort {
@@ -239,6 +232,29 @@ struct NotificationView: View {
                     notifications = loadedNotifications
                 }
             }
+    }
+
+    private func shouldShowNotification(
+        _ notification: NotificationItem
+    ) -> Bool {
+        let coachOnlyTypes: Set<String> = [
+            "reservationRequested",
+            "studentCancellation",
+            "weatherCancellationRequestToCoach",
+            "weatherCancellationWithdrawnToCoach",
+            "weatherCancellationRejectedToCoach",
+            "weatherCancellationApprovedToCoach",
+            "weatherCancellationRefundedToCoach",
+            "weatherCancellationRefundFailedToCoach"
+        ]
+
+        switch audience {
+        case .student:
+            return !coachOnlyTypes.contains(notification.type)
+
+        case .coach:
+            return coachOnlyTypes.contains(notification.type)
+        }
     }
 
     private func markAsRead(_ notification: NotificationItem) {
@@ -279,8 +295,22 @@ struct NotificationView: View {
             showCoachReservations = true
 
         case "studentCancellationRefunded",
-             "studentCancellationRefundFailed":
+             "studentCancellationRefundFailed",
+             "weatherCancellationRequestToStudent",
+             "weatherCancellationWithdrawnToStudent",
+             "weatherCancellationRejectedToStudent",
+             "weatherCancellationApprovedToStudent",
+             "weatherCancellationRefundedToStudent",
+             "weatherCancellationRefundFailedToStudent":
             showStudentReservations = true
+
+        case "weatherCancellationRequestToCoach",
+             "weatherCancellationWithdrawnToCoach",
+             "weatherCancellationRejectedToCoach",
+             "weatherCancellationApprovedToCoach",
+             "weatherCancellationRefundedToCoach",
+             "weatherCancellationRefundFailedToCoach":
+            showCoachReservations = true
 
         default:
             break
@@ -411,6 +441,24 @@ struct NotificationView: View {
             return "checkmark.seal.fill"
         case "coachCancellationRefundFailed":
             return "exclamationmark.triangle.fill"
+        case "weatherCancellationRequestToStudent",
+             "weatherCancellationRequestToCoach":
+            return "cloud.rain.fill"
+        case "weatherCancellationWithdrawnToStudent",
+             "weatherCancellationWithdrawnToCoach":
+            return "arrow.uturn.backward.circle.fill"
+        case "weatherCancellationRejectedToStudent",
+             "weatherCancellationRejectedToCoach":
+            return "xmark.circle.fill"
+        case "weatherCancellationApprovedToStudent",
+             "weatherCancellationApprovedToCoach":
+            return "checkmark.circle.fill"
+        case "weatherCancellationRefundedToStudent",
+             "weatherCancellationRefundedToCoach":
+            return "checkmark.seal.fill"
+        case "weatherCancellationRefundFailedToStudent",
+             "weatherCancellationRefundFailedToCoach":
+            return "exclamationmark.triangle.fill"
         default:
             return "bell.fill"
         }
@@ -435,6 +483,24 @@ struct NotificationView: View {
         case "coachCancellationRefunded":
             return .green
         case "coachCancellationRefundFailed":
+            return .red
+        case "weatherCancellationRequestToStudent",
+             "weatherCancellationRequestToCoach":
+            return .blue
+        case "weatherCancellationWithdrawnToStudent",
+             "weatherCancellationWithdrawnToCoach":
+            return .secondary
+        case "weatherCancellationRejectedToStudent",
+             "weatherCancellationRejectedToCoach":
+            return .red
+        case "weatherCancellationApprovedToStudent",
+             "weatherCancellationApprovedToCoach":
+            return .green
+        case "weatherCancellationRefundedToStudent",
+             "weatherCancellationRefundedToCoach":
+            return .green
+        case "weatherCancellationRefundFailedToStudent",
+             "weatherCancellationRefundFailedToCoach":
             return .red
         default:
             return .blue

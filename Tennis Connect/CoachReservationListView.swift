@@ -19,6 +19,8 @@ struct CoachReservationListView: View {
         let refundStatus: String
         let cancellationSource: String
         let cancellationRefundPercent: Int
+        let weatherCancellationStatus: String
+        let weatherCancellationRequesterRole: String
         let totalPrice: Int
         let createdAt: Timestamp?
     }
@@ -54,6 +56,15 @@ struct CoachReservationListView: View {
     @State private var showRejectAlert = false
     @State private var reservationToRefund: Reservation?
     @State private var showRefundAlert = false
+
+    @State private var reservationToWeatherRequest: Reservation?
+    @State private var showWeatherRequestAlert = false
+    @State private var reservationToWeatherWithdraw: Reservation?
+    @State private var showWeatherWithdrawAlert = false
+    @State private var reservationToWeatherApprove: Reservation?
+    @State private var showWeatherApproveAlert = false
+    @State private var reservationToWeatherReject: Reservation?
+    @State private var showWeatherRejectAlert = false
 
     private let db = Firestore.firestore()
 
@@ -130,6 +141,80 @@ struct CoachReservationListView: View {
             }
         } message: {
             Text("予約をコーチ都合でキャンセルし、生徒へ全額返金します。空き枠も予約可能な状態へ戻ります。この操作は取り消せません。")
+        }
+        .alert(
+            "雨天・施設都合でキャンセル申請しますか？",
+            isPresented: $showWeatherRequestAlert
+        ) {
+            Button("戻る", role: .cancel) {
+                reservationToWeatherRequest = nil
+            }
+
+            Button("生徒へ申請する") {
+                if let reservation = reservationToWeatherRequest {
+                    requestWeatherCancellation(reservation)
+                }
+                reservationToWeatherRequest = nil
+            }
+        } message: {
+            Text("生徒が同意した場合のみ予約がキャンセルされ、全額返金されます。")
+        }
+        .alert(
+            "雨天キャンセル申請を取り下げますか？",
+            isPresented: $showWeatherWithdrawAlert
+        ) {
+            Button("戻る", role: .cancel) {
+                reservationToWeatherWithdraw = nil
+            }
+
+            Button("取り下げる", role: .destructive) {
+                if let reservation = reservationToWeatherWithdraw {
+                    withdrawWeatherCancellation(reservation)
+                }
+                reservationToWeatherWithdraw = nil
+            }
+        } message: {
+            Text("取り下げると予約はそのまま継続します。")
+        }
+        .alert(
+            "生徒からの雨天キャンセル申請に同意しますか？",
+            isPresented: $showWeatherApproveAlert
+        ) {
+            Button("戻る", role: .cancel) {
+                reservationToWeatherApprove = nil
+            }
+
+            Button("同意して全額返金", role: .destructive) {
+                if let reservation = reservationToWeatherApprove {
+                    respondWeatherCancellation(
+                        reservation,
+                        approve: true
+                    )
+                }
+                reservationToWeatherApprove = nil
+            }
+        } message: {
+            Text("同意すると予約をキャンセルし、生徒への全額返金を開始します。")
+        }
+        .alert(
+            "生徒からの雨天キャンセル申請を拒否しますか？",
+            isPresented: $showWeatherRejectAlert
+        ) {
+            Button("戻る", role: .cancel) {
+                reservationToWeatherReject = nil
+            }
+
+            Button("拒否する", role: .destructive) {
+                if let reservation = reservationToWeatherReject {
+                    respondWeatherCancellation(
+                        reservation,
+                        approve: false
+                    )
+                }
+                reservationToWeatherReject = nil
+            }
+        } message: {
+            Text("拒否した場合、予約はそのまま継続します。")
         }
     }
 
@@ -337,6 +422,25 @@ struct CoachReservationListView: View {
                 .padding(.top, 4)
             }
 
+            if reservation.weatherCancellationStatus == "pending" {
+                weatherPendingSection(reservation)
+            } else if canRequestWeatherCancellation(reservation) {
+                Button {
+                    reservationToWeatherRequest = reservation
+                    showWeatherRequestAlert = true
+                } label: {
+                    Label(
+                        "雨天・施設都合でキャンセル申請",
+                        systemImage: "cloud.rain"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.blue)
+                .disabled(updatingReservationId != nil)
+                .padding(.top, 4)
+            }
+
             if canRequestRefund(reservation) {
                 Button(role: .destructive) {
                     reservationToRefund = reservation
@@ -487,8 +591,14 @@ struct CoachReservationListView: View {
                                 cancellationSource: data["cancellationSource"] as? String ?? "",
                                 cancellationRefundPercent:
                                     (data["cancellationRefundPercent"] as? NSNumber)?.intValue
-                                    ?? (data["cancellationRefundPercent"] as? Int)
+                                    ?? data["cancellationRefundPercent"] as? Int
                                     ?? 0,
+                                weatherCancellationStatus:
+                                    data["weatherCancellationStatus"] as? String
+                                    ?? "",
+                                weatherCancellationRequesterRole:
+                                    data["weatherCancellationRequesterRole"] as? String
+                                    ?? "",
                                 totalPrice: data["totalPrice"] as? Int ?? 0,
                                 createdAt: data["createdAt"] as? Timestamp
                             )
@@ -619,6 +729,191 @@ struct CoachReservationListView: View {
         }
     }
 
+    @ViewBuilder
+    private func weatherPendingSection(
+        _ reservation: Reservation
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(
+                "雨天・施設都合キャンセル",
+                systemImage: "cloud.rain.fill"
+            )
+            .font(.subheadline)
+            .fontWeight(.semibold)
+            .foregroundStyle(.blue)
+
+            if reservation.weatherCancellationRequesterRole == "coach" {
+                Text(
+                    "生徒の回答待ちです。同意された場合のみキャンセル・全額返金となります。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Button {
+                    reservationToWeatherWithdraw = reservation
+                    showWeatherWithdrawAlert = true
+                } label: {
+                    Label(
+                        "申請を取り下げる",
+                        systemImage: "arrow.uturn.backward"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(updatingReservationId != nil)
+            } else {
+                Text(
+                    "生徒から申請が届いています。同意すると全額返金、拒否すると予約は継続します。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    Button {
+                        reservationToWeatherApprove = reservation
+                        showWeatherApproveAlert = true
+                    } label: {
+                        Label(
+                            "同意する",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    .disabled(updatingReservationId != nil)
+
+                    Button {
+                        reservationToWeatherReject = reservation
+                        showWeatherRejectAlert = true
+                    } label: {
+                        Label(
+                            "同意しない",
+                            systemImage: "xmark.circle"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .disabled(updatingReservationId != nil)
+                }
+            }
+        }
+        .padding()
+        .background(Color.blue.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.top, 4)
+    }
+
+    private func canRequestWeatherCancellation(
+        _ reservation: Reservation
+    ) -> Bool {
+        guard reservation.status == "paid",
+              reservation.paymentStatus == "paid",
+              reservation.weatherCancellationStatus != "pending",
+              let startDate = lessonStartDate(reservation) else {
+            return false
+        }
+
+        let interval = startDate.timeIntervalSinceNow
+        let twentyFourHours = 24.0 * 60.0 * 60.0
+
+        return interval > 0 &&
+            interval <= twentyFourHours
+    }
+
+    private func requestWeatherCancellation(
+        _ reservation: Reservation
+    ) {
+        updatingReservationId = reservation.id
+        errorMessage = ""
+
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
+
+        functions
+            .httpsCallable("requestWeatherCancellation")
+            .call([
+                "reservationId": reservation.id
+            ]) { _, error in
+                DispatchQueue.main.async {
+                    updatingReservationId = nil
+
+                    if let error {
+                        errorMessage =
+                            "雨天キャンセルを申請できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    loadReservations()
+                }
+            }
+    }
+
+    private func withdrawWeatherCancellation(
+        _ reservation: Reservation
+    ) {
+        updatingReservationId = reservation.id
+        errorMessage = ""
+
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
+
+        functions
+            .httpsCallable("withdrawWeatherCancellation")
+            .call([
+                "reservationId": reservation.id
+            ]) { _, error in
+                DispatchQueue.main.async {
+                    updatingReservationId = nil
+
+                    if let error {
+                        errorMessage =
+                            "雨天キャンセル申請を取り下げられませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    loadReservations()
+                }
+            }
+    }
+
+    private func respondWeatherCancellation(
+        _ reservation: Reservation,
+        approve: Bool
+    ) {
+        updatingReservationId = reservation.id
+        errorMessage = ""
+
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
+
+        functions
+            .httpsCallable("respondWeatherCancellation")
+            .call([
+                "reservationId": reservation.id,
+                "approve": approve
+            ]) { _, error in
+                DispatchQueue.main.async {
+                    updatingReservationId = nil
+
+                    if let error {
+                        errorMessage =
+                            "雨天キャンセルへ回答できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    loadReservations()
+                }
+            }
+    }
+
     private func requestCoachRefund(_ reservation: Reservation) {
         guard Auth.auth().currentUser?.uid != nil else {
             errorMessage = "返金にはコーチのログインが必要です"
@@ -691,6 +986,7 @@ struct CoachReservationListView: View {
 
         return cancellableStatus &&
         refundablePaymentStatus &&
+        reservation.weatherCancellationStatus != "pending" &&
         !isPast(reservation)
     }
 
@@ -741,6 +1037,17 @@ struct CoachReservationListView: View {
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(.red)
+
+        } else if reservation.weatherCancellationStatus == "pending" {
+            Label(
+                reservation.weatherCancellationRequesterRole == "coach"
+                    ? "回答待ち"
+                    : "要回答",
+                systemImage: "cloud.rain.fill"
+            )
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.orange)
 
         } else if isRefundProcessing(reservation) {
             Label("返金処理中", systemImage: "arrow.triangle.2.circlepath")
@@ -799,6 +1106,12 @@ struct CoachReservationListView: View {
                 .fontWeight(.semibold)
                 .foregroundStyle(.purple)
 
+        case "weather_cancelled":
+            Label("雨天キャンセル", systemImage: "cloud.rain.fill")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.blue)
+
         case "student_cancelled":
             Label("生徒都合キャンセル", systemImage: "minus.circle.fill")
                 .font(.caption)
@@ -825,6 +1138,11 @@ struct CoachReservationListView: View {
         if reservation.paymentStatus == "refunded" ||
             reservation.refundStatus == "succeeded" {
 
+            if reservation.status == "weather_cancelled" ||
+                reservation.cancellationSource == "weather" {
+                return "雨天・施設都合キャンセル・全額返金済み"
+            }
+
             if studentCancelled {
                 if reservation.cancellationRefundPercent == 50 {
                     return "生徒都合キャンセル・50%返金済み"
@@ -846,6 +1164,11 @@ struct CoachReservationListView: View {
         }
 
         if isRefundProcessing(reservation) {
+            if reservation.status == "weather_cancelled" ||
+                reservation.cancellationSource == "weather" {
+                return "雨天・施設都合キャンセル・全額返金処理中"
+            }
+
             if studentCancelled {
                 if reservation.cancellationRefundPercent == 50 {
                     return "生徒都合キャンセル・50%返金処理中"
@@ -855,6 +1178,12 @@ struct CoachReservationListView: View {
             }
 
             return "コーチ都合キャンセル・全額返金処理中"
+        }
+
+        if reservation.weatherCancellationStatus == "pending" {
+            return reservation.weatherCancellationRequesterRole == "coach"
+                ? "雨天・施設都合キャンセル・生徒の回答待ち"
+                : "生徒から雨天・施設都合キャンセル申請があります"
         }
 
         switch reservation.status {
@@ -870,6 +1199,9 @@ struct CoachReservationListView: View {
             return "キャンセルされた予約"
         case "coach_cancelled":
             return "コーチ都合でキャンセルした予約"
+        case "weather_cancelled":
+            return "雨天・施設都合で双方合意キャンセル"
+
         case "student_cancelled":
             if reservation.cancellationRefundPercent == 0 {
                 return "生徒都合キャンセル・返金なし"
