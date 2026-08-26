@@ -223,9 +223,31 @@ struct NotificationView: View {
                             shouldShowNotification(notification)
                         } ?? []
 
+                    let withdrawnReservationIds = Set(
+                        loadedNotifications
+                            .filter {
+                                $0.type == "reservationWithdrawn"
+                                    && !$0.reservationId.isEmpty
+                            }
+                            .map(\.reservationId)
+                    )
+
+                    if !withdrawnReservationIds.isEmpty {
+                        loadedNotifications.removeAll {
+                            $0.type == "reservationRequested"
+                                && withdrawnReservationIds.contains(
+                                    $0.reservationId
+                                )
+                        }
+                    }
+
                     loadedNotifications.sort {
-                        let firstDate = $0.createdAt?.dateValue() ?? .distantPast
-                        let secondDate = $1.createdAt?.dateValue() ?? .distantPast
+                        let firstDate =
+                            $0.createdAt?.dateValue()
+                            ?? .distantPast
+                        let secondDate =
+                            $1.createdAt?.dateValue()
+                            ?? .distantPast
                         return firstDate > secondDate
                     }
 
@@ -239,6 +261,7 @@ struct NotificationView: View {
     ) -> Bool {
         let coachOnlyTypes: Set<String> = [
             "reservationRequested",
+            "reservationWithdrawn",
             "studentCancellation",
             "weatherCancellationRequestToCoach",
             "weatherCancellationWithdrawnToCoach",
@@ -291,6 +314,7 @@ struct NotificationView: View {
             showStudentReservations = true
 
         case "reservationRequested",
+             "reservationWithdrawn",
              "studentCancellation":
             showCoachReservations = true
 
@@ -429,6 +453,8 @@ struct NotificationView: View {
             return "xmark.circle.fill"
         case "reservationRequested":
             return "calendar.badge.plus"
+        case "reservationWithdrawn":
+            return "calendar.badge.minus"
         case "studentCancellation":
             return "calendar.badge.minus"
         case "studentCancellationRefunded":
@@ -472,6 +498,8 @@ struct NotificationView: View {
             return .red
         case "reservationRequested":
             return .orange
+        case "reservationWithdrawn":
+            return .secondary
         case "studentCancellation":
             return .red
         case "studentCancellationRefunded":

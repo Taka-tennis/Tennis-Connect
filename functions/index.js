@@ -989,6 +989,90 @@ async function markReservationRefund(refund, eventId) {
 
 
 /**
+ * コーチ本人の予約に表示する生徒名を返します。
+ * studentsコレクションをクライアントへ公開せず、
+ * 担当コーチの予約に紐づく生徒だけをサーバー側で解決します。
+ */
+exports.getCoachReservationStudentNames = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "予約一覧の確認にはログインが必要です。",
+      );
+    }
+
+    const coachId = request.auth.uid;
+    const db = getFirestore();
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .where("coachId", "==", coachId)
+      .get();
+
+    const studentIds = [
+      ...new Set(
+        reservationSnapshot.docs
+          .map((document) => {
+            const data = document.data();
+
+            return String(
+              data.studentId || "",
+            ).trim();
+          })
+          .filter((studentId) => studentId !== ""),
+      ),
+    ];
+
+    const studentNameMap = new Map();
+
+    await Promise.all(
+      studentIds.map(async (studentId) => {
+        const studentSnap = await db
+          .collection("students")
+          .doc(studentId)
+          .get();
+
+        if (!studentSnap.exists) {
+          return;
+        }
+
+        const displayName = String(
+          studentSnap.data()?.displayName || "",
+        ).trim();
+
+        if (displayName) {
+          studentNameMap.set(
+            studentId,
+            displayName,
+          );
+        }
+      }),
+    );
+
+    const names = {};
+
+    for (const document of reservationSnapshot.docs) {
+      const data = document.data();
+      const studentId = String(
+        data.studentId || "",
+      ).trim();
+      const savedStudentName = String(
+        data.studentName || "",
+      ).trim();
+
+      names[document.id] =
+        studentNameMap.get(studentId) ||
+        savedStudentName ||
+        "生徒";
+    }
+
+    return {names};
+  },
+);
+
+
+/**
  * 生徒の予約申請をサーバー側で確定します。
  * 空き枠確認・予約作成・空き枠除去・通知作成を
  * 1つのFirestore Transactionで処理します。
@@ -1085,6 +1169,12 @@ exports.submitReservationRequest = onCall(
     const coachRef = db
       .collection("coaches")
       .doc(coachId);
+    const studentRef = db
+      .collection("students")
+      .doc(request.auth.uid);
+    const blockRef = db
+      .collection("blocks")
+      .doc(`${request.auth.uid}__${coachId}`);
     const availabilityRef = db
       .collection("coachAvailability")
       .doc(coachId)
@@ -1099,10 +1189,27 @@ exports.submitReservationRequest = onCall(
 
     const result = await db.runTransaction(
       async (transaction) => {
+        const blockSnap = await transaction.get(blockRef);
         const coachSnap = await transaction.get(coachRef);
+        const studentSnap = await transaction.get(studentRef);
         const availabilitySnap = await transaction.get(
           availabilityRef,
         );
+
+        if (blockSnap.exists) {
+          const blockData = blockSnap.data() || {};
+          const isActiveCoachBlock =
+            blockData.blockerId === request.auth.uid &&
+            blockData.blockedUserId === coachId &&
+            blockData.blockedRole === "coach";
+
+          if (isActiveCoachBlock) {
+            throw new HttpsError(
+              "failed-precondition",
+              "ブロック中のコーチには予約を申請できません。",
+            );
+          }
+        }
 
         if (!coachSnap.exists) {
           throw new HttpsError(
@@ -1119,6 +1226,13 @@ exports.submitReservationRequest = onCall(
         }
 
         const coach = coachSnap.data();
+        const student = studentSnap.exists ?
+          studentSnap.data() :
+          {};
+        const studentName = String(
+          student?.displayName || "生徒",
+        ).trim() || "生徒";
+
         const availableTimes = Array.isArray(
           availabilitySnap.get("times"),
         ) ?
@@ -1175,6 +1289,7 @@ exports.submitReservationRequest = onCall(
           {
             coachId,
             studentId: request.auth.uid,
+            studentName,
             coachName: String(
               coach.name || "コーチ名未登録",
             ),
@@ -1234,6 +1349,1125 @@ exports.submitReservationRequest = onCall(
     });
 
     return result;
+  },
+);
+
+
+/**
+ * 生徒が未決済の予約申請・承認済み予約を取り下げます。
+ * 予約枠を復活させ、コーチへ取り下げ通知を作成します。
+ */
+exports.withdrawReservationRequest = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "予約を取り下げるにはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+
+    const preflightSnap = await reservationRef.get();
+
+    if (!preflightSnap.exists) {
+      throw new HttpsError(
+        "not-found",
+        "予約が見つかりません。",
+      );
+    }
+
+    const preflightData = preflightSnap.data() || {};
+
+    if (preflightData.studentId !== uid) {
+      throw new HttpsError(
+        "permission-denied",
+        "この予約は取り下げられません。",
+      );
+    }
+
+    if (
+      ["cancelled", "canceled"].includes(
+        String(preflightData.status || ""),
+      ) &&
+      ["student_withdrawal", "block"].includes(
+        String(preflightData.cancellationSource || ""),
+      )
+    ) {
+      return {
+        withdrawn: true,
+        alreadyWithdrawn: true,
+        reservationId,
+      };
+    }
+
+    const preflightStatus = String(
+      preflightData.status || "",
+    );
+    const preflightPaymentStatus = String(
+      preflightData.paymentStatus || "",
+    );
+
+    if (
+      !["pending", "confirmed"].includes(
+        preflightStatus,
+      ) ||
+      preflightPaymentStatus === "paid"
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "この予約は現在、取り下げできない状態です。",
+      );
+    }
+
+    const checkoutSessionId = String(
+      preflightData.stripeCheckoutSessionId || "",
+    ).trim();
+
+    if (checkoutSessionId) {
+      const stripe = new Stripe(
+        stripeSecretKey.value(),
+      );
+      let session;
+
+      try {
+        session = await stripe.checkout.sessions.retrieve(
+          checkoutSessionId,
+        );
+      } catch (error) {
+        logger.error(
+          "予約取り下げ前のCheckout Session確認に失敗しました。",
+          {
+            reservationId,
+            checkoutSessionId,
+            message: error?.message || String(error),
+          },
+        );
+
+        throw new HttpsError(
+          "internal",
+          "支払い状況を確認できませんでした。少し待ってからもう一度お試しください。",
+        );
+      }
+
+      if (
+        session.payment_status === "paid" ||
+        session.status === "complete"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "支払いが完了しているため、この予約は取り下げできません。",
+        );
+      }
+
+      if (session.status === "open") {
+        try {
+          await stripe.checkout.sessions.expire(
+            checkoutSessionId,
+          );
+        } catch (error) {
+          logger.error(
+            "予約取り下げ時のCheckout Session失効に失敗しました。",
+            {
+              reservationId,
+              checkoutSessionId,
+              message: error?.message || String(error),
+            },
+          );
+
+          throw new HttpsError(
+            "internal",
+            "支払い画面を安全に終了できませんでした。少し待ってからもう一度お試しください。",
+          );
+        }
+      }
+    }
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const reservationSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!reservationSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const data = reservationSnap.data() || {};
+
+        if (data.studentId !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "この予約は取り下げられません。",
+          );
+        }
+
+        const status = String(data.status || "");
+        const paymentStatus = String(
+          data.paymentStatus || "",
+        );
+
+        if (
+          ["cancelled", "canceled"].includes(status) &&
+          ["student_withdrawal", "block"].includes(
+            String(data.cancellationSource || ""),
+          )
+        ) {
+          return {
+            withdrawn: true,
+            alreadyWithdrawn: true,
+            reservationId,
+          };
+        }
+
+        if (
+          !["pending", "confirmed"].includes(status) ||
+          paymentStatus === "paid"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "予約状況が変わりました。画面を更新してもう一度ご確認ください。",
+          );
+        }
+
+        const currentSessionId = String(
+          data.stripeCheckoutSessionId || "",
+        ).trim();
+
+        if (currentSessionId !== checkoutSessionId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "予約状況が変わりました。画面を更新してもう一度ご確認ください。",
+          );
+        }
+
+        const coachId = String(
+          data.coachId || "",
+        ).trim();
+        const times = Array.isArray(data.times) ?
+          data.times.map((time) => String(time)) :
+          data.time ? [String(data.time)] : [];
+        const dateId = String(data.date || "")
+          .replaceAll("/", "-");
+
+        transaction.set(
+          reservationRef,
+          {
+            status: "cancelled",
+            cancellationSource: "student_withdrawal",
+            cancellationRefundPercent: 0,
+            cancellationRefundAmountExpected: 0,
+            paymentStatus: "not_paid",
+            refundStatus: "not_applicable",
+            refundAmount: 0,
+            withdrawnBy: uid,
+            withdrawnAt: FieldValue.serverTimestamp(),
+            cancelledAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        if (
+          coachId &&
+          dateId &&
+          times.length > 0
+        ) {
+          const availabilityRef = db
+            .collection("coachAvailability")
+            .doc(coachId)
+            .collection("dates")
+            .doc(dateId);
+
+          transaction.set(
+            availabilityRef,
+            {
+              times: FieldValue.arrayUnion(...times),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        if (coachId) {
+          const notificationRef = db
+            .collection("notifications")
+            .doc(
+              `reservation_withdrawn_${reservationId}`,
+            );
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: coachId,
+              coachId,
+              studentId: uid,
+              reservationId,
+              type: "reservationWithdrawn",
+              title: "予約が取り下げられました",
+              message:
+                "生徒が予約を取り下げました。" +
+                "該当する時間は再び予約可能になっています。",
+              date: data.date || "",
+              times,
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          withdrawn: true,
+          alreadyWithdrawn: false,
+          reservationId,
+        };
+      },
+    );
+
+    logger.info(
+      "予約を取り下げました。",
+      {
+        reservationId,
+        studentId: uid,
+      },
+    );
+
+    return result;
+  },
+);
+
+
+/**
+ * コーチをブロックします。
+ *
+ * 未決済の予約申請・承認済み予約は取り下げて空き枠を戻します。
+ * 支払い済みの今後の予約は、通常の生徒都合キャンセルポリシー
+ * （100% / 50% / 返金なし）を適用してキャンセルします。
+ *
+ * 初回呼び出しでは予約状況と返金見込みを返し、
+ * 利用者が確認した後の呼び出しでキャンセルとブロックを実行します。
+ */
+exports.blockCoach = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "ブロック機能を使うにはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const coachId = String(
+      request.data?.coachId || "",
+    ).trim();
+    const confirmReservationCancellation =
+      request.data?.confirmReservationCancellation === true;
+
+    if (!coachId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "コーチ情報がありません。",
+      );
+    }
+
+    if (coachId === uid) {
+      throw new HttpsError(
+        "failed-precondition",
+        "自分自身をブロックすることはできません。",
+      );
+    }
+
+    const db = getFirestore();
+    const blockRef = db
+      .collection("blocks")
+      .doc(`${uid}__${coachId}`);
+    const favoriteRef = db
+      .collection("favorites")
+      .doc(`${uid}__${coachId}`);
+    const reservationQuery = db
+      .collection("reservations")
+      .where("studentId", "==", uid);
+
+    /**
+     * 現在の予約をブロック時の扱いに分類します。
+     *
+     * @param {FirebaseFirestore.QuerySnapshot} snapshot
+     * @param {Date} now
+     * @return {{
+     *   cancellable: Array<FirebaseFirestore.QueryDocumentSnapshot>,
+     *   paidUpcoming: Array<FirebaseFirestore.QueryDocumentSnapshot>
+     * }}
+     */
+    const classifyReservations = (
+      snapshot,
+      now = new Date(),
+    ) => {
+      const cancellable = [];
+      const paidUpcoming = [];
+
+      for (const document of snapshot.docs) {
+        const data = document.data();
+
+        if (String(data.coachId || "") !== coachId) {
+          continue;
+        }
+
+        const status = String(data.status || "");
+        const paymentStatus = String(
+          data.paymentStatus || "",
+        );
+
+        if (
+          [
+            "coach_cancelled",
+            "student_cancelled",
+            "weather_cancelled",
+            "cancelled",
+            "canceled",
+            "rejected",
+            "completed",
+          ].includes(status)
+        ) {
+          continue;
+        }
+
+        const isPaid =
+          status === "paid" ||
+          paymentStatus === "paid";
+
+        if (isPaid) {
+          const lessonStartDate =
+            lessonStartDateFromReservation(data);
+
+          // 日時を確認できない支払い済み予約は、
+          // 誤って残すよりもブロック処理自体を止めるため対象に含めます。
+          if (
+            !lessonStartDate ||
+            lessonStartDate > now
+          ) {
+            paidUpcoming.push(document);
+          }
+
+          continue;
+        }
+
+        if (
+          [
+            "pending",
+            "confirmed",
+            "approved",
+            "reserved",
+          ].includes(status)
+        ) {
+          cancellable.push(document);
+        }
+      }
+
+      return {
+        cancellable,
+        paidUpcoming,
+      };
+    };
+
+    /**
+     * 支払い済み予約の返金見込みを計算します。
+     *
+     * @param {Array<FirebaseFirestore.QueryDocumentSnapshot>} documents
+     * @param {Date} now
+     * @return {object}
+     */
+    const paidCancellationSummary = (
+      documents,
+      now = new Date(),
+    ) => {
+      let fullRefundReservationCount = 0;
+      let halfRefundReservationCount = 0;
+      let noRefundReservationCount = 0;
+      let expectedRefundAmountTotal = 0;
+
+      for (const document of documents) {
+        const data = document.data();
+
+        if (
+          String(data.weatherCancellationStatus || "") ===
+          "pending"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "雨天・施設都合のキャンセル申請が回答待ちの予約があります。" +
+            "先に申請への回答または取り下げを完了してください。",
+          );
+        }
+
+        if (
+          ["refund_processing", "refund_failed"].includes(
+            String(data.paymentStatus || ""),
+          ) ||
+          [
+            "creating",
+            "pending",
+            "requires_action",
+            "failed",
+            "canceled",
+            "failed_to_create",
+          ].includes(
+            String(data.refundStatus || ""),
+          )
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "返金処理中または返金確認中の予約があります。" +
+            "返金状態が確定してからブロックしてください。",
+          );
+        }
+
+        const policy =
+          studentCancellationPolicy(data, now);
+        const amountPaid = Number(
+          data.amountPaid ||
+          data.totalPrice ||
+          0,
+        );
+
+        if (
+          !Number.isInteger(amountPaid) ||
+          amountPaid <= 0
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "支払い金額を確認できない予約があります。",
+          );
+        }
+
+        const expectedRefundAmount =
+          Math.floor(
+            amountPaid *
+            policy.refundPercent /
+            100,
+          );
+
+        expectedRefundAmountTotal +=
+          expectedRefundAmount;
+
+        if (policy.refundPercent === 100) {
+          fullRefundReservationCount += 1;
+        } else if (policy.refundPercent === 50) {
+          halfRefundReservationCount += 1;
+        } else {
+          noRefundReservationCount += 1;
+        }
+      }
+
+      return {
+        fullRefundReservationCount,
+        halfRefundReservationCount,
+        noRefundReservationCount,
+        expectedRefundAmountTotal,
+      };
+    };
+
+    // 初回は予約状況と返金見込みを確認します。
+    if (!confirmReservationCancellation) {
+      return db.runTransaction(
+        async (transaction) => {
+          const blockSnap =
+            await transaction.get(blockRef);
+          const reservationSnapshot =
+            await transaction.get(
+              reservationQuery,
+            );
+          const now = new Date();
+
+          const {
+            cancellable,
+            paidUpcoming,
+          } = classifyReservations(
+            reservationSnapshot,
+            now,
+          );
+
+          const summary =
+            paidCancellationSummary(
+              paidUpcoming,
+              now,
+            );
+
+          if (
+            cancellable.length > 0 ||
+            paidUpcoming.length > 0
+          ) {
+            return {
+              blocked: false,
+              requiresConfirmation: true,
+              cancellableReservationCount:
+                cancellable.length,
+              paidUpcomingReservationCount:
+                paidUpcoming.length,
+              ...summary,
+            };
+          }
+
+          if (!blockSnap.exists) {
+            transaction.set(
+              blockRef,
+              {
+                blockerId: uid,
+                blockedUserId: coachId,
+                blockedRole: "coach",
+                source: "coachDetail",
+                createdAt:
+                  FieldValue.serverTimestamp(),
+              },
+            );
+          }
+
+          transaction.delete(favoriteRef);
+
+          return {
+            blocked: true,
+            requiresConfirmation: false,
+            cancelledReservationCount: 0,
+            paidCancelledReservationCount: 0,
+            expectedRefundAmountTotal: 0,
+            refundFailureCount: 0,
+          };
+        },
+      );
+    }
+
+    // 承認後の未決済Checkout Sessionが開いたままなら、
+    // 予約を取り下げる前にStripe側で失効させます。
+    const preflightSnapshot =
+      await reservationQuery.get();
+    const preflightNow = new Date();
+    const preflight =
+      classifyReservations(
+        preflightSnapshot,
+        preflightNow,
+      );
+
+    // 返金ポリシーを事前検証します。
+    paidCancellationSummary(
+      preflight.paidUpcoming,
+      preflightNow,
+    );
+
+    const stripe =
+      new Stripe(stripeSecretKey.value());
+    const safeCheckoutSessionIds =
+      new Set();
+
+    for (const document of preflight.cancellable) {
+      const data = document.data();
+      const sessionId = String(
+        data.stripeCheckoutSessionId || "",
+      ).trim();
+
+      if (!sessionId) {
+        continue;
+      }
+
+      let session;
+
+      try {
+        session =
+          await stripe.checkout.sessions.retrieve(
+            sessionId,
+          );
+      } catch (error) {
+        logger.error(
+          "ブロック前のCheckout Session確認に失敗しました。",
+          {
+            reservationId: document.id,
+            sessionId,
+            message:
+              error?.message || String(error),
+          },
+        );
+
+        throw new HttpsError(
+          "internal",
+          "予約の支払い状況を確認できませんでした。" +
+          "少し待ってからもう一度お試しください。",
+        );
+      }
+
+      if (
+        session.payment_status === "paid" ||
+        session.status === "complete"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "支払い結果を確認中の予約があります。" +
+          "少し待ってからもう一度ブロックしてください。",
+        );
+      }
+
+      if (session.status === "open") {
+        try {
+          await stripe.checkout.sessions.expire(
+            sessionId,
+          );
+        } catch (error) {
+          logger.error(
+            "ブロック前のCheckout Session失効に失敗しました。",
+            {
+              reservationId: document.id,
+              sessionId,
+              message:
+                error?.message || String(error),
+            },
+          );
+
+          throw new HttpsError(
+            "internal",
+            "支払い画面を安全に終了できませんでした。" +
+            "少し待ってからもう一度お試しください。",
+          );
+        }
+      }
+
+      safeCheckoutSessionIds.add(sessionId);
+    }
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const blockSnap =
+          await transaction.get(blockRef);
+        const reservationSnapshot =
+          await transaction.get(
+            reservationQuery,
+          );
+        const now = new Date();
+
+        const {
+          cancellable,
+          paidUpcoming,
+        } = classifyReservations(
+          reservationSnapshot,
+          now,
+        );
+
+        // 最終実行時点の返金条件を再計算します。
+        const summary =
+          paidCancellationSummary(
+            paidUpcoming,
+            now,
+          );
+
+        // 確認後に別端末などからCheckout Sessionが
+        // 新しく作成された場合は、安全のためやり直します。
+        for (const document of cancellable) {
+          const data = document.data();
+          const sessionId = String(
+            data.stripeCheckoutSessionId || "",
+          ).trim();
+
+          if (
+            sessionId &&
+            !safeCheckoutSessionIds.has(sessionId)
+          ) {
+            throw new HttpsError(
+              "failed-precondition",
+              "予約状況が変わりました。" +
+              "もう一度ブロック操作をやり直してください。",
+            );
+          }
+        }
+
+        const refundJobs = [];
+
+        // 未決済予約は取り下げて空き枠へ戻します。
+        for (const document of cancellable) {
+          const data = document.data();
+          const reservationRef = document.ref;
+          const times = Array.isArray(data.times) ?
+            data.times.map(
+              (time) => String(time),
+            ) :
+            data.time ?
+              [String(data.time)] :
+              [];
+          const dateId = String(data.date || "")
+            .replaceAll("/", "-");
+
+          transaction.set(
+            reservationRef,
+            {
+              status: "cancelled",
+              cancellationSource: "block",
+              cancellationRefundPercent: 0,
+              cancellationRefundAmountExpected: 0,
+              paymentStatus: "not_paid",
+              refundStatus: "not_applicable",
+              refundAmount: 0,
+              studentCancelledAt:
+                FieldValue.serverTimestamp(),
+              cancelledAt:
+                FieldValue.serverTimestamp(),
+              updatedAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          if (
+            dateId &&
+            times.length > 0
+          ) {
+            const availabilityRef = db
+              .collection("coachAvailability")
+              .doc(coachId)
+              .collection("dates")
+              .doc(dateId);
+
+            transaction.set(
+              availabilityRef,
+              {
+                times:
+                  FieldValue.arrayUnion(...times),
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+
+          const notificationRef = db
+            .collection("notifications")
+            .doc(
+              `block_withdraw_${document.id}`,
+            );
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: coachId,
+              coachId,
+              studentId: uid,
+              reservationId: document.id,
+              type: "reservationWithdrawn",
+              title: "予約が取り下げられました",
+              message:
+                "生徒が予約を取り下げました。" +
+                "該当する時間は再び予約可能になっています。",
+              date: data.date || "",
+              times,
+              isRead: false,
+              createdAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        // 支払い済みの今後の予約は、
+        // 通常の生徒都合キャンセルとして処理します。
+        for (const document of paidUpcoming) {
+          const data = document.data();
+          const reservationRef = document.ref;
+          const policy =
+            studentCancellationPolicy(data, now);
+          const amountPaid = Number(
+            data.amountPaid ||
+            data.totalPrice ||
+            0,
+          );
+
+          if (
+            !Number.isInteger(amountPaid) ||
+            amountPaid <= 0
+          ) {
+            throw new HttpsError(
+              "failed-precondition",
+              "支払い金額を確認できない予約があります。",
+            );
+          }
+
+          const expectedRefundAmount =
+            Math.floor(
+              amountPaid *
+              policy.refundPercent /
+              100,
+            );
+          const refundRequired =
+            expectedRefundAmount > 0;
+
+          if (
+            refundRequired &&
+            !data.stripePaymentIntentId
+          ) {
+            throw new HttpsError(
+              "failed-precondition",
+              "返金に必要な決済情報を確認できない予約があります。",
+            );
+          }
+
+          const times =
+            Array.isArray(data.times) ?
+              data.times.map(
+                (time) => String(time),
+              ) :
+              data.time ?
+                [String(data.time)] :
+                [];
+          const dateId = String(data.date || "")
+            .replaceAll("/", "-");
+
+          transaction.set(
+            reservationRef,
+            {
+              status: "student_cancelled",
+              cancellationSource: "student",
+              cancellationTrigger: "block",
+              cancellationRefundPercent:
+                policy.refundPercent,
+              cancellationRefundAmountExpected:
+                expectedRefundAmount,
+              studentCancelledAt:
+                FieldValue.serverTimestamp(),
+              cancelledAt:
+                FieldValue.serverTimestamp(),
+              refundRequestedBy: uid,
+              refundRequestedAt:
+                refundRequired ?
+                  FieldValue.serverTimestamp() :
+                  FieldValue.delete(),
+              refundStatus:
+                refundRequired ?
+                  "creating" :
+                  "not_applicable",
+              refundAmount:
+                refundRequired ?
+                  FieldValue.delete() :
+                  0,
+              paymentStatus:
+                refundRequired ?
+                  "refund_processing" :
+                  "paid",
+              updatedAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          if (
+            dateId &&
+            times.length > 0
+          ) {
+            const availabilityRef = db
+              .collection("coachAvailability")
+              .doc(coachId)
+              .collection("dates")
+              .doc(dateId);
+
+            transaction.set(
+              availabilityRef,
+              {
+                times:
+                  FieldValue.arrayUnion(...times),
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+
+          let cancellationMessage =
+            "生徒都合で予約がキャンセルされました。";
+
+          if (policy.refundPercent === 100) {
+            cancellationMessage +=
+              "全額返金の手続きを開始しました。";
+          } else if (policy.refundPercent === 50) {
+            cancellationMessage +=
+              "50%返金の手続きを開始しました。";
+          } else {
+            cancellationMessage +=
+              "キャンセル規定により返金はありません。";
+          }
+
+          const notificationRef = db
+            .collection("notifications")
+            .doc(
+              `student_cancel_${document.id}`,
+            );
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: coachId,
+              coachId,
+              studentId: uid,
+              reservationId: document.id,
+              type: "studentCancellation",
+              title:
+                "生徒都合で予約がキャンセルされました",
+              message: cancellationMessage,
+              date: data.date || "",
+              times,
+              isRead: false,
+              createdAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          if (refundRequired) {
+            refundJobs.push({
+              reservationId: document.id,
+              coachId,
+              studentId: uid,
+              stripePaymentIntentId:
+                String(
+                  data.stripePaymentIntentId,
+                ),
+              expectedRefundAmount,
+              refundPercent:
+                policy.refundPercent,
+            });
+          }
+        }
+
+        if (!blockSnap.exists) {
+          transaction.set(
+            blockRef,
+            {
+              blockerId: uid,
+              blockedUserId: coachId,
+              blockedRole: "coach",
+              source: "coachDetail",
+              createdAt:
+                FieldValue.serverTimestamp(),
+            },
+          );
+        }
+
+        transaction.delete(favoriteRef);
+
+        return {
+          blocked: true,
+          requiresConfirmation: false,
+          cancelledReservationCount:
+            cancellable.length,
+          paidCancelledReservationCount:
+            paidUpcoming.length,
+          refundJobs,
+          ...summary,
+        };
+      },
+    );
+
+    let refundFailureCount = 0;
+
+    for (const job of result.refundJobs || []) {
+      const reservationRef = db
+        .collection("reservations")
+        .doc(job.reservationId);
+
+      try {
+        const refund = await stripe.refunds.create(
+          {
+            payment_intent:
+              job.stripePaymentIntentId,
+            amount:
+              job.expectedRefundAmount,
+            metadata: {
+              reservationId:
+                job.reservationId,
+              coachId: job.coachId,
+              studentId: uid,
+              cancellationSource: "student",
+              cancellationTrigger: "block",
+              refundPercent: String(
+                job.refundPercent,
+              ),
+            },
+          },
+          {
+            idempotencyKey:
+              `block_student_refund_${job.reservationId}`,
+          },
+        );
+
+        await markReservationRefund(
+          refund,
+          `callable_block_student_cancel_${job.reservationId}`,
+        );
+      } catch (error) {
+        refundFailureCount += 1;
+
+        await reservationRef.set(
+          {
+            paymentStatus: "refund_failed",
+            refundStatus: "failed_to_create",
+            refundError:
+              error?.message || String(error),
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        logger.error(
+          "ブロックに伴う生徒都合キャンセルの返金作成に失敗しました。",
+          {
+            reservationId:
+              job.reservationId,
+            studentId: uid,
+            coachId,
+            message:
+              error?.message || String(error),
+          },
+        );
+      }
+    }
+
+    logger.info(
+      "コーチをブロックしました。",
+      {
+        blockerId: uid,
+        coachId,
+        cancelledReservationCount:
+          result.cancelledReservationCount,
+        paidCancelledReservationCount:
+          result.paidCancelledReservationCount,
+        expectedRefundAmountTotal:
+          result.expectedRefundAmountTotal,
+        refundFailureCount,
+      },
+    );
+
+    const {
+      refundJobs: _refundJobs,
+      ...publicResult
+    } = result;
+
+    return {
+      ...publicResult,
+      refundFailureCount,
+    };
   },
 );
 

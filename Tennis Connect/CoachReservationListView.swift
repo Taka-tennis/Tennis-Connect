@@ -45,6 +45,7 @@ struct CoachReservationListView: View {
     }
 
     @State private var reservations: [Reservation] = []
+    @State private var resolvedStudentNames: [String: String] = [:]
     @State private var selectedCategory: ReservationCategory = .pending
     @State private var isLoading = false
     @State private var errorMessage = ""
@@ -348,7 +349,7 @@ struct CoachReservationListView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(reservation.studentName)
+                    Text(displayStudentName(for: reservation))
                         .font(.headline)
 
                     Text(statusDescription(reservation))
@@ -605,6 +606,110 @@ struct CoachReservationListView: View {
                         } ?? []
 
                     reservations = loadedReservations
+                    loadStudentNamesIfNeeded(
+                        for: loadedReservations
+                    )
+                }
+            }
+    }
+
+    private func displayStudentName(
+        for reservation: Reservation
+    ) -> String {
+        if let resolvedName =
+            resolvedStudentNames[reservation.id]?
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
+           !resolvedName.isEmpty {
+            return resolvedName
+        }
+
+        let savedName =
+            reservation.studentName
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        if !savedName.isEmpty &&
+            savedName != "生徒" {
+            return savedName
+        }
+
+        return "生徒"
+    }
+
+    private func loadStudentNamesIfNeeded(
+        for reservations: [Reservation]
+    ) {
+        let needsResolution = reservations.contains {
+            let name =
+                $0.studentName.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+            return name.isEmpty || name == "生徒"
+        }
+
+        guard needsResolution else {
+            resolvedStudentNames = [:]
+            return
+        }
+
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
+
+        functions
+            .httpsCallable(
+                "getCoachReservationStudentNames"
+            )
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    if let error {
+                        // 名前補完だけの失敗で予約一覧全体を
+                        // エラー表示にはしない。
+                        print(
+                            "生徒名を補完できませんでした:",
+                            error.localizedDescription
+                        )
+                        return
+                    }
+
+                    guard
+                        let data =
+                            result?.data
+                            as? [String: Any],
+                        let rawNames =
+                            data["names"]
+                            as? [String: Any]
+                    else {
+                        return
+                    }
+
+                    var names: [String: String] = [:]
+
+                    for (reservationId, value)
+                        in rawNames {
+                        guard
+                            let name = value as? String
+                        else {
+                            continue
+                        }
+
+                        let trimmedName =
+                            name.trimmingCharacters(
+                                in:
+                                    .whitespacesAndNewlines
+                            )
+
+                        if !trimmedName.isEmpty {
+                            names[reservationId] =
+                                trimmedName
+                        }
+                    }
+
+                    resolvedStudentNames = names
                 }
             }
     }

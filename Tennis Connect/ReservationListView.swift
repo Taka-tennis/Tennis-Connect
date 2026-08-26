@@ -577,6 +577,10 @@ struct ReservationListView: View {
             }
 
         case "cancelled", "canceled":
+            if reservation.cancellationSource == "student_withdrawal" ||
+                reservation.cancellationSource == "block" {
+                return "取り下げた予約です"
+            }
             return "キャンセル済みの予約です"
 
         case "completed":
@@ -971,6 +975,12 @@ private struct StudentReservationDetailView: View {
     @State private var cancellationResultMessage = ""
     @State private var cancellationErrorMessage = ""
 
+    @State private var isWithdrawingReservation = false
+    @State private var showReservationWithdrawalConfirmation = false
+    @State private var showReservationWithdrawalResult = false
+    @State private var reservationWithdrawalResultMessage = ""
+    @State private var reservationWithdrawalErrorMessage = ""
+
     @State private var weatherCancellationStatus: String
     @State private var weatherCancellationRequesterRole: String
     @State private var isUpdatingWeatherCancellation = false
@@ -1069,6 +1079,52 @@ private struct StudentReservationDetailView: View {
                 .padding()
                 .background(Color(.systemGray6))
                 .cornerRadius(18)
+
+                if canWithdrawUnpaidReservation {
+                    VStack(spacing: 10) {
+                        Text(
+                            reservation.status == "pending"
+                            ? "コーチが承認する前であれば、予約申請を取り下げられます。"
+                            : "まだ支払いは完了していません。取り下げると予約枠は再び予約可能になります。"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Button {
+                            showReservationWithdrawalConfirmation = true
+                        } label: {
+                            if isWithdrawingReservation {
+                                ProgressView()
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Label(
+                                    reservation.status == "pending"
+                                    ? "予約申請を取り下げる"
+                                    : "予約を取り下げる",
+                                    systemImage: "arrow.uturn.backward.circle"
+                                )
+                                .fontWeight(.semibold)
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                        .disabled(isWithdrawingReservation)
+
+                        if !reservationWithdrawalErrorMessage.isEmpty {
+                            Text(reservationWithdrawalErrorMessage)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .padding()
+                    .background(Color.red.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
 
                 if reservation.status == "confirmed" {
                     NavigationLink {
@@ -1212,6 +1268,23 @@ private struct StudentReservationDetailView: View {
             checkExistingCoachReview()
         }
         .confirmationDialog(
+            reservation.status == "pending"
+                ? "予約申請を取り下げますか？"
+                : "承認済み予約を取り下げますか？",
+            isPresented: $showReservationWithdrawalConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("取り下げる", role: .destructive) {
+                withdrawReservationRequest()
+            }
+
+            Button("戻る", role: .cancel) {}
+        } message: {
+            Text(
+                "まだ支払いは発生していません。取り下げると予約はキャンセルされ、この時間枠は再び予約可能になります。"
+            )
+        }
+        .confirmationDialog(
             "予約をキャンセルしますか？",
             isPresented: $showCancellationConfirmation,
             titleVisibility: .visible
@@ -1275,6 +1348,17 @@ private struct StudentReservationDetailView: View {
             Button("戻る", role: .cancel) {}
         } message: {
             Text("拒否した場合、予約はそのまま継続します。")
+        }
+        .alert(
+            "予約を取り下げました",
+            isPresented: $showReservationWithdrawalResult
+        ) {
+            Button("OK") {
+                onCancellationCompleted()
+                dismiss()
+            }
+        } message: {
+            Text(reservationWithdrawalResultMessage)
         }
         .alert(
             weatherResultTitle,
@@ -1429,6 +1513,40 @@ private struct StudentReservationDetailView: View {
 
         return interval > 0 &&
             interval <= twentyFourHours
+    }
+
+    private func withdrawReservationRequest() {
+        guard !isWithdrawingReservation else {
+            return
+        }
+
+        isWithdrawingReservation = true
+        reservationWithdrawalErrorMessage = ""
+
+        functions
+            .httpsCallable("withdrawReservationRequest")
+            .call(["reservationId": reservation.id]) { result, error in
+                DispatchQueue.main.async {
+                    isWithdrawingReservation = false
+
+                    if let error {
+                        reservationWithdrawalErrorMessage =
+                            "予約を取り下げられませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    let data = result?.data as? [String: Any]
+                    let alreadyWithdrawn =
+                        data?["alreadyWithdrawn"] as? Bool ?? false
+
+                    reservationWithdrawalResultMessage =
+                        alreadyWithdrawn
+                        ? "この予約はすでに取り下げ済みです。"
+                        : "予約を取り下げました。予約枠は再び予約可能になっています。"
+                    showReservationWithdrawalResult = true
+                }
+            }
     }
 
     private func requestWeatherCancellation() {
@@ -1729,6 +1847,16 @@ private struct StudentReservationDetailView: View {
         ["creating", "pending", "requires_action"].contains(
             reservation.refundStatus
         )
+    }
+
+    private var canWithdrawUnpaidReservation: Bool {
+        guard ["pending", "confirmed"].contains(reservation.status),
+              reservation.paymentStatus != "paid",
+              !isRefundProcessing else {
+            return false
+        }
+
+        return true
     }
 
     private var canCancelPaidReservation: Bool {

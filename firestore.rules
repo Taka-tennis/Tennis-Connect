@@ -56,15 +56,13 @@ service cloud.firestore {
     }
 
     // 空き日程
-    // 現在は予約作成・却下時にクライアントから枠更新を行うため、
-    // Phase 1ではログイン済みユーザーの書き込みを許可する。
-   match /coachAvailability/{coachId}/dates/{dateId} {
-  allow read: if true;
+    match /coachAvailability/{coachId}/dates/{dateId} {
+      allow read: if true;
 
-  allow write:
-    if signedIn()
-    && request.auth.uid == coachId;
-}
+      allow write:
+        if signedIn()
+        && request.auth.uid == coachId;
+    }
 
     // 予約
     match /reservations/{reservationId} {
@@ -76,15 +74,16 @@ service cloud.firestore {
 
       // クライアントからの更新は担当コーチの承認・却下のみ
       allow update:
-  if reservationCoach()
-  && resource.data.status == 'pending'
-  && request.resource.data.studentId == resource.data.studentId
-  && request.resource.data.coachId == resource.data.coachId
-  && request.resource.data
-      .diff(resource.data)
-      .affectedKeys()
-      .hasOnly(['status', 'updatedAt'])
-  && request.resource.data.status in ['confirmed', 'rejected'];
+        if reservationCoach()
+        && resource.data.status == 'pending'
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.coachId == resource.data.coachId
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly(['status', 'updatedAt'])
+        && request.resource.data.status in ['confirmed', 'rejected'];
+
       allow delete: if false;
     }
 
@@ -153,22 +152,22 @@ service cloud.firestore {
 
       // コーチ→生徒：予約承認・却下通知
       allow create:
-  if signedIn()
-  && ('type' in request.resource.data)
-  && ('recipientId' in request.resource.data)
-  && ('reservationId' in request.resource.data)
-  && ('coachId' in request.resource.data)
-  && request.resource.data.type in [
-       'reservationApproved',
-       'reservationRejected'
-     ]
-  && request.resource.data.coachId == request.auth.uid
-  && get(
-       /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
-     ).data.coachId == request.auth.uid
-  && get(
-       /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
-     ).data.studentId == request.resource.data.recipientId;
+        if signedIn()
+        && ('type' in request.resource.data)
+        && ('recipientId' in request.resource.data)
+        && ('reservationId' in request.resource.data)
+        && ('coachId' in request.resource.data)
+        && request.resource.data.type in [
+          'reservationApproved',
+          'reservationRejected'
+        ]
+        && request.resource.data.coachId == request.auth.uid
+        && get(
+          /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
+        ).data.coachId == request.auth.uid
+        && get(
+          /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
+        ).data.studentId == request.resource.data.recipientId;
 
       allow read:
         if signedIn()
@@ -218,46 +217,157 @@ service cloud.firestore {
 
       allow update: if false;
     }
-// お問い合わせ：ログイン中の本人が新規送信する場合のみ許可
-match /inquiries/{inquiryId} {
-  allow create:
-    if signedIn()
-    && request.resource.data.keys().hasAll([
-      'userId',
-      'email',
-      'category',
-      'message',
-      'status',
-      'appVersion',
-      'createdAt'
-    ])
-    && request.resource.data.keys().hasOnly([
-      'userId',
-      'email',
-      'category',
-      'message',
-      'status',
-      'appVersion',
-      'createdAt'
-    ])
-    && request.resource.data.userId == request.auth.uid
-    && request.resource.data.email is string
-    && request.resource.data.category in [
-      '予約について',
-      '支払い・返金について',
-      'コーチについて',
-      'アカウントについて',
-      'その他'
-    ]
-    && request.resource.data.message is string
-    && request.resource.data.message.size() > 0
-    && request.resource.data.message.size() <= 1000
-    && request.resource.data.status == 'open'
-    && request.resource.data.appVersion is string
-    && request.resource.data.createdAt == request.time;
 
-  allow read, update, delete: if false;
-}
+    // ブロック：ブロックした本人だけが自分のブロック情報を扱える
+    match /blocks/{blockId} {
+
+      // 一覧・状態確認は blockerId == 自分 のデータだけ
+      allow read:
+        if signedIn()
+        && ('blockerId' in resource.data)
+        && resource.data.blockerId == request.auth.uid;
+
+      allow create:
+        if signedIn()
+        && request.resource.data.keys().hasAll([
+          'blockerId',
+          'blockedUserId',
+          'blockedRole',
+          'source',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'blockerId',
+          'blockedUserId',
+          'blockedRole',
+          'source',
+          'createdAt'
+        ])
+        && request.resource.data.blockerId == request.auth.uid
+        && request.resource.data.blockedUserId is string
+        && request.resource.data.blockedUserId != request.auth.uid
+        && request.resource.data.blockedRole == 'coach'
+        && request.resource.data.source == 'coachDetail'
+        && request.resource.data.createdAt == request.time
+        && blockId
+          == request.auth.uid
+            + '__'
+            + request.resource.data.blockedUserId;
+
+      // 同じブロックを再保存する場合でも、
+      // 対象ユーザーや所有者は変更させない
+      allow update:
+        if signedIn()
+        && ('blockerId' in resource.data)
+        && resource.data.blockerId == request.auth.uid
+        && request.resource.data.blockerId == resource.data.blockerId
+        && request.resource.data.blockedUserId == resource.data.blockedUserId
+        && request.resource.data.blockedRole == resource.data.blockedRole
+        && request.resource.data.source == resource.data.source
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly(['createdAt'])
+        && request.resource.data.createdAt == request.time;
+
+      allow delete:
+        if signedIn()
+        && ('blockerId' in resource.data)
+        && resource.data.blockerId == request.auth.uid;
+    }
+
+    // 通報：ログイン中の本人が新規通報を送信する場合のみ許可
+    // 利用者側から通報データを読み返したり変更したりはできない
+    match /reports/{reportId} {
+      allow create:
+        if signedIn()
+        && request.resource.data.keys().hasAll([
+          'reporterId',
+          'reportedUserId',
+          'reportedRole',
+          'reason',
+          'source',
+          'status',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'reporterId',
+          'reportedUserId',
+          'reportedRole',
+          'reason',
+          'source',
+          'status',
+          'createdAt',
+          'details'
+        ])
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.reportedUserId is string
+        && request.resource.data.reportedUserId != request.auth.uid
+        && request.resource.data.reportedRole == 'coach'
+        && request.resource.data.reason in [
+          '不適切なプロフィール・投稿',
+          '迷惑行為・嫌がらせ',
+          '虚偽の情報・なりすまし',
+          '予約・レッスンに関する問題',
+          'その他'
+        ]
+        && request.resource.data.source == 'coachDetail'
+        && request.resource.data.status == 'open'
+        && request.resource.data.createdAt == request.time
+        && (
+          !('details' in request.resource.data)
+          ||
+          (
+            request.resource.data.details is string
+            && request.resource.data.details.size() <= 1000
+          )
+        );
+
+      allow read, update, delete: if false;
+    }
+
+    // お問い合わせ：ログイン中の本人が新規送信する場合のみ許可
+    match /inquiries/{inquiryId} {
+      allow create:
+        if signedIn()
+        && request.resource.data.keys().hasAll([
+          'userId',
+          'email',
+          'category',
+          'message',
+          'status',
+          'appVersion',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'email',
+          'category',
+          'message',
+          'status',
+          'appVersion',
+          'createdAt'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.email is string
+        && request.resource.data.category in [
+          '予約について',
+          '支払い・返金について',
+          'コーチについて',
+          'アカウントについて',
+          'その他'
+        ]
+        && request.resource.data.message is string
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 1000
+        && request.resource.data.status == 'open'
+        && request.resource.data.appVersion is string
+        && request.resource.data.createdAt == request.time;
+
+      // 利用者側からの閲覧・変更・削除は許可しない
+      allow read, update, delete: if false;
+    }
+
     // 明示していないコレクションは拒否
     match /{document=**} {
       allow read, write: if false;

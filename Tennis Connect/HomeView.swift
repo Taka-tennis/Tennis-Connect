@@ -27,9 +27,19 @@ struct HomeView: View {
     func fetchCoaches() {
         Task {
             do {
-                let snapshot = try await db.collection("coaches").getDocuments()
+                let blockedCoachIDs = try await loadBlockedCoachIDs()
 
-                let fetchedCoaches = snapshot.documents.map { document in
+                let snapshot = try await db
+                    .collection("coaches")
+                    .getDocuments()
+
+                let fetchedCoaches = snapshot.documents
+                    .filter { document in
+                        !blockedCoachIDs.contains(
+                            document.documentID
+                        )
+                    }
+                    .map { document in
                     let data = document.data()
 
                     let savedCareers =
@@ -331,6 +341,37 @@ struct HomeView: View {
                 isLoggedIn = true
             }
         }
+    }
+
+    private func loadBlockedCoachIDs() async throws -> Set<String> {
+        guard let uid = Auth.auth().currentUser?.uid else {
+            return []
+        }
+
+        let snapshot = try await db
+            .collection("blocks")
+            .whereField(
+                "blockerId",
+                isEqualTo: uid
+            )
+            .getDocuments()
+
+        return Set(
+            snapshot.documents.compactMap { document in
+                let data = document.data()
+
+                guard
+                    data["blockedRole"] as? String == "coach",
+                    let blockedUserId =
+                        data["blockedUserId"] as? String,
+                    !blockedUserId.isEmpty
+                else {
+                    return nil
+                }
+
+                return blockedUserId
+            }
+        )
     }
 
     private func loadSameDayCoaches(from coaches: [Coach]) {

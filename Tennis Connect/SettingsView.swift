@@ -128,6 +128,16 @@ struct SettingsView: View {
 
             Section("アカウント管理") {
                 NavigationLink {
+                    BlockedUsersView()
+                } label: {
+                    Label(
+                        "ブロックしたユーザー",
+                        systemImage:
+                            "person.crop.circle.badge.xmark"
+                    )
+                }
+
+                NavigationLink {
                     AccountDeletionCheckView()
                 } label: {
                     Label(
@@ -330,6 +340,318 @@ private struct InquiryView: View {
 
                     message = ""
                     showSentAlert = true
+                }
+            }
+    }
+}
+
+
+private struct BlockedUsersView: View {
+
+    private struct BlockedCoach: Identifiable {
+        let id: String
+        let coachId: String
+        let name: String
+        let imageURL: String
+        let createdAt: Timestamp?
+    }
+
+    @State private var blockedCoaches: [BlockedCoach] = []
+    @State private var isLoading = false
+    @State private var errorMessage = ""
+    @State private var coachToUnblock: BlockedCoach?
+    @State private var isUnblocking = false
+    @State private var showUnblockConfirmation = false
+
+    private let db = Firestore.firestore()
+
+    var body: some View {
+        Group {
+            if isLoading && blockedCoaches.isEmpty {
+                ProgressView("ブロックしたユーザーを確認中…")
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity
+                    )
+
+            } else if blockedCoaches.isEmpty {
+                VStack(spacing: 14) {
+                    Image(
+                        systemName:
+                            "person.crop.circle.badge.checkmark"
+                    )
+                    .font(.system(size: 48))
+                    .foregroundStyle(.secondary)
+
+                    Text("ブロック中のユーザーはいません")
+                        .font(.headline)
+
+                    Text(
+                        "コーチ詳細画面からブロックしたユーザーが" +
+                        "ここに表示されます。"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                }
+                .padding()
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity
+                )
+
+            } else {
+                List {
+                    Section {
+                        ForEach(blockedCoaches) { coach in
+                            blockedCoachRow(coach)
+                        }
+                    } footer: {
+                        Text(
+                            "ブロックを解除すると、そのコーチが" +
+                            "ホームや検索結果に再び表示され、" +
+                            "新しい予約もできるようになります。"
+                        )
+                    }
+                }
+                .refreshable {
+                    await loadBlockedCoaches()
+                }
+            }
+        }
+        .navigationTitle("ブロックしたユーザー")
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(.ultraThinMaterial)
+            }
+        }
+        .task {
+            await loadBlockedCoaches()
+        }
+        .alert(
+            "ブロックを解除しますか？",
+            isPresented: $showUnblockConfirmation
+        ) {
+            Button("キャンセル", role: .cancel) {
+                coachToUnblock = nil
+            }
+
+            Button("解除する") {
+                if let coachToUnblock {
+                    unblock(coachToUnblock)
+                }
+            }
+        } message: {
+            Text(
+                coachToUnblock.map {
+                    "\($0.name)さんのブロックを解除します。"
+                } ?? "ブロックを解除します。"
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func blockedCoachRow(
+        _ coach: BlockedCoach
+    ) -> some View {
+        HStack(spacing: 12) {
+            AsyncImage(
+                url: URL(string: coach.imageURL)
+            ) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .failure:
+                    Image(
+                        systemName:
+                            "person.crop.circle.fill"
+                    )
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.secondary)
+                    .padding(5)
+
+                case .empty:
+                    ProgressView()
+
+                @unknown default:
+                    Image(
+                        systemName:
+                            "person.crop.circle.fill"
+                    )
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.secondary)
+                    .padding(5)
+                }
+            }
+            .frame(width: 48, height: 48)
+            .background(Color(.systemGray6))
+            .clipShape(Circle())
+
+            VStack(
+                alignment: .leading,
+                spacing: 4
+            ) {
+                Text(coach.name)
+                    .font(.headline)
+
+                Text("ブロック中")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                coachToUnblock = coach
+                showUnblockConfirmation = true
+            } label: {
+                if isUnblocking &&
+                    coachToUnblock?.id == coach.id {
+                    ProgressView()
+                } else {
+                    Text("解除")
+                        .fontWeight(.semibold)
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(isUnblocking)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @MainActor
+    private func loadBlockedCoaches() async {
+        guard let uid =
+                Auth.auth().currentUser?.uid else {
+            blockedCoaches = []
+            errorMessage =
+                "ブロック一覧の確認にはログインが必要です。"
+            return
+        }
+
+        isLoading = true
+        errorMessage = ""
+
+        do {
+            let blockSnapshot = try await db
+                .collection("blocks")
+                .whereField(
+                    "blockerId",
+                    isEqualTo: uid
+                )
+                .getDocuments()
+
+            var loaded: [BlockedCoach] = []
+
+            for document in blockSnapshot.documents {
+                let data = document.data()
+
+                guard
+                    data["blockedRole"] as? String == "coach",
+                    let coachId =
+                        data["blockedUserId"] as? String,
+                    !coachId.isEmpty
+                else {
+                    continue
+                }
+
+                let coachSnapshot = try await db
+                    .collection("coaches")
+                    .document(coachId)
+                    .getDocument()
+
+                let coachData =
+                    coachSnapshot.data() ?? [:]
+
+                let name =
+                    (coachData["name"] as? String ?? "")
+                        .trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+
+                loaded.append(
+                    BlockedCoach(
+                        id: document.documentID,
+                        coachId: coachId,
+                        name:
+                            name.isEmpty
+                                ? "コーチ"
+                                : name,
+                        imageURL:
+                            coachData["imageURL"] as? String
+                            ?? "",
+                        createdAt:
+                            data["createdAt"] as? Timestamp
+                    )
+                )
+            }
+
+            blockedCoaches = loaded.sorted {
+                let lhs =
+                    $0.createdAt?.dateValue()
+                    ?? .distantPast
+                let rhs =
+                    $1.createdAt?.dateValue()
+                    ?? .distantPast
+
+                return lhs > rhs
+            }
+
+            isLoading = false
+
+        } catch {
+            isLoading = false
+            errorMessage =
+                "ブロックしたユーザーを取得できませんでした: " +
+                error.localizedDescription
+        }
+    }
+
+    private func unblock(
+        _ coach: BlockedCoach
+    ) {
+        guard !isUnblocking else {
+            return
+        }
+
+        guard Auth.auth().currentUser != nil else {
+            errorMessage =
+                "ブロック解除にはログインが必要です。"
+            return
+        }
+
+        isUnblocking = true
+        errorMessage = ""
+
+        db.collection("blocks")
+            .document(coach.id)
+            .delete { error in
+                DispatchQueue.main.async {
+                    isUnblocking = false
+
+                    if let error {
+                        errorMessage =
+                            "ブロックを解除できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    blockedCoaches.removeAll {
+                        $0.id == coach.id
+                    }
+                    coachToUnblock = nil
                 }
             }
     }
