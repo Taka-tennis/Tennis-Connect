@@ -1,6 +1,7 @@
 import SwiftUI
 import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 
 struct ChatListView: View {
 
@@ -9,6 +10,7 @@ struct ChatListView: View {
     private struct StudentConversation: Identifiable {
         let id: String
         let coachName: String
+        let coachImageURL: String
         let lastMessage: String
         let lastTime: Date
         let unreadCount: Int
@@ -18,6 +20,7 @@ struct ChatListView: View {
         let id: String
         let coachName: String
         let studentName: String
+        let studentImageURL: String
         let lastMessage: String
         let lastTime: Date
         let unreadCount: Int
@@ -176,11 +179,11 @@ struct ChatListView: View {
                         )
                     } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: "person.circle.fill")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 55, height: 55)
-                                .foregroundStyle(.gray)
+                            ChatParticipantAvatarView(
+                                imageURL:
+                                    conversation.coachImageURL,
+                                size: 55
+                            )
 
                             VStack(
                                 alignment: .leading,
@@ -255,13 +258,11 @@ struct ChatListView: View {
                         )
                     } label: {
                         HStack(spacing: 12) {
-                            Image(
-                                systemName: "person.circle.fill"
+                            ChatParticipantAvatarView(
+                                imageURL:
+                                    conversation.studentImageURL,
+                                size: 55
                             )
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 55, height: 55)
-                            .foregroundStyle(.green)
 
                             VStack(
                                 alignment: .leading,
@@ -439,6 +440,7 @@ struct ChatListView: View {
                         coachName.isEmpty
                             ? "コーチ"
                             : coachName,
+                    coachImageURL: "",
                     lastMessage:
                         latestData["text"] as? String
                         ?? "",
@@ -453,6 +455,10 @@ struct ChatListView: View {
 
         studentConversations = conversations
         coachConversations = []
+
+        loadCoachImagesForStudentChat(
+            coachIds: conversations.map(\.id)
+        )
     }
 
     private func updateCoachChatList(
@@ -527,6 +533,7 @@ struct ChatListView: View {
                         savedStudentName.isEmpty
                             ? "生徒"
                             : savedStudentName,
+                    studentImageURL: "",
                     lastMessage:
                         latestData["text"] as? String
                         ?? "",
@@ -541,6 +548,147 @@ struct ChatListView: View {
 
         coachConversations = conversations
         studentConversations = []
+
+        loadStudentProfilesForCoachChat()
+    }
+
+    private func loadCoachImagesForStudentChat(
+        coachIds: [String]
+    ) {
+        let uniqueCoachIds = Set(
+            coachIds.filter { !$0.isEmpty }
+        )
+
+        guard !uniqueCoachIds.isEmpty else {
+            return
+        }
+
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var imageURLs: [String: String] = [:]
+
+        for coachId in uniqueCoachIds {
+            group.enter()
+
+            db.collection("coaches")
+                .document(coachId)
+                .getDocument { snapshot, _ in
+                    let imageURL =
+                        snapshot?.data()?["imageURL"]
+                        as? String ?? ""
+
+                    lock.lock()
+                    imageURLs[coachId] = imageURL
+                    lock.unlock()
+
+                    group.leave()
+                }
+        }
+
+        group.notify(queue: .main) {
+            studentConversations =
+                studentConversations.map {
+                    conversation in
+
+                    StudentConversation(
+                        id: conversation.id,
+                        coachName:
+                            conversation.coachName,
+                        coachImageURL:
+                            imageURLs[
+                                conversation.id
+                            ] ?? "",
+                        lastMessage:
+                            conversation.lastMessage,
+                        lastTime:
+                            conversation.lastTime,
+                        unreadCount:
+                            conversation.unreadCount
+                    )
+                }
+        }
+    }
+
+    private func loadStudentProfilesForCoachChat() {
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
+
+        functions
+            .httpsCallable(
+                "getCoachChatStudentProfiles"
+            )
+            .call([:]) { result, error in
+                DispatchQueue.main.async {
+                    if let error {
+                        print(
+                            "チャット相手のプロフィールを取得できませんでした:",
+                            error.localizedDescription
+                        )
+                        return
+                    }
+
+                    guard
+                        let data =
+                            result?.data
+                            as? [String: Any],
+                        let rawProfiles =
+                            data["profiles"]
+                            as? [String: Any]
+                    else {
+                        return
+                    }
+
+                    coachConversations =
+                        coachConversations.map {
+                            conversation in
+
+                            let rawProfile =
+                                rawProfiles[
+                                    conversation.id
+                                ]
+                                as? [String: Any]
+
+                            let displayName =
+                                (
+                                    rawProfile?[
+                                        "displayName"
+                                    ]
+                                    as? String
+                                    ?? ""
+                                )
+                                .trimmingCharacters(
+                                    in:
+                                        .whitespacesAndNewlines
+                                )
+
+                            let imageURL =
+                                rawProfile?[
+                                    "imageURL"
+                                ]
+                                as? String
+                                ?? ""
+
+                            return CoachConversation(
+                                id: conversation.id,
+                                coachName:
+                                    conversation.coachName,
+                                studentName:
+                                    displayName.isEmpty
+                                        ? conversation.studentName
+                                        : displayName,
+                                studentImageURL:
+                                    imageURL,
+                                lastMessage:
+                                    conversation.lastMessage,
+                                lastTime:
+                                    conversation.lastTime,
+                                unreadCount:
+                                    conversation.unreadCount
+                            )
+                        }
+                }
+            }
     }
 
     private func messageDate(
@@ -557,6 +705,62 @@ struct ChatListView: View {
     private func resetChatState() {
         studentConversations = []
         coachConversations = []
+    }
+}
+
+private struct ChatParticipantAvatarView: View {
+
+    let imageURL: String
+    let size: CGFloat
+
+    var body: some View {
+        AsyncImage(
+            url: URL(string: imageURL)
+        ) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFill()
+
+            case .failure:
+                placeholder
+
+            case .empty:
+                if imageURL.isEmpty {
+                    placeholder
+                } else {
+                    ProgressView()
+                }
+
+            @unknown default:
+                placeholder
+            }
+        }
+        .frame(
+            width: size,
+            height: size
+        )
+        .background(
+            Color(.systemGray5)
+        )
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(
+                    Color(.separator).opacity(0.25),
+                    lineWidth: 0.5
+                )
+        )
+        .accessibilityHidden(true)
+    }
+
+    private var placeholder: some View {
+        Image(systemName: "person.fill")
+            .resizable()
+            .scaledToFit()
+            .padding(size * 0.22)
+            .foregroundStyle(.secondary)
     }
 }
 

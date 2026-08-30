@@ -10,6 +10,9 @@ struct MyPageView: View {
     @State private var displayName = ""
     @State private var profileComment = ""
     @State private var profileImageURL = ""
+    @State private var gender = "回答しない"
+    @State private var ageGroup = "未設定"
+    @State private var tennisExperience = "未設定"
 
     @State private var isLoadingProfile = false
     @State private var profileError = ""
@@ -195,15 +198,24 @@ struct MyPageView: View {
                 StudentProfileEditView(
                     initialDisplayName: displayName,
                     initialProfileComment: profileComment,
-                    initialImageURL: profileImageURL
+                    initialImageURL: profileImageURL,
+                    initialGender: gender,
+                    initialAgeGroup: ageGroup,
+                    initialTennisExperience: tennisExperience
                 ) {
                     savedDisplayName,
                     savedProfileComment,
-                    savedImageURL in
+                    savedImageURL,
+                    savedGender,
+                    savedAgeGroup,
+                    savedTennisExperience in
 
                     displayName = savedDisplayName
                     profileComment = savedProfileComment
                     profileImageURL = savedImageURL
+                    gender = savedGender
+                    ageGroup = savedAgeGroup
+                    tennisExperience = savedTennisExperience
                     profileError = ""
                 }
             }
@@ -336,6 +348,9 @@ struct MyPageView: View {
         displayName = ""
         profileComment = ""
         profileImageURL = ""
+        gender = "回答しない"
+        ageGroup = "未設定"
+        tennisExperience = "未設定"
         profileError = ""
         reservationCount = 0
         reviewCount = 0
@@ -478,6 +493,18 @@ struct MyPageView: View {
 
                     profileImageURL =
                         data["imageURL"] as? String ?? ""
+
+                    gender =
+                        data["gender"] as? String
+                        ?? "回答しない"
+
+                    ageGroup =
+                        data["ageGroup"] as? String
+                        ?? "未設定"
+
+                    tennisExperience =
+                        data["tennisExperience"] as? String
+                        ?? "未設定"
                 }
             }
     }
@@ -488,8 +515,14 @@ private struct StudentProfileEditView: View {
     let initialDisplayName: String
     let initialProfileComment: String
     let initialImageURL: String
+    let initialGender: String
+    let initialAgeGroup: String
+    let initialTennisExperience: String
 
     let onSaved: (
+        String,
+        String,
+        String,
         String,
         String,
         String
@@ -500,6 +533,9 @@ private struct StudentProfileEditView: View {
     @State private var displayName: String
     @State private var profileComment: String
     @State private var imageURL: String
+    @State private var gender: String
+    @State private var ageGroup: String
+    @State private var tennisExperience: String
 
     @State private var selectedItem: PhotosPickerItem?
     @State private var selectedImage: Image?
@@ -510,11 +546,45 @@ private struct StudentProfileEditView: View {
 
     private let storage = Storage.storage()
 
+    private let genderOptions = [
+        "回答しない",
+        "男性",
+        "女性",
+        "その他"
+    ]
+
+    private let ageGroupOptions = [
+        "未設定",
+        "10代",
+        "20代",
+        "30代",
+        "40代",
+        "50代",
+        "60代",
+        "70代以上"
+    ]
+
+    private let tennisExperienceOptions = [
+        "未設定",
+        "未経験",
+        "1年未満",
+        "1〜3年",
+        "3〜5年",
+        "5〜10年",
+        "10年以上"
+    ]
+
     init(
         initialDisplayName: String,
         initialProfileComment: String,
         initialImageURL: String,
+        initialGender: String,
+        initialAgeGroup: String,
+        initialTennisExperience: String,
         onSaved: @escaping (
+            String,
+            String,
+            String,
             String,
             String,
             String
@@ -529,6 +599,15 @@ private struct StudentProfileEditView: View {
         self.initialImageURL =
             initialImageURL
 
+        self.initialGender =
+            initialGender
+
+        self.initialAgeGroup =
+            initialAgeGroup
+
+        self.initialTennisExperience =
+            initialTennisExperience
+
         self.onSaved = onSaved
 
         _displayName =
@@ -539,6 +618,30 @@ private struct StudentProfileEditView: View {
 
         _imageURL =
             State(initialValue: initialImageURL)
+
+        _gender =
+            State(
+                initialValue:
+                    initialGender.isEmpty
+                    ? "回答しない"
+                    : initialGender
+            )
+
+        _ageGroup =
+            State(
+                initialValue:
+                    initialAgeGroup.isEmpty
+                    ? "未設定"
+                    : initialAgeGroup
+            )
+
+        _tennisExperience =
+            State(
+                initialValue:
+                    initialTennisExperience.isEmpty
+                    ? "未設定"
+                    : initialTennisExperience
+            )
     }
 
     var body: some View {
@@ -593,7 +696,54 @@ private struct StudentProfileEditView: View {
                     }
 
                     Text(
-                        "マイページの名前の下に表示されます。"
+                        "未入力の場合は「テニスを楽しもう！」と表示されます。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Section("レッスンプロフィール") {
+                    Picker(
+                        "性別",
+                        selection: $gender
+                    ) {
+                        ForEach(
+                            genderOptions,
+                            id: \.self
+                        ) { option in
+                            Text(option)
+                                .tag(option)
+                        }
+                    }
+
+                    Picker(
+                        "年代",
+                        selection: $ageGroup
+                    ) {
+                        ForEach(
+                            ageGroupOptions,
+                            id: \.self
+                        ) { option in
+                            Text(option)
+                                .tag(option)
+                        }
+                    }
+
+                    Picker(
+                        "テニス歴",
+                        selection: $tennisExperience
+                    ) {
+                        ForEach(
+                            tennisExperienceOptions,
+                            id: \.self
+                        ) { option in
+                            Text(option)
+                                .tag(option)
+                        }
+                    }
+
+                    Text(
+                        "レッスン前にコーチが確認できる簡易プロフィールです。性別は「回答しない」を選択できます。"
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -792,7 +942,10 @@ private struct StudentProfileEditView: View {
                     uid: uid,
                     displayName: trimmedDisplayName,
                     profileComment: trimmedComment,
-                    imageURL: uploadedURL
+                    imageURL: uploadedURL,
+                    gender: gender,
+                    ageGroup: ageGroup,
+                    tennisExperience: tennisExperience
                 )
             }
 
@@ -801,7 +954,10 @@ private struct StudentProfileEditView: View {
                 uid: uid,
                 displayName: trimmedDisplayName,
                 profileComment: trimmedComment,
-                imageURL: imageURL
+                imageURL: imageURL,
+                gender: gender,
+                ageGroup: ageGroup,
+                tennisExperience: tennisExperience
             )
         }
     }
@@ -855,7 +1011,10 @@ private struct StudentProfileEditView: View {
         uid: String,
         displayName: String,
         profileComment: String,
-        imageURL: String
+        imageURL: String,
+        gender: String,
+        ageGroup: String,
+        tennisExperience: String
     ) {
         Firestore.firestore()
             .collection("students")
@@ -865,6 +1024,9 @@ private struct StudentProfileEditView: View {
                     "displayName": displayName,
                     "profileComment": profileComment,
                     "imageURL": imageURL,
+                    "gender": gender,
+                    "ageGroup": ageGroup,
+                    "tennisExperience": tennisExperience,
                     "updatedAt":
                         FieldValue.serverTimestamp()
                 ],
@@ -885,7 +1047,10 @@ private struct StudentProfileEditView: View {
                     onSaved(
                         displayName,
                         profileComment,
-                        imageURL
+                        imageURL,
+                        gender,
+                        ageGroup,
+                        tennisExperience
                     )
 
                     dismiss()

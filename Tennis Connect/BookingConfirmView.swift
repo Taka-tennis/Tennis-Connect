@@ -57,11 +57,19 @@ struct BookingConfirmView: View {
                     .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 18) {
-                    HStack {
+                    HStack(spacing: 12) {
                         Text("コーチ")
+
                         Spacer()
+
+                        CoachAvatarView(
+                            imageURL: coach.imageURL,
+                            size: 38
+                        )
+
                         Text(coach.name)
                             .bold()
+                            .multilineTextAlignment(.trailing)
                     }
 
                     Divider()
@@ -275,7 +283,21 @@ private struct BookingRequestCompleteView: View {
                 .multilineTextAlignment(.center)
 
             VStack(spacing: 16) {
-                detailRow(title: "コーチ", value: coach.name)
+                HStack(spacing: 12) {
+                    Text("コーチ")
+
+                    Spacer()
+
+                    CoachAvatarView(
+                        imageURL: coach.imageURL,
+                        size: 38
+                    )
+
+                    Text(coach.name)
+                        .bold()
+                        .multilineTextAlignment(.trailing)
+                }
+
                 Divider()
                 detailRow(title: "日付", value: displayDate(date))
                 Divider()
@@ -351,6 +373,63 @@ private struct BookingRequestCompleteView: View {
         return formatter.string(from: endDate)
     }
 }
+
+private struct CoachAvatarView: View {
+
+    let imageURL: String
+    let size: CGFloat
+
+    var body: some View {
+        AsyncImage(
+            url: URL(string: imageURL)
+        ) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFill()
+
+            case .failure:
+                placeholder
+
+            case .empty:
+                if imageURL.isEmpty {
+                    placeholder
+                } else {
+                    ProgressView()
+                }
+
+            @unknown default:
+                placeholder
+            }
+        }
+        .frame(
+            width: size,
+            height: size
+        )
+        .background(
+            Color(.systemGray5)
+        )
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(
+                    Color(.separator).opacity(0.25),
+                    lineWidth: 0.5
+                )
+        )
+        .accessibilityHidden(true)
+    }
+
+    private var placeholder: some View {
+        Image(systemName: "person.fill")
+            .resizable()
+            .scaledToFit()
+            .padding(size * 0.22)
+            .foregroundStyle(.secondary)
+    }
+}
+
 
 #Preview {
     NavigationStack {

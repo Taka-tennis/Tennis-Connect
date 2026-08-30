@@ -989,9 +989,242 @@ async function markReservationRefund(refund, eventId) {
 
 
 /**
- * コーチ本人の予約に表示する生徒名を返します。
+ * コーチが担当したことのある生徒の簡易プロフィールを返します。
+ * 生徒本人も自分自身のプロフィールは取得できます。
+ *
+ * 他のコーチや無関係な利用者には公開しません。
+ */
+exports.getStudentPublicProfile = onCall(
+  {invoker: "public"},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "プロフィールの確認にはログインが必要です。",
+      );
+    }
+
+    const requesterId = request.auth.uid;
+    const studentId = String(
+      request.data?.studentId || "",
+    ).trim();
+
+    if (!studentId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "生徒情報がありません。",
+      );
+    }
+
+    const db = getFirestore();
+
+    let authorized =
+      requesterId === studentId;
+
+    if (!authorized) {
+      const reservationSnapshot = await db
+        .collection("reservations")
+        .where("coachId", "==", requesterId)
+        .get();
+
+      authorized =
+        reservationSnapshot.docs.some(
+          (document) => {
+            const data = document.data();
+
+            return String(
+              data.studentId || "",
+            ).trim() === studentId;
+          },
+        );
+    }
+
+    if (!authorized) {
+      const messageSnapshot = await db
+        .collection("messages")
+        .where("coachId", "==", requesterId)
+        .get();
+
+      authorized =
+        messageSnapshot.docs.some(
+          (document) => {
+            const data = document.data();
+
+            return String(
+              data.studentId || "",
+            ).trim() === studentId;
+          },
+        );
+    }
+
+    if (!authorized) {
+      throw new HttpsError(
+        "permission-denied",
+        "このプロフィールを確認する権限がありません。",
+      );
+    }
+
+    const studentSnap = await db
+      .collection("students")
+      .doc(studentId)
+      .get();
+
+    if (!studentSnap.exists) {
+      throw new HttpsError(
+        "not-found",
+        "生徒プロフィールが見つかりませんでした。",
+      );
+    }
+
+    const data = studentSnap.data() || {};
+
+    return {
+      displayName: String(
+        data.displayName || "生徒",
+      ).trim() || "生徒",
+      profileComment: String(
+        data.profileComment || "",
+      ),
+      imageURL: String(
+        data.imageURL || "",
+      ).trim(),
+      gender: String(
+        data.gender || "回答しない",
+      ).trim() || "回答しない",
+      ageGroup: String(
+        data.ageGroup || "未設定",
+      ).trim() || "未設定",
+      tennisExperience: String(
+        data.tennisExperience || "未設定",
+      ).trim() || "未設定",
+    };
+  },
+);
+
+
+/**
+ * チャットで新しいメッセージを送信できるか確認します。
+ * 呼び出せるのは当該生徒または当該コーチ本人だけです。
+ * ブロック理由そのものは返さず、送信可否だけを返します。
+ */
+exports.getChatMessagingStatus = onCall(
+  {invoker: "public"},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "チャットの確認にはログインが必要です。",
+      );
+    }
+
+    const studentId = String(
+      request.data?.studentId || "",
+    ).trim();
+    const coachId = String(
+      request.data?.coachId || "",
+    ).trim();
+
+    if (!studentId || !coachId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "チャット相手を確認できませんでした。",
+      );
+    }
+
+    if (
+      request.auth.uid !== studentId &&
+      request.auth.uid !== coachId
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "このチャットを確認する権限がありません。",
+      );
+    }
+
+    const db = getFirestore();
+    const blockSnap = await db
+      .collection("blocks")
+      .doc(`${studentId}__${coachId}`)
+      .get();
+
+    return {
+      canSend: !blockSnap.exists,
+    };
+  },
+);
+
+
+/**
+ * コーチ本人のチャット一覧に表示する生徒プロフィールを返します。
+ * messages上でそのコーチ本人と会話履歴がある生徒だけを対象にします。
+ */
+exports.getCoachChatStudentProfiles = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "チャットの確認にはログインが必要です。",
+      );
+    }
+
+    const coachId = request.auth.uid;
+    const db = getFirestore();
+
+    const messageSnapshot = await db
+      .collection("messages")
+      .where("coachId", "==", coachId)
+      .get();
+
+    const studentIds = [
+      ...new Set(
+        messageSnapshot.docs
+          .map((document) => {
+            const data = document.data();
+
+            return String(
+              data.studentId || "",
+            ).trim();
+          })
+          .filter((studentId) => studentId !== ""),
+      ),
+    ];
+
+    const profiles = {};
+
+    await Promise.all(
+      studentIds.map(async (studentId) => {
+        const studentSnap = await db
+          .collection("students")
+          .doc(studentId)
+          .get();
+
+        if (!studentSnap.exists) {
+          return;
+        }
+
+        const studentData = studentSnap.data() || {};
+
+        profiles[studentId] = {
+          displayName: String(
+            studentData.displayName || "生徒",
+          ).trim() || "生徒",
+          imageURL: String(
+            studentData.imageURL || "",
+          ).trim(),
+        };
+      }),
+    );
+
+    return {profiles};
+  },
+);
+
+
+/**
+ * コーチ本人の予約に表示する生徒プロフィールを返します。
  * studentsコレクションをクライアントへ公開せず、
- * 担当コーチの予約に紐づく生徒だけをサーバー側で解決します。
+ * 担当コーチの予約に紐づく生徒だけについて、
+ * 表示名とプロフィール画像URLをサーバー側で解決します。
  */
 exports.getCoachReservationStudentNames = onCall(
   async (request) => {
@@ -1024,7 +1257,7 @@ exports.getCoachReservationStudentNames = onCall(
       ),
     ];
 
-    const studentNameMap = new Map();
+    const studentProfileMap = new Map();
 
     await Promise.all(
       studentIds.map(async (studentId) => {
@@ -1037,20 +1270,26 @@ exports.getCoachReservationStudentNames = onCall(
           return;
         }
 
+        const studentData = studentSnap.data() || {};
         const displayName = String(
-          studentSnap.data()?.displayName || "",
+          studentData.displayName || "",
+        ).trim();
+        const imageURL = String(
+          studentData.imageURL || "",
         ).trim();
 
-        if (displayName) {
-          studentNameMap.set(
-            studentId,
+        studentProfileMap.set(
+          studentId,
+          {
             displayName,
-          );
-        }
+            imageURL,
+          },
+        );
       }),
     );
 
     const names = {};
+    const imageURLs = {};
 
     for (const document of reservationSnapshot.docs) {
       const data = document.data();
@@ -1060,14 +1299,24 @@ exports.getCoachReservationStudentNames = onCall(
       const savedStudentName = String(
         data.studentName || "",
       ).trim();
+      const profile =
+        studentProfileMap.get(studentId) || {};
 
       names[document.id] =
-        studentNameMap.get(studentId) ||
+        profile.displayName ||
         savedStudentName ||
         "生徒";
+
+      if (profile.imageURL) {
+        imageURLs[document.id] =
+          profile.imageURL;
+      }
     }
 
-    return {names};
+    return {
+      names,
+      imageURLs,
+    };
   },
 );
 

@@ -64,6 +64,8 @@
 		1397120430304ECF0031C537 /* ReviewSubmissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120330304ECF0031C537 /* ReviewSubmissionView.swift */; };
 		139712083031CB1B0031C537 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139712073031CB1B0031C537 /* SettingsView.swift */; };
 		1397120A303813FC0031C537 /* CoachVideoUploadSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13971209303813FC0031C537 /* CoachVideoUploadSection.swift */; };
+		1397120C303F23960031C537 /* StudentPublicProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120B303F23960031C537 /* StudentPublicProfileView.swift */; };
+		1397120E303F28840031C537 /* CoachProfileDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120D303F28840031C537 /* CoachProfileDestinationView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -121,6 +123,8 @@
 		1397120330304ECF0031C537 /* ReviewSubmissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSubmissionView.swift; sourceTree = "<group>"; };
 		139712073031CB1B0031C537 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		13971209303813FC0031C537 /* CoachVideoUploadSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachVideoUploadSection.swift; sourceTree = "<group>"; };
+		1397120B303F23960031C537 /* StudentPublicProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentPublicProfileView.swift; sourceTree = "<group>"; };
+		1397120D303F28840031C537 /* CoachProfileDestinationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachProfileDestinationView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -188,6 +192,8 @@
 				139711DE301A42E00031C537 /* ReservationListView.swift */,
 				139711D8301A38CE0031C537 /* PaymentView.swift.swift */,
 				139711DC301A3C780031C537 /* ChatView.swift */,
+				1397120D303F28840031C537 /* CoachProfileDestinationView.swift */,
+				1397120B303F23960031C537 /* StudentPublicProfileView.swift */,
 				139711B43017424D0031C537 /* CoachRegisterView.swift */,
 				139711EE3021A1EA0031C537 /* CoachAvailabilityView.swift */,
 				139711F03021A4FC0031C537 /* CoachDashboardView.swift.swift */,
@@ -326,6 +332,7 @@
 				139711F33021A7B30031C537 /* DashboardCard.swift in Sources */,
 				1397120430304ECF0031C537 /* ReviewSubmissionView.swift in Sources */,
 				07134EE63011F59700A87536 /* ProfileView.swift in Sources */,
+				1397120C303F23960031C537 /* StudentPublicProfileView.swift in Sources */,
 				139711B73018D5D70031C537 /* TimePickerView.swift in Sources */,
 				1397120A303813FC0031C537 /* CoachVideoUploadSection.swift in Sources */,
 				07134EEC301341A600A87536 /* ProfileDetailView.swift in Sources */,
@@ -333,6 +340,7 @@
 				139711E3301EFEBB0031C537 /* BasicInfoSectionView.swift in Sources */,
 				139711D33018F3030031C537 /* CoachScheduleSection.swift in Sources */,
 				07134EEA30133D6A00A87536 /* SampleData.swift in Sources */,
+				1397120E303F28840031C537 /* CoachProfileDestinationView.swift in Sources */,
 				139711CB3018F2200031C537 /* CoachSkillSection.swift in Sources */,
 				139711EB301F09B30031C537 /* RegisterButtonSectionView.swift in Sources */,
 				139711FF302B262A0031C537 /* NotificationView.swift in Sources */,

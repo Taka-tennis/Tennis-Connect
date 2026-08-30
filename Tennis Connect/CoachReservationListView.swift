@@ -46,6 +46,7 @@ struct CoachReservationListView: View {
 
     @State private var reservations: [Reservation] = []
     @State private var resolvedStudentNames: [String: String] = [:]
+    @State private var resolvedStudentImageURLs: [String: String] = [:]
     @State private var selectedCategory: ReservationCategory = .pending
     @State private var isLoading = false
     @State private var errorMessage = ""
@@ -348,6 +349,33 @@ struct CoachReservationListView: View {
     private func reservationCard(_ reservation: Reservation) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
+                NavigationLink {
+                    StudentPublicProfileView(
+                        studentId:
+                            reservation.studentId,
+                        initialDisplayName:
+                            displayStudentName(
+                                for: reservation
+                            ),
+                        initialImageURL:
+                            resolvedStudentImageURLs[
+                                reservation.id
+                            ] ?? ""
+                    )
+                } label: {
+                    StudentReservationAvatarView(
+                        imageURL:
+                            resolvedStudentImageURLs[
+                                reservation.id
+                            ] ?? "",
+                        size: 44
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "\(displayStudentName(for: reservation))さんのプロフィール"
+                )
+
                 VStack(alignment: .leading, spacing: 3) {
                     Text(displayStudentName(for: reservation))
                         .font(.headline)
@@ -606,7 +634,7 @@ struct CoachReservationListView: View {
                         } ?? []
 
                     reservations = loadedReservations
-                    loadStudentNamesIfNeeded(
+                    loadStudentProfiles(
                         for: loadedReservations
                     )
                 }
@@ -639,20 +667,12 @@ struct CoachReservationListView: View {
         return "生徒"
     }
 
-    private func loadStudentNamesIfNeeded(
+    private func loadStudentProfiles(
         for reservations: [Reservation]
     ) {
-        let needsResolution = reservations.contains {
-            let name =
-                $0.studentName.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-
-            return name.isEmpty || name == "生徒"
-        }
-
-        guard needsResolution else {
+        guard !reservations.isEmpty else {
             resolvedStudentNames = [:]
+            resolvedStudentImageURLs = [:]
             return
         }
 
@@ -667,10 +687,10 @@ struct CoachReservationListView: View {
             .call([:]) { result, error in
                 DispatchQueue.main.async {
                     if let error {
-                        // 名前補完だけの失敗で予約一覧全体を
-                        // エラー表示にはしない。
+                        // プロフィール補完だけの失敗で、
+                        // 予約一覧全体をエラーにはしない。
                         print(
-                            "生徒名を補完できませんでした:",
+                            "生徒プロフィールを補完できませんでした:",
                             error.localizedDescription
                         )
                         return
@@ -679,37 +699,66 @@ struct CoachReservationListView: View {
                     guard
                         let data =
                             result?.data
-                            as? [String: Any],
-                        let rawNames =
-                            data["names"]
                             as? [String: Any]
                     else {
                         return
                     }
 
                     var names: [String: String] = [:]
+                    var imageURLs: [String: String] = [:]
 
-                    for (reservationId, value)
-                        in rawNames {
-                        guard
-                            let name = value as? String
-                        else {
-                            continue
+                    if let rawNames =
+                        data["names"]
+                        as? [String: Any] {
+                        for (reservationId, value)
+                            in rawNames {
+                            guard
+                                let name = value as? String
+                            else {
+                                continue
+                            }
+
+                            let trimmedName =
+                                name.trimmingCharacters(
+                                    in:
+                                        .whitespacesAndNewlines
+                                )
+
+                            if !trimmedName.isEmpty {
+                                names[reservationId] =
+                                    trimmedName
+                            }
                         }
+                    }
 
-                        let trimmedName =
-                            name.trimmingCharacters(
-                                in:
-                                    .whitespacesAndNewlines
-                            )
+                    if let rawImageURLs =
+                        data["imageURLs"]
+                        as? [String: Any] {
+                        for (reservationId, value)
+                            in rawImageURLs {
+                            guard
+                                let imageURL =
+                                    value as? String
+                            else {
+                                continue
+                            }
 
-                        if !trimmedName.isEmpty {
-                            names[reservationId] =
-                                trimmedName
+                            let trimmedURL =
+                                imageURL
+                                    .trimmingCharacters(
+                                        in:
+                                            .whitespacesAndNewlines
+                                    )
+
+                            if !trimmedURL.isEmpty {
+                                imageURLs[reservationId] =
+                                    trimmedURL
+                            }
                         }
                     }
 
                     resolvedStudentNames = names
+                    resolvedStudentImageURLs = imageURLs
                 }
             }
     }
@@ -1393,6 +1442,63 @@ struct CoachReservationListView: View {
         return formatter.string(from: endDate)
     }
 }
+
+private struct StudentReservationAvatarView: View {
+
+    let imageURL: String
+    let size: CGFloat
+
+    var body: some View {
+        AsyncImage(
+            url: URL(string: imageURL)
+        ) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFill()
+
+            case .failure:
+                placeholder
+
+            case .empty:
+                if imageURL.isEmpty {
+                    placeholder
+                } else {
+                    ProgressView()
+                }
+
+            @unknown default:
+                placeholder
+            }
+        }
+        .frame(
+            width: size,
+            height: size
+        )
+        .background(
+            Color(.systemGray5)
+        )
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(
+                    Color(.separator).opacity(0.25),
+                    lineWidth: 0.5
+                )
+        )
+        .accessibilityHidden(true)
+    }
+
+    private var placeholder: some View {
+        Image(systemName: "person.fill")
+            .resizable()
+            .scaledToFit()
+            .padding(size * 0.22)
+            .foregroundStyle(.secondary)
+    }
+}
+
 
 #Preview {
     NavigationStack {

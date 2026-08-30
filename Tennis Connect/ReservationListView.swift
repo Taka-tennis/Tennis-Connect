@@ -86,11 +86,17 @@ struct ReservationListView: View {
     }
 
     @State private var reservations: [ReservationItem] = []
+    @State private var coachImageURLs: [String: String] = [:]
     @State private var selectedCategory: ReservationCategory = .upcoming
     @State private var isLoading = false
     @State private var errorMessage = ""
     @State private var isLoggedIn = false
     @State private var showLogin = false
+
+    @State private var selectedCoachIdForNavigation: String?
+    @State private var selectedReservationForNavigation: ReservationItem?
+    @State private var showCoachProfile = false
+    @State private var showReservationDetail = false
 
     private let db = Firestore.firestore()
 
@@ -143,6 +149,32 @@ struct ReservationListView: View {
             LoginView {
                 isLoggedIn = true
                 loadReservations()
+            }
+        }
+        .navigationDestination(
+            isPresented: $showCoachProfile
+        ) {
+            if let coachId =
+                selectedCoachIdForNavigation {
+                CoachProfileDestinationView(
+                    coachId: coachId
+                )
+            }
+        }
+        .navigationDestination(
+            isPresented: $showReservationDetail
+        ) {
+            if let reservation =
+                selectedReservationForNavigation {
+                StudentReservationDetailView(
+                    reservation: reservation,
+                    coachImageURL:
+                        coachImageURLs[
+                            reservation.coachId
+                        ] ?? ""
+                ) {
+                    loadReservations()
+                }
             }
         }
     }
@@ -200,26 +232,63 @@ struct ReservationListView: View {
         List {
             Section {
                 ForEach(filteredReservations) { reservation in
-                    NavigationLink {
-                        StudentReservationDetailView(
-                            reservation: reservation
-                        ) {
-                            loadReservations()
-                        }
-                    } label: {
-                        reservationCard(reservation)
-                            .foregroundStyle(.primary)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(16)
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(
-                                Color.primary.opacity(0.06),
-                                lineWidth: 1
+                    HStack(
+                        alignment: .top,
+                        spacing: 12
+                    ) {
+                        Button {
+                            selectedCoachIdForNavigation =
+                                reservation.coachId
+                            showCoachProfile = true
+                        } label: {
+                            ReservationCoachAvatarView(
+                                imageURL:
+                                    coachImageURLs[
+                                        reservation.coachId
+                                    ] ?? "",
+                                size: 44
                             )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "\(reservation.coachName)コーチのプロフィール"
+                        )
+
+                        Button {
+                            selectedReservationForNavigation =
+                                reservation
+                            showReservationDetail = true
+                        } label: {
+                            reservationCardMainContent(
+                                reservation
+                            )
+                            .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+                    }
+                    .padding(16)
+                    .background(
+                        Color(
+                            .secondarySystemGroupedBackground
+                        )
+                    )
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 16
+                        )
+                    )
+                    .overlay {
+                        RoundedRectangle(
+                            cornerRadius: 16
+                        )
+                        .stroke(
+                            Color.primary.opacity(0.06),
+                            lineWidth: 1
+                        )
                     }
                     .listRowInsets(
                         EdgeInsets(
@@ -331,7 +400,7 @@ struct ReservationListView: View {
     }
 
     @ViewBuilder
-    private func reservationCard(
+    private func reservationCardMainContent(
         _ reservation: ReservationItem
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -348,6 +417,13 @@ struct ReservationListView: View {
                 Spacer()
 
                 statusBadge(reservation)
+
+                Image(
+                    systemName: "chevron.right"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
             }
 
             Divider()
@@ -392,6 +468,11 @@ struct ReservationListView: View {
                 .foregroundStyle(.blue)
             }
         }
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
+        .contentShape(Rectangle())
     }
 
     private func categoryCount(
@@ -699,8 +780,53 @@ struct ReservationListView: View {
 
                     reservations = loadedReservations
                     errorMessage = ""
+
+                    loadCoachImages(
+                        for: loadedReservations
+                    )
                 }
             }
+    }
+
+    private func loadCoachImages(
+        for reservations: [ReservationItem]
+    ) {
+        let coachIds = Set(
+            reservations
+                .map(\.coachId)
+                .filter { !$0.isEmpty }
+        )
+
+        guard !coachIds.isEmpty else {
+            coachImageURLs = [:]
+            return
+        }
+
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var loadedImages: [String: String] = [:]
+
+        for coachId in coachIds {
+            group.enter()
+
+            db.collection("coaches")
+                .document(coachId)
+                .getDocument { snapshot, _ in
+                    let imageURL =
+                        snapshot?.data()?["imageURL"]
+                        as? String ?? ""
+
+                    lock.lock()
+                    loadedImages[coachId] = imageURL
+                    lock.unlock()
+
+                    group.leave()
+                }
+        }
+
+        group.notify(queue: .main) {
+            coachImageURLs = loadedImages
+        }
     }
 
     @ViewBuilder
@@ -959,6 +1085,7 @@ struct ReservationListView: View {
 
 private struct StudentReservationDetailView: View {
     let reservation: ReservationItem
+    let coachImageURL: String
     let onCancellationCompleted: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -998,9 +1125,11 @@ private struct StudentReservationDetailView: View {
 
     init(
         reservation: ReservationItem,
+        coachImageURL: String = "",
         onCancellationCompleted: @escaping () -> Void = {}
     ) {
         self.reservation = reservation
+        self.coachImageURL = coachImageURL
         self.onCancellationCompleted = onCancellationCompleted
         _reviewSubmitted = State(
             initialValue: !reservation.reviewId.isEmpty
@@ -1019,7 +1148,7 @@ private struct StudentReservationDetailView: View {
             name: reservation.coachName,
             price: reservation.pricePerHour,
             area: "",
-            imageURL: "",
+            imageURL: coachImageURL,
             availableTimes: [],
             ageGroup: "",
             careers: ["経歴未登録"],
@@ -1051,10 +1180,34 @@ private struct StudentReservationDetailView: View {
                 statusHeader
 
                 VStack(spacing: 16) {
-                    detailRow(
-                        title: "コーチ",
-                        value: reservation.coachName
-                    )
+                    HStack(spacing: 12) {
+                        Text("コーチ")
+
+                        Spacer()
+
+                        NavigationLink {
+                            CoachProfileDestinationView(
+                                coachId:
+                                    reservation.coachId
+                            )
+                        } label: {
+                            ReservationCoachAvatarView(
+                                imageURL: coachImageURL,
+                                size: 40
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "\(reservation.coachName)コーチのプロフィール"
+                        )
+
+                        Text(reservation.coachName)
+                            .bold()
+                            .multilineTextAlignment(
+                                .trailing
+                            )
+                    }
+
                     Divider()
                     detailRow(
                         title: "日付",
@@ -2138,6 +2291,63 @@ private struct StudentReservationDetailView: View {
         return formatter.string(from: endDate)
     }
 }
+
+private struct ReservationCoachAvatarView: View {
+
+    let imageURL: String
+    let size: CGFloat
+
+    var body: some View {
+        AsyncImage(
+            url: URL(string: imageURL)
+        ) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFill()
+
+            case .failure:
+                placeholder
+
+            case .empty:
+                if imageURL.isEmpty {
+                    placeholder
+                } else {
+                    ProgressView()
+                }
+
+            @unknown default:
+                placeholder
+            }
+        }
+        .frame(
+            width: size,
+            height: size
+        )
+        .background(
+            Color(.systemGray5)
+        )
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(
+                    Color(.separator).opacity(0.25),
+                    lineWidth: 0.5
+                )
+        )
+        .accessibilityHidden(true)
+    }
+
+    private var placeholder: some View {
+        Image(systemName: "person.fill")
+            .resizable()
+            .scaledToFit()
+            .padding(size * 0.22)
+            .foregroundStyle(.secondary)
+    }
+}
+
 
 #Preview {
     NavigationStack {
