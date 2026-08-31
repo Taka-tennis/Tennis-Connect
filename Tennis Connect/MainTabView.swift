@@ -161,31 +161,12 @@ struct MainTabView: View {
                     }
 
                     let unreadCount =
-                        snapshot?
-                            .documents
-                            .filter {
-                                document in
-
-                                let data =
-                                    document.data()
-
-                                let isStudentNotification =
-                                    data["type"]
-                                        as? String
-                                        !=
-                                        "reservationRequested"
-
-                                let isUnread =
-                                    data["isRead"]
-                                        as? Bool
-                                        != true
-
-                                return
-                                    isStudentNotification &&
-                                    isUnread
-                            }
-                            .count
-                        ?? 0
+                        NotificationRouting.unreadCount(
+                            in:
+                                snapshot?.documents
+                                ?? [],
+                            audience: .student
+                        )
 
                     DispatchQueue.main.async {
                         unreadNotificationCount =

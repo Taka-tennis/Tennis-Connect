@@ -7,6 +7,127 @@ enum NotificationAudience: Equatable {
     case coach
 }
 
+enum NotificationRouting {
+
+    private static let coachTypes: Set<String> = [
+        "reservationRequested",
+        "reservationWithdrawn",
+        "studentCancellation"
+    ]
+
+    static func belongs(
+        type: String,
+        to audience: NotificationAudience
+    ) -> Bool {
+
+        // 雨天キャンセル系は送信先がtype名に明示されているため、
+        // 今後種類が増えてもToCoach / ToStudentで安全に振り分ける。
+        if type.hasSuffix("ToCoach") {
+            return audience == .coach
+        }
+
+        if type.hasSuffix("ToStudent") {
+            return audience == .student
+        }
+
+        if coachTypes.contains(type) {
+            return audience == .coach
+        }
+
+        // 現在、上記以外の通知は生徒向け。
+        return audience == .student
+    }
+
+    static func unreadCount(
+        in documents: [QueryDocumentSnapshot],
+        audience: NotificationAudience
+    ) -> Int {
+
+        let relevantDocuments =
+            documents.filter { document in
+                let type =
+                    document.data()["type"]
+                    as? String
+                    ?? ""
+
+                return belongs(
+                    type: type,
+                    to: audience
+                )
+            }
+
+        // 予約取り下げ後は、同じ予約の古い
+        // 「新しい予約申請」を通知一覧でも非表示にしている。
+        // ベルの未読件数も同じ挙動へ揃える。
+        let withdrawnReservationIds: Set<String>
+
+        if audience == .coach {
+            withdrawnReservationIds = Set(
+                relevantDocuments.compactMap {
+                    document in
+
+                    let data =
+                        document.data()
+
+                    guard
+                        data["type"] as? String
+                            == "reservationWithdrawn"
+                    else {
+                        return nil
+                    }
+
+                    let reservationId =
+                        data["reservationId"]
+                        as? String
+                        ?? ""
+
+                    return reservationId.isEmpty
+                        ? nil
+                        : reservationId
+                }
+            )
+        } else {
+            withdrawnReservationIds = []
+        }
+
+        return relevantDocuments.filter {
+            document in
+
+            let data =
+                document.data()
+
+            let isUnread =
+                data["isRead"]
+                as? Bool
+                != true
+
+            guard isUnread else {
+                return false
+            }
+
+            if audience == .coach,
+               data["type"] as? String
+                    == "reservationRequested" {
+
+                let reservationId =
+                    data["reservationId"]
+                    as? String
+                    ?? ""
+
+                if !reservationId.isEmpty &&
+                    withdrawnReservationIds.contains(
+                        reservationId
+                    ) {
+                    return false
+                }
+            }
+
+            return true
+        }
+        .count
+    }
+}
+
 struct NotificationView: View {
 
     private struct NotificationItem: Identifiable {
@@ -259,25 +380,10 @@ struct NotificationView: View {
     private func shouldShowNotification(
         _ notification: NotificationItem
     ) -> Bool {
-        let coachOnlyTypes: Set<String> = [
-            "reservationRequested",
-            "reservationWithdrawn",
-            "studentCancellation",
-            "weatherCancellationRequestToCoach",
-            "weatherCancellationWithdrawnToCoach",
-            "weatherCancellationRejectedToCoach",
-            "weatherCancellationApprovedToCoach",
-            "weatherCancellationRefundedToCoach",
-            "weatherCancellationRefundFailedToCoach"
-        ]
-
-        switch audience {
-        case .student:
-            return !coachOnlyTypes.contains(notification.type)
-
-        case .coach:
-            return coachOnlyTypes.contains(notification.type)
-        }
+        NotificationRouting.belongs(
+            type: notification.type,
+            to: audience
+        )
     }
 
     private func markAsRead(_ notification: NotificationItem) {

@@ -125,21 +125,37 @@ struct CoachHomeView: View {
             return
         }
 
-        notificationListener = db.collection("notifications")
-            .whereField("recipientId", isEqualTo: uid)
-            .addSnapshotListener { snapshot, _ in
-                let unreadCount = snapshot?.documents.filter { document in
-                    let data = document.data()
-                    let isCoachNotification =
-                        data["type"] as? String == "reservationRequested"
-                    let isUnread = data["isRead"] as? Bool != true
-                    return isCoachNotification && isUnread
-                }.count ?? 0
+        notificationListener =
+            db.collection("notifications")
+                .whereField(
+                    "recipientId",
+                    isEqualTo: uid
+                )
+                .addSnapshotListener {
+                    snapshot,
+                    error in
 
-                DispatchQueue.main.async {
-                    unreadNotificationCount = unreadCount
+                    if let error {
+                        print(
+                            "コーチ未読通知取得エラー:",
+                            error.localizedDescription
+                        )
+                        return
+                    }
+
+                    let unreadCount =
+                        NotificationRouting.unreadCount(
+                            in:
+                                snapshot?.documents
+                                ?? [],
+                            audience: .coach
+                        )
+
+                    DispatchQueue.main.async {
+                        unreadNotificationCount =
+                            unreadCount
+                    }
                 }
-            }
     }
 
     private func startUnreadMessageListener() {

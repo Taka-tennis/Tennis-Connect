@@ -1123,6 +1123,24 @@ function reservationAllowsChat(reservation) {
     reservation.refundStatus || "",
   );
 
+  // キャンセル・取り下げ・却下された予約は、
+  // 過去に支払い実績があってもチャット解放の根拠にしません。
+  //
+  // 正常にレッスンが完了した予約はこの一覧に含めないため、
+  // レッスン後のレビュー・忘れ物・次回相談などの連絡は継続できます。
+  const cancelledStatuses = new Set([
+    "coach_cancelled",
+    "student_cancelled",
+    "weather_cancelled",
+    "cancelled",
+    "canceled",
+    "rejected",
+  ]);
+
+  if (cancelledStatuses.has(status)) {
+    return false;
+  }
+
   const amountPaid = Number(
     reservation.amountPaid || 0,
   );
@@ -1132,6 +1150,7 @@ function reservationAllowsChat(reservation) {
 
   const wasPaid =
     status === "paid" ||
+    status === "completed" ||
     paymentStatus === "paid" ||
     paymentStatus === "partially_refunded" ||
     paymentStatus === "refund_processing" ||
@@ -1236,7 +1255,7 @@ async function syncChatPermission(
  *
  * 条件:
  * - 当該生徒または当該コーチ本人
- * - 支払い実績のある予約が存在する
+ * - キャンセルされていない支払い実績のある予約が存在する
  * - 生徒がコーチをブロックしていない
  *
  * 支払い前の利用者にはchatPermissionsを発行しません。

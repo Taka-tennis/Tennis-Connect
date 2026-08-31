@@ -1236,7 +1236,8 @@ private struct StudentReservationDetailView: View {
                 .background(Color(.systemGray6))
                 .cornerRadius(18)
 
-                if canMessageCoach &&
+                if currentReservationAllowsChat &&
+                    canMessageCoach &&
                     !isCheckingChatAccess {
                     NavigationLink {
                         ChatView(coach: coach)
@@ -1696,6 +1697,12 @@ private struct StudentReservationDetailView: View {
     }
 
     private func loadChatAccessState() {
+        guard currentReservationAllowsChat else {
+            canMessageCoach = false
+            isCheckingChatAccess = false
+            return
+        }
+
         guard
             let studentId =
                 Auth.auth().currentUser?.uid,
@@ -2062,6 +2069,38 @@ private struct StudentReservationDetailView: View {
                 message: "承認されるまでしばらくお待ちください"
             )
         }
+    }
+
+    private var currentReservationAllowsChat: Bool {
+        // この予約詳細では「別の予約で支払い実績があるか」ではなく、
+        // 今開いている予約そのものに支払い実績があることを必須にする。
+        //
+        // getChatMessagingStatusは生徒×コーチ単位の最終安全確認として
+        // 引き続き利用するため、UI条件とサーバー条件の両方を満たした時だけ
+        // チャットボタンが表示される。
+        let hasPaidRecord =
+            reservation.status == "paid" ||
+            reservation.status == "completed" ||
+            [
+                "paid",
+                "partially_refunded",
+                "refund_processing",
+                "refund_failed"
+            ]
+            .contains(
+                reservation.paymentStatus
+            )
+
+        guard hasPaidRecord else {
+            return false
+        }
+
+        // 全額返金扱いの予約からはチャット導線を出さない。
+        if reservation.paymentStatus == "refunded" {
+            return false
+        }
+
+        return true
     }
 
     private var isRefunded: Bool {

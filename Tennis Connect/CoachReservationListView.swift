@@ -48,6 +48,15 @@ struct CoachReservationListView: View {
     @State private var resolvedStudentNames: [String: String] = [:]
     @State private var resolvedStudentImageURLs: [String: String] = [:]
     @State private var currentCoachName = ""
+
+    @State private var selectedStudentIdForNavigation: String?
+    @State private var selectedStudentNameForNavigation = ""
+    @State private var selectedStudentImageURLForNavigation = ""
+    @State private var selectedReservationForNavigation: Reservation?
+
+    @State private var showStudentProfile = false
+    @State private var showReservationDetail = false
+
     @State private var selectedCategory: ReservationCategory = .pending
     @State private var isLoading = false
     @State private var errorMessage = ""
@@ -102,6 +111,40 @@ struct CoachReservationListView: View {
         }
         .onAppear {
             loadReservations()
+        }
+        .navigationDestination(
+            isPresented: $showStudentProfile
+        ) {
+            if let studentId =
+                selectedStudentIdForNavigation {
+                StudentPublicProfileView(
+                    studentId: studentId,
+                    initialDisplayName:
+                        selectedStudentNameForNavigation,
+                    initialImageURL:
+                        selectedStudentImageURLForNavigation
+                )
+            }
+        }
+        .navigationDestination(
+            isPresented: $showReservationDetail
+        ) {
+            if let reservation =
+                selectedReservationForNavigation {
+                CoachReservationDetailView(
+                    reservation: reservation,
+                    studentName:
+                        displayStudentName(
+                            for: reservation
+                        ),
+                    studentImageURL:
+                        resolvedStudentImageURLs[
+                            reservation.id
+                        ] ?? "",
+                    coachName:
+                        currentCoachName
+                )
+            }
         }
         .alert("この予約を承認しますか？", isPresented: $showApproveAlert) {
             Button("キャンセル", role: .cancel) {
@@ -350,19 +393,18 @@ struct CoachReservationListView: View {
     private func reservationCard(_ reservation: Reservation) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                NavigationLink {
-                    StudentPublicProfileView(
-                        studentId:
-                            reservation.studentId,
-                        initialDisplayName:
-                            displayStudentName(
-                                for: reservation
-                            ),
-                        initialImageURL:
-                            resolvedStudentImageURLs[
-                                reservation.id
-                            ] ?? ""
-                    )
+                Button {
+                    selectedStudentIdForNavigation =
+                        reservation.studentId
+                    selectedStudentNameForNavigation =
+                        displayStudentName(
+                            for: reservation
+                        )
+                    selectedStudentImageURLForNavigation =
+                        resolvedStudentImageURLs[
+                            reservation.id
+                        ] ?? ""
+                    showStudentProfile = true
                 } label: {
                     StudentReservationAvatarView(
                         imageURL:
@@ -495,20 +537,10 @@ struct CoachReservationListView: View {
                 .padding(.top, 4)
             }
 
-            NavigationLink {
-                CoachReservationDetailView(
-                    reservation: reservation,
-                    studentName:
-                        displayStudentName(
-                            for: reservation
-                        ),
-                    studentImageURL:
-                        resolvedStudentImageURLs[
-                            reservation.id
-                        ] ?? "",
-                    coachName:
-                        currentCoachName
-                )
+            Button {
+                selectedReservationForNavigation =
+                    reservation
+                showReservationDetail = true
             } label: {
                 Label(
                     "予約詳細を見る",
