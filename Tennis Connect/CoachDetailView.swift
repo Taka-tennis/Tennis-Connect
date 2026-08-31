@@ -34,6 +34,9 @@ struct CoachDetailView: View {
     @State private var showUnblockConfirmation = false
     @State private var showReportSheet = false
 
+    @State private var canMessageCoach = false
+    @State private var isCheckingChatAccess = false
+
     private var currentUserId: String? {
         Auth.auth().currentUser?.uid
     }
@@ -63,6 +66,28 @@ struct CoachDetailView: View {
                 )
 
                 CoachScheduleSection(coach: coach)
+
+                if canShowMessageButton {
+                    NavigationLink {
+                        ChatView(coach: coach)
+                    } label: {
+                        Label(
+                            "メッセージを送る",
+                            systemImage: "message.fill"
+                        )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(Color.green)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 14
+                            )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 if isBlocked {
                     blockedNotice
@@ -158,6 +183,7 @@ struct CoachDetailView: View {
         .onAppear {
             loadFavoriteState()
             loadBlockState()
+            loadChatAccessState()
         }
         .alert(
             "お気に入りを更新できませんでした",
@@ -282,6 +308,71 @@ struct CoachDetailView: View {
         .clipShape(
             RoundedRectangle(cornerRadius: 16)
         )
+    }
+
+    private var canShowMessageButton: Bool {
+        guard
+            currentUserId != nil,
+            !isOwnCoachProfile,
+            !isBlocked
+        else {
+            return false
+        }
+
+        return canMessageCoach &&
+            !isCheckingChatAccess
+    }
+
+    private func loadChatAccessState() {
+        guard
+            let studentId = currentUserId,
+            studentId != coach.id
+        else {
+            canMessageCoach = false
+            isCheckingChatAccess = false
+            return
+        }
+
+        isCheckingChatAccess = true
+        canMessageCoach = false
+
+        functions
+            .httpsCallable(
+                "getChatMessagingStatus"
+            )
+            .call(
+                [
+                    "studentId": studentId,
+                    "coachId": coach.id
+                ]
+            ) { result, error in
+                DispatchQueue.main.async {
+                    isCheckingChatAccess = false
+
+                    if let error {
+                        canMessageCoach = false
+                        print(
+                            "チャット利用可否確認失敗:",
+                            error.localizedDescription
+                        )
+                        return
+                    }
+
+                    guard
+                        let data =
+                            result?.data
+                            as? [String: Any]
+                    else {
+                        canMessageCoach = false
+                        return
+                    }
+
+                    canMessageCoach =
+                        data["canSend"]
+                        as? Bool
+                        ?? false
+                }
+            }
     }
 
     private var favoriteDocumentId: String? {
@@ -629,6 +720,7 @@ struct CoachDetailView: View {
 
                     isBlocked = true
                     isFavorite = false
+                    canMessageCoach = false
                     resetPendingBlockConfirmation()
 
                     let refundFailureCount =
@@ -709,6 +801,7 @@ struct CoachDetailView: View {
                     }
 
                     isBlocked = false
+                    loadChatAccessState()
                 }
             }
     }

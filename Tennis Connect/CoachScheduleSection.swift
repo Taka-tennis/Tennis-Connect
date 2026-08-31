@@ -135,8 +135,23 @@ struct CoachScheduleSection: View {
                     let times = document.data()["times"]
                         as? [String] ?? []
 
-                    if date >= todayKey && !times.isEmpty {
-                        loadedSchedule[date] = times.sorted()
+                    guard date >= todayKey else {
+                        continue
+                    }
+
+                    let futureTimes =
+                        times
+                            .filter {
+                                isFutureTimeSlot(
+                                    $0,
+                                    dateKey: date
+                                )
+                            }
+                            .sorted()
+
+                    if !futureTimes.isEmpty {
+                        loadedSchedule[date] =
+                            futureTimes
                     }
                 }
 
@@ -227,6 +242,13 @@ struct CoachScheduleSection: View {
                 continue
             }
 
+            guard isFutureTimeSlot(
+                startTime,
+                dateKey: date
+            ) else {
+                continue
+            }
+
             if !(result[date] ?? []).contains(startTime) {
                 result[date, default: []].append(startTime)
             }
@@ -252,12 +274,62 @@ struct CoachScheduleSection: View {
     private var todayKey: String {
 
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar =
+            Calendar(identifier: .gregorian)
+        formatter.locale =
+            Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
         formatter.dateFormat = "yyyy-MM-dd"
 
-        return formatter.string(
-            from: Calendar.current.startOfDay(for: Date())
-        )
+        return formatter.string(from: Date())
+    }
+
+    private func isFutureTimeSlot(
+        _ value: String,
+        dateKey: String
+    ) -> Bool {
+
+        let normalized =
+            value.replacingOccurrences(
+                of: "~",
+                with: "〜"
+            )
+
+        let startTime =
+            normalized
+                .components(
+                    separatedBy: "〜"
+                )
+                .first?
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                ?? ""
+
+        guard !startTime.isEmpty else {
+            return false
+        }
+
+        let formatter = DateFormatter()
+        formatter.calendar =
+            Calendar(identifier: .gregorian)
+        formatter.locale =
+            Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat =
+            "yyyy-MM-dd HH:mm"
+
+        guard let slotDate =
+            formatter.date(
+                from: "\(dateKey) \(startTime)"
+            )
+        else {
+            return false
+        }
+
+        return slotDate > Date()
     }
 
     private func displayDate(from date: String) -> String {
@@ -295,7 +367,12 @@ struct CoachScheduleSection: View {
         }
 
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar =
+            Calendar(identifier: .gregorian)
+        formatter.locale =
+            Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
         formatter.dateFormat = "HH:mm"
 
         guard

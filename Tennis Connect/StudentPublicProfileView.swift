@@ -1,4 +1,6 @@
 import SwiftUI
+import FirebaseAuth
+import FirebaseFirestore
 import FirebaseFunctions
 
 struct StudentPublicProfileView: View {
@@ -19,6 +21,10 @@ struct StudentPublicProfileView: View {
     @State private var tennisExperience = "未設定"
     @State private var isLoading = false
     @State private var errorMessage = ""
+
+    @State private var canMessageStudent = false
+    @State private var isCheckingChatAccess = false
+    @State private var currentCoachName = ""
 
     init(
         studentId: String,
@@ -145,6 +151,40 @@ struct StudentPublicProfileView: View {
                     )
                 )
 
+                if canMessageStudent &&
+                    !isCheckingChatAccess,
+                   let coachId =
+                        Auth.auth().currentUser?.uid,
+                   coachId != studentId {
+                    NavigationLink {
+                        ChatView(
+                            coachId: coachId,
+                            coachName:
+                                resolvedCoachName,
+                            studentId: studentId,
+                            studentName:
+                                resolvedStudentName,
+                            currentRole: .coach
+                        )
+                    } label: {
+                        Label(
+                            "メッセージを送る",
+                            systemImage: "message.fill"
+                        )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(Color.green)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 14
+                            )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 if !errorMessage.isEmpty {
                     Text(errorMessage)
                         .font(.caption)
@@ -164,7 +204,32 @@ struct StudentPublicProfileView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await loadProfile()
+            await loadChatAccessState()
         }
+    }
+
+    private var resolvedStudentName: String {
+        let trimmed =
+            displayName
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        return trimmed.isEmpty
+            ? "生徒"
+            : trimmed
+    }
+
+    private var resolvedCoachName: String {
+        let trimmed =
+            currentCoachName
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        return trimmed.isEmpty
+            ? "コーチ"
+            : trimmed
     }
 
     private var displayedProfileComment: String {
@@ -206,6 +271,75 @@ struct StudentPublicProfileView: View {
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 15)
+    }
+
+    @MainActor
+    private func loadChatAccessState() async {
+        guard
+            let coachId =
+                Auth.auth().currentUser?.uid,
+            !coachId.isEmpty,
+            coachId != studentId
+        else {
+            canMessageStudent = false
+            isCheckingChatAccess = false
+            return
+        }
+
+        isCheckingChatAccess = true
+        canMessageStudent = false
+
+        do {
+            let coachSnapshot =
+                try await Firestore.firestore()
+                    .collection("coaches")
+                    .document(coachId)
+                    .getDocument()
+
+            currentCoachName =
+                coachSnapshot
+                    .data()?["name"]
+                as? String
+                ?? ""
+
+            let result =
+                try await functions
+                    .httpsCallable(
+                        "getChatMessagingStatus"
+                    )
+                    .call(
+                        [
+                            "studentId": studentId,
+                            "coachId": coachId
+                        ]
+                    )
+
+            guard
+                let data =
+                    result.data
+                    as? [String: Any]
+            else {
+                canMessageStudent = false
+                isCheckingChatAccess = false
+                return
+            }
+
+            canMessageStudent =
+                data["canSend"]
+                as? Bool
+                ?? false
+
+            isCheckingChatAccess = false
+
+        } catch {
+            canMessageStudent = false
+            isCheckingChatAccess = false
+
+            print(
+                "生徒プロフィールのチャット利用可否確認失敗:",
+                error.localizedDescription
+            )
+        }
     }
 
     @MainActor

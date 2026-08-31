@@ -19,6 +19,30 @@ service cloud.firestore {
         && resource.data.coachId == request.auth.uid;
     }
 
+    function studentCoachBlocked(studentId, coachId) {
+      return exists(
+        /databases/$(database)/documents/blocks/$(studentId + '__' + coachId)
+      );
+    }
+
+    function activeChatPermission(studentId, coachId) {
+      return exists(
+        /databases/$(database)/documents/chatPermissions/$(studentId + '__' + coachId)
+      )
+      && get(
+        /databases/$(database)/documents/chatPermissions/$(studentId + '__' + coachId)
+      ).data.enabled == true
+      && get(
+        /databases/$(database)/documents/chatPermissions/$(studentId + '__' + coachId)
+      ).data.studentId == studentId
+      && get(
+        /databases/$(database)/documents/chatPermissions/$(studentId + '__' + coachId)
+      ).data.coachId == coachId
+      && get(
+        /databases/$(database)/documents/chatPermissions/$(studentId + '__' + coachId)
+      ).data.validUntil > request.time;
+    }
+
     // 生徒プロフィール：本人だけ
     match /students/{studentId} {
       allow create, read, update, delete:
@@ -110,6 +134,19 @@ service cloud.firestore {
         && ('coachId' in request.resource.data)
         && ('senderId' in request.resource.data)
         && request.resource.data.senderId == request.auth.uid
+        && ('conversationId' in request.resource.data)
+        && request.resource.data.conversationId
+          == request.resource.data.studentId
+            + '__'
+            + request.resource.data.coachId
+        && activeChatPermission(
+          request.resource.data.studentId,
+          request.resource.data.coachId
+        )
+        && !studentCoachBlocked(
+          request.resource.data.studentId,
+          request.resource.data.coachId
+        )
         && ('sender' in request.resource.data)
         && (
           (
@@ -145,6 +182,12 @@ service cloud.firestore {
         && request.resource.data.isRead == true;
 
       allow delete: if false;
+    }
+
+
+    // チャット送信許可はCloud Functionsのみが管理する
+    match /chatPermissions/{permissionId} {
+      allow read, write: if false;
     }
 
     // アプリ内通知

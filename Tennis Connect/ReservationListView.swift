@@ -1095,6 +1095,9 @@ private struct StudentReservationDetailView: View {
     @State private var isCheckingCoachReview = true
     @State private var reviewEligibilityError = ""
 
+    @State private var canMessageCoach = false
+    @State private var isCheckingChatAccess = false
+
     @State private var isCancelling = false
     @State private var showCancellationConfirmation = false
     @State private var showCancellationResult = false
@@ -1232,6 +1235,29 @@ private struct StudentReservationDetailView: View {
                 .padding()
                 .background(Color(.systemGray6))
                 .cornerRadius(18)
+
+                if canMessageCoach &&
+                    !isCheckingChatAccess {
+                    NavigationLink {
+                        ChatView(coach: coach)
+                    } label: {
+                        Label(
+                            "メッセージを送る",
+                            systemImage: "message.fill"
+                        )
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(Color.green)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 14
+                            )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 if canWithdrawUnpaidReservation {
                     VStack(spacing: 10) {
@@ -1419,6 +1445,7 @@ private struct StudentReservationDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             checkExistingCoachReview()
+            loadChatAccessState()
         }
         .confirmationDialog(
             reservation.status == "pending"
@@ -1666,6 +1693,60 @@ private struct StudentReservationDetailView: View {
 
         return interval > 0 &&
             interval <= twentyFourHours
+    }
+
+    private func loadChatAccessState() {
+        guard
+            let studentId =
+                Auth.auth().currentUser?.uid,
+            !reservation.coachId.isEmpty
+        else {
+            canMessageCoach = false
+            isCheckingChatAccess = false
+            return
+        }
+
+        isCheckingChatAccess = true
+        canMessageCoach = false
+
+        functions
+            .httpsCallable(
+                "getChatMessagingStatus"
+            )
+            .call(
+                [
+                    "studentId": studentId,
+                    "coachId":
+                        reservation.coachId
+                ]
+            ) { result, error in
+                DispatchQueue.main.async {
+                    isCheckingChatAccess = false
+
+                    if let error {
+                        canMessageCoach = false
+                        print(
+                            "予約詳細チャット利用可否確認失敗:",
+                            error.localizedDescription
+                        )
+                        return
+                    }
+
+                    guard
+                        let data =
+                            result?.data
+                            as? [String: Any]
+                    else {
+                        canMessageCoach = false
+                        return
+                    }
+
+                    canMessageCoach =
+                        data["canSend"]
+                        as? Bool
+                        ?? false
+                }
+            }
     }
 
     private func withdrawReservationRequest() {

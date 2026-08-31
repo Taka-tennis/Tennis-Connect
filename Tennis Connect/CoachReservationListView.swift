@@ -47,6 +47,7 @@ struct CoachReservationListView: View {
     @State private var reservations: [Reservation] = []
     @State private var resolvedStudentNames: [String: String] = [:]
     @State private var resolvedStudentImageURLs: [String: String] = [:]
+    @State private var currentCoachName = ""
     @State private var selectedCategory: ReservationCategory = .pending
     @State private var isLoading = false
     @State private var errorMessage = ""
@@ -494,6 +495,31 @@ struct CoachReservationListView: View {
                 .padding(.top, 4)
             }
 
+            NavigationLink {
+                CoachReservationDetailView(
+                    reservation: reservation,
+                    studentName:
+                        displayStudentName(
+                            for: reservation
+                        ),
+                    studentImageURL:
+                        resolvedStudentImageURLs[
+                            reservation.id
+                        ] ?? "",
+                    coachName:
+                        currentCoachName
+                )
+            } label: {
+                Label(
+                    "予約詳細を見る",
+                    systemImage:
+                        "doc.text.magnifyingglass"
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .padding(.top, 4)
+
             if updatingReservationId == reservation.id {
                 HStack {
                     Spacer()
@@ -576,6 +602,33 @@ struct CoachReservationListView: View {
         return formatter.date(from: "\(normalizedDate) \(time)")
     }
 
+    private func loadCurrentCoachName(
+        coachId: String
+    ) {
+        db.collection("coaches")
+            .document(coachId)
+            .getDocument {
+                snapshot,
+                error in
+
+                DispatchQueue.main.async {
+                    if let error {
+                        print(
+                            "コーチ名取得失敗:",
+                            error.localizedDescription
+                        )
+                        return
+                    }
+
+                    currentCoachName =
+                        snapshot?
+                            .data()?["name"]
+                        as? String
+                        ?? ""
+                }
+            }
+    }
+
     private func loadReservations() {
         guard let uid = Auth.auth().currentUser?.uid else {
             errorMessage = "予約一覧の確認にはログインが必要です"
@@ -585,6 +638,10 @@ struct CoachReservationListView: View {
 
         isLoading = true
         errorMessage = ""
+
+        loadCurrentCoachName(
+            coachId: uid
+        )
 
         db.collection("reservations")
             .whereField("coachId", isEqualTo: uid)
@@ -1499,6 +1556,496 @@ private struct StudentReservationAvatarView: View {
     }
 }
 
+
+private struct CoachReservationDetailView: View {
+
+    let reservation:
+        CoachReservationListView.Reservation
+    let studentName: String
+    let studentImageURL: String
+    let coachName: String
+
+    private let functions =
+        Functions.functions(
+            region: "asia-northeast1"
+        )
+
+    @State private var canMessageStudent = false
+    @State private var isCheckingChatAccess = false
+
+    private var coachId: String {
+        Auth.auth().currentUser?.uid ?? ""
+    }
+
+    private var resolvedCoachName: String {
+        let trimmed =
+            coachName
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        return trimmed.isEmpty
+            ? "コーチ"
+            : trimmed
+    }
+
+    private var resolvedStudentName: String {
+        let trimmed =
+            studentName
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        return trimmed.isEmpty
+            ? "生徒"
+            : trimmed
+    }
+
+    private var isPaidUpcomingReservation: Bool {
+        let paid =
+            reservation.status == "paid" ||
+            reservation.status == "reserved" &&
+                reservation.paymentStatus == "paid" ||
+            [
+                "paid",
+                "partially_refunded",
+                "refund_processing",
+                "refund_failed"
+            ]
+            .contains(
+                reservation.paymentStatus
+            )
+
+        guard paid else {
+            return false
+        }
+
+        let cancelledStatuses = [
+            "cancelled",
+            "canceled",
+            "coach_cancelled",
+            "student_cancelled",
+            "weather_cancelled",
+            "rejected"
+        ]
+
+        guard
+            !cancelledStatuses.contains(
+                reservation.status
+            )
+        else {
+            return false
+        }
+
+        guard let endDate = lessonEndDate else {
+            return false
+        }
+
+        return endDate > Date()
+    }
+
+    private var lessonEndDate: Date? {
+        guard
+            let lastTime =
+                reservation.times
+                    .sorted()
+                    .last
+        else {
+            return nil
+        }
+
+        let normalizedDate =
+            reservation.date
+                .replacingOccurrences(
+                    of: "/",
+                    with: "-"
+                )
+
+        let startTime =
+            normalizedStartTime(
+                from: lastTime
+            )
+
+        let formatter =
+            DateFormatter()
+        formatter.calendar =
+            Calendar(
+                identifier: .gregorian
+            )
+        formatter.locale =
+            Locale(
+                identifier: "en_US_POSIX"
+            )
+        formatter.timeZone =
+            TimeZone(
+                identifier: "Asia/Tokyo"
+            ) ?? .current
+        formatter.dateFormat =
+            "yyyy-MM-dd HH:mm"
+
+        guard
+            let startDate =
+                formatter.date(
+                    from:
+                        "\(normalizedDate) \(startTime)"
+                )
+        else {
+            return nil
+        }
+
+        return Calendar.current.date(
+            byAdding: .hour,
+            value: 1,
+            to: startDate
+        )
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+
+                VStack(spacing: 14) {
+                    NavigationLink {
+                        StudentPublicProfileView(
+                            studentId:
+                                reservation.studentId,
+                            initialDisplayName:
+                                resolvedStudentName,
+                            initialImageURL:
+                                studentImageURL
+                        )
+                    } label: {
+                        StudentReservationAvatarView(
+                            imageURL:
+                                studentImageURL,
+                            size: 88
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Text(resolvedStudentName)
+                        .font(.title2)
+                        .fontWeight(.bold)
+
+                    Text("生徒プロフィールを見るには画像をタップ")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(spacing: 16) {
+                    detailRow(
+                        title: "日付",
+                        value:
+                            reservation.date
+                                .replacingOccurrences(
+                                    of: "-",
+                                    with: "/"
+                                )
+                    )
+
+                    Divider()
+
+                    detailRow(
+                        title: "時間",
+                        value:
+                            combinedTimeRange(
+                                reservation.times
+                            )
+                    )
+
+                    Divider()
+
+                    detailRow(
+                        title: "レッスン時間",
+                        value:
+                            "\(max(reservation.times.count, 1))時間"
+                    )
+
+                    Divider()
+
+                    detailRow(
+                        title: "料金",
+                        value:
+                            "¥\(reservation.totalPrice)"
+                    )
+
+                    if !reservation.court.isEmpty {
+                        Divider()
+
+                        detailRow(
+                            title: "場所",
+                            value:
+                                reservation.court
+                        )
+                    }
+
+                    Divider()
+
+                    detailRow(
+                        title: "状態",
+                        value:
+                            statusText
+                    )
+                }
+                .padding()
+                .background(
+                    Color(.systemGray6)
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 18
+                    )
+                )
+
+                if isPaidUpcomingReservation &&
+                    canMessageStudent &&
+                    !isCheckingChatAccess {
+                    NavigationLink {
+                        ChatView(
+                            coachId: coachId,
+                            coachName:
+                                resolvedCoachName,
+                            studentId:
+                                reservation.studentId,
+                            studentName:
+                                resolvedStudentName,
+                            currentRole: .coach
+                        )
+                    } label: {
+                        Label(
+                            "メッセージを送る",
+                            systemImage:
+                                "message.fill"
+                        )
+                        .font(.headline)
+                        .frame(
+                            maxWidth: .infinity
+                        )
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(Color.green)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 14
+                            )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding()
+        }
+        .navigationTitle("予約詳細")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await loadChatAccessState()
+        }
+    }
+
+    private var statusText: String {
+        if reservation.paymentStatus == "refunded" ||
+            reservation.refundStatus == "succeeded" {
+            return "返金済み"
+        }
+
+        switch reservation.status {
+        case "paid":
+            return "支払い済み"
+        case "reserved":
+            return "予約確定"
+        case "confirmed":
+            return "支払い待ち"
+        case "pending":
+            return "承認待ち"
+        case "completed":
+            return "レッスン完了"
+        case "rejected":
+            return "却下済み"
+        case "cancelled", "canceled":
+            return "キャンセル"
+        case "coach_cancelled":
+            return "コーチ都合キャンセル"
+        default:
+            return reservation.status
+        }
+    }
+
+    @MainActor
+    private func loadChatAccessState() async {
+        guard
+            isPaidUpcomingReservation,
+            !coachId.isEmpty,
+            !reservation.studentId.isEmpty
+        else {
+            canMessageStudent = false
+            isCheckingChatAccess = false
+            return
+        }
+
+        isCheckingChatAccess = true
+        canMessageStudent = false
+
+        do {
+            let result =
+                try await functions
+                    .httpsCallable(
+                        "getChatMessagingStatus"
+                    )
+                    .call(
+                        [
+                            "studentId":
+                                reservation.studentId,
+                            "coachId":
+                                coachId
+                        ]
+                    )
+
+            guard
+                let data =
+                    result.data
+                    as? [String: Any]
+            else {
+                canMessageStudent = false
+                isCheckingChatAccess = false
+                return
+            }
+
+            canMessageStudent =
+                data["canSend"]
+                as? Bool
+                ?? false
+
+            isCheckingChatAccess = false
+
+        } catch {
+            canMessageStudent = false
+            isCheckingChatAccess = false
+
+            print(
+                "コーチ予約詳細チャット利用可否確認失敗:",
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func detailRow(
+        title: String,
+        value: String
+    ) -> some View {
+        HStack(
+            alignment: .firstTextBaseline
+        ) {
+            Text(title)
+
+            Spacer()
+
+            Text(value)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private func combinedTimeRange(
+        _ times: [String]
+    ) -> String {
+        let sorted =
+            times.sorted()
+
+        guard
+            let first = sorted.first,
+            let last = sorted.last
+        else {
+            return "時間未設定"
+        }
+
+        let start =
+            normalizedStartTime(
+                from: first
+            )
+
+        let end =
+            endTime(
+                for: last
+            )
+
+        return "\(start)〜\(end)"
+    }
+
+    private func normalizedStartTime(
+        from value: String
+    ) -> String {
+        value
+            .replacingOccurrences(
+                of: "~",
+                with: "〜"
+            )
+            .components(
+                separatedBy: "〜"
+            )
+            .first?
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            ?? value
+    }
+
+    private func endTime(
+        for value: String
+    ) -> String {
+        let normalized =
+            value.replacingOccurrences(
+                of: "~",
+                with: "〜"
+            )
+
+        if normalized.contains("〜") {
+            return normalized
+                .components(
+                    separatedBy: "〜"
+                )
+                .last?
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                ?? value
+        }
+
+        let formatter =
+            DateFormatter()
+        formatter.calendar =
+            Calendar(
+                identifier: .gregorian
+            )
+        formatter.locale =
+            Locale(
+                identifier: "en_US_POSIX"
+            )
+        formatter.timeZone =
+            TimeZone(
+                identifier: "Asia/Tokyo"
+            ) ?? .current
+        formatter.dateFormat = "HH:mm"
+
+        guard
+            let startDate =
+                formatter.date(
+                    from: value
+                ),
+            let endDate =
+                Calendar.current.date(
+                    byAdding: .hour,
+                    value: 1,
+                    to: startDate
+                )
+        else {
+            return value
+        }
+
+        return formatter.string(
+            from: endDate
+        )
+    }
+}
 
 #Preview {
     NavigationStack {

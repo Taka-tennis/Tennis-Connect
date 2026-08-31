@@ -8,14 +8,21 @@ import FirebaseFunctions
 struct CoachHomeView: View {
 
     @State private var selectedTab = 0
+
     @State private var unreadNotificationCount = 0
+    @State private var unreadChatCount = 0
+
     @State private var notificationListener: ListenerRegistration?
+    @State private var messageListener: ListenerRegistration?
 
     private let db = Firestore.firestore()
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            CoachTabDashboardView(selectedTab: $selectedTab)
+            CoachTabDashboardView(
+                selectedTab: $selectedTab,
+                unreadChatCount: unreadChatCount
+            )
                 .tabItem {
                     Label("ホーム", systemImage: "house.fill")
                 }
@@ -37,6 +44,7 @@ struct CoachHomeView: View {
                 .tabItem {
                     Label("チャット", systemImage: "message.fill")
                 }
+                .badge(unreadChatCount)
                 .tag(3)
 
             CoachMyPageView()
@@ -83,10 +91,14 @@ struct CoachHomeView: View {
         }
         .onAppear {
             startNotificationListener()
+            startUnreadMessageListener()
         }
         .onDisappear {
             notificationListener?.remove()
             notificationListener = nil
+
+            messageListener?.remove()
+            messageListener = nil
         }
     }
 
@@ -129,19 +141,73 @@ struct CoachHomeView: View {
                 }
             }
     }
+
+    private func startUnreadMessageListener() {
+        messageListener?.remove()
+
+        guard let uid = Auth.auth().currentUser?.uid else {
+            unreadChatCount = 0
+            return
+        }
+
+        messageListener = db.collection("messages")
+            .whereField("coachId", isEqualTo: uid)
+            .addSnapshotListener { snapshot, error in
+                if let error {
+                    print(
+                        "コーチ未読チャット取得エラー:",
+                        error.localizedDescription
+                    )
+                    return
+                }
+
+                let unreadCount =
+                    snapshot?.documents.filter { document in
+                        let data = document.data()
+
+                        let isUnread =
+                            data["isRead"] as? Bool != true
+
+                        let sender: String
+
+                        if let savedSender =
+                            data["sender"] as? String {
+                            sender = savedSender
+                        } else if let isStudentMessage =
+                                    data["isMe"] as? Bool {
+                            // 以前のメッセージ形式にも対応。
+                            sender =
+                                isStudentMessage
+                                    ? "user"
+                                    : "coach"
+                        } else {
+                            sender = ""
+                        }
+
+                        return
+                            sender == "user" &&
+                            isUnread
+                    }
+                    .count
+                    ?? 0
+
+                DispatchQueue.main.async {
+                    unreadChatCount = unreadCount
+                }
+            }
+    }
 }
 
 private struct CoachTabDashboardView: View {
 
     @Binding var selectedTab: Int
+    let unreadChatCount: Int
 
     @State private var pendingCount = 0
     @State private var todayLessonCount = 0
     @State private var monthlySales = 0
     @State private var nextLesson = "予定はありません"
     @State private var reservationListener: ListenerRegistration?
-    @State private var unreadChatCount = 0
-    @State private var messageListener: ListenerRegistration?
 
     @State private var isSameDayAvailable = false
     @State private var todayAvailableTimeCount = 0
@@ -269,7 +335,6 @@ private struct CoachTabDashboardView: View {
         }
         .onAppear {
             startReservationListener()
-            startUnreadMessageListener()
             loadSameDayAvailabilityState()
         }
         .onChange(of: selectedTab) { newValue in
@@ -285,8 +350,6 @@ private struct CoachTabDashboardView: View {
         .onDisappear {
             reservationListener?.remove()
             reservationListener = nil
-            messageListener?.remove()
-            messageListener = nil
         }
     }
 
@@ -737,41 +800,6 @@ private struct CoachTabDashboardView: View {
                     monthlySales = newMonthlySales
                     nextLesson = nextLessonDate.map(displayLessonDate)
                         ?? "予定はありません"
-                }
-            }
-    }
-
-    private func startUnreadMessageListener() {
-        messageListener?.remove()
-
-        guard let uid = Auth.auth().currentUser?.uid else {
-            unreadChatCount = 0
-            return
-        }
-
-        messageListener = db.collection("messages")
-            .whereField("coachId", isEqualTo: uid)
-            .addSnapshotListener { snapshot, _ in
-                let unreadCount = snapshot?.documents.filter { document in
-                    let data = document.data()
-                    let isUnread = data["isRead"] as? Bool != true
-
-                    let sender: String
-
-                    if let savedSender = data["sender"] as? String {
-                        sender = savedSender
-                    } else if let isStudentMessage = data["isMe"] as? Bool {
-                        // 以前のメッセージ形式にも対応します。
-                        sender = isStudentMessage ? "user" : "coach"
-                    } else {
-                        sender = ""
-                    }
-
-                    return sender == "user" && isUnread
-                }.count ?? 0
-
-                DispatchQueue.main.async {
-                    unreadChatCount = unreadCount
                 }
             }
     }

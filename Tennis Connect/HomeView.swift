@@ -15,14 +15,54 @@ struct HomeView: View {
     @State private var isLoggedIn = false
     @State private var showLogin = false
 
+    @State private var selectedSameDayCoach: Coach?
+    @State private var showSameDayCoachDetail = false
+
+    // UIScreenの幅ではなく、このセクションが実際に使える横幅を測る。
+    @State private var sameDaySectionWidth: CGFloat = 0
+
     init(unreadNotificationCount: Int = 0) {
         self.unreadNotificationCount = unreadNotificationCount
     }
 
     private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
+        GridItem(
+            .flexible(minimum: 0, maximum: .infinity),
+            spacing: 12
+        ),
+        GridItem(
+            .flexible(minimum: 0, maximum: .infinity),
+            spacing: 12
+        )
     ]
+
+
+    private var sameDayCardWidth: CGFloat {
+        guard sameDaySectionWidth > 12 else {
+            return 0
+        }
+
+        // 実際にこのセクションへ割り当てられた幅から、
+        // カード間12ptを引いて完全に2等分する。
+        return (sameDaySectionWidth - 12) / 2
+    }
+
+    private var sameDayCoachRows: [[Coach]] {
+        stride(
+            from: 0,
+            to: sameDayCoaches.count,
+            by: 2
+        ).map { startIndex in
+            let endIndex = min(
+                startIndex + 2,
+                sameDayCoaches.count
+            )
+
+            return Array(
+                sameDayCoaches[startIndex..<endIndex]
+            )
+        }
+    }
 
     func fetchCoaches() {
         Task {
@@ -310,16 +350,54 @@ struct HomeView: View {
                             .cornerRadius(14)
 
                         } else {
-                            LazyVGrid(columns: columns, spacing: 16) {
-                                ForEach(sameDayCoaches) { coach in
-                                    NavigationLink {
-                                        CoachDetailView(coach: coach)
-                                    } label: {
-                                        CoachGridCard(coach: coach)
+                            LazyVStack(spacing: 16) {
+                                ForEach(
+                                    Array(
+                                        sameDayCoachRows.enumerated()
+                                    ),
+                                    id: \.offset
+                                ) { _, row in
+                                    HStack(
+                                        alignment: .top,
+                                        spacing: 12
+                                    ) {
+                                        ForEach(row) { coach in
+                                            Button {
+                                                selectedSameDayCoach = coach
+                                                showSameDayCoachDetail = true
+                                            } label: {
+                                                SameDayCoachCard(
+                                                    coach: coach,
+                                                    cardWidth:
+                                                        sameDayCardWidth
+                                                )
+                                                .contentShape(Rectangle())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .frame(
+                                                width: sameDayCardWidth,
+                                                alignment: .topLeading
+                                            )
+                                        }
+
+                                        if row.count == 1 {
+                                            Color.clear
+                                                .frame(
+                                                    width: sameDayCardWidth
+                                                )
+                                                .accessibilityHidden(true)
+                                        }
                                     }
-                                    .buttonStyle(.plain)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        alignment: .leading
+                                    )
                                 }
                             }
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
                         }
 
                         if !sameDayErrorMessage.isEmpty {
@@ -328,7 +406,30 @@ struct HomeView: View {
                                 .foregroundStyle(.red)
                         }
                     }
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .leading
+                    )
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear {
+                                    sameDaySectionWidth =
+                                        proxy.size.width
+                                }
+                                .onChange(
+                                    of: proxy.size.width
+                                ) { newWidth in
+                                    sameDaySectionWidth =
+                                        newWidth
+                                }
+                        }
+                    }
                 }
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: .leading
+                )
                 .padding()
             }
         }
@@ -339,6 +440,13 @@ struct HomeView: View {
         .sheet(isPresented: $showLogin) {
             LoginView {
                 isLoggedIn = true
+            }
+        }
+        .navigationDestination(
+            isPresented: $showSameDayCoachDetail
+        ) {
+            if let coach = selectedSameDayCoach {
+                CoachDetailView(coach: coach)
             }
         }
     }
@@ -823,6 +931,134 @@ private struct StudentCoachSearchView: View {
     }
 }
 
+private struct SameDayCoachCard: View {
+
+    let coach: Coach
+    let cardWidth: CGFloat
+
+    private var contentWidth: CGFloat {
+        max(cardWidth - 20, 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+
+            AsyncImage(
+                url: URL(string: coach.imageURL)
+            ) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .failure:
+                    ZStack {
+                        Color.gray.opacity(0.15)
+
+                        Image(
+                            systemName:
+                                "person.crop.circle.fill"
+                        )
+                        .font(.system(size: 45))
+                        .foregroundStyle(.gray)
+                    }
+
+                case .empty:
+                    ZStack {
+                        Color.gray.opacity(0.15)
+                        ProgressView()
+                    }
+
+                @unknown default:
+                    ZStack {
+                        Color.gray.opacity(0.15)
+                    }
+                }
+            }
+            // 成功画像・読み込み中・失敗画像のすべてを
+            // まったく同じ幅に固定する。
+            .frame(
+                width: contentWidth,
+                height: 130
+            )
+            .clipped()
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 12
+                )
+            )
+
+            Text(coach.name)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .frame(
+                    width: contentWidth,
+                    alignment: .leading
+                )
+
+            Text(
+                coach.careers.first
+                    ?? "経歴未登録"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(
+                width: contentWidth,
+                alignment: .leading
+            )
+
+            Label(
+                coach.area,
+                systemImage:
+                    "mappin.and.ellipse"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(
+                width: contentWidth,
+                alignment: .leading
+            )
+
+            Text(
+                "¥\(coach.price) / 1時間"
+            )
+            .font(.subheadline)
+            .fontWeight(.bold)
+            .foregroundStyle(.blue)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .frame(
+                width: contentWidth,
+                alignment: .leading
+            )
+        }
+        // contentWidth + 左右10pt = cardWidth。
+        // 内部Viewの理想サイズに左右されない。
+        .frame(
+            width: contentWidth,
+            alignment: .leading
+        )
+        .padding(10)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 14
+            )
+        )
+        .shadow(
+            color:
+                Color.black.opacity(0.08),
+            radius: 5,
+            x: 0,
+            y: 2
+        )
+    }
+}
+
 private struct CoachGridCard: View {
     let coach: Coach
 
@@ -881,6 +1117,10 @@ private struct CoachGridCard: View {
                 .foregroundColor(.blue)
         }
         .padding(10)
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
         .background(Color.white)
         .cornerRadius(14)
         .shadow(

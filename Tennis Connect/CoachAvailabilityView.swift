@@ -11,6 +11,14 @@ struct CoachAvailabilityView: View {
     @State private var isSaving = false
     @State private var errorMessage = ""
     @State private var showSaveAlert = false
+    @State private var saveAlertMessage = ""
+
+    // 日付ごとの未保存の選択内容。
+    // 日付を移動してもここに保持し、最後にまとめて保存する。
+    @State private var draftTimesByDate: [String: Set<String>] = [:]
+
+    // 実際にユーザーが変更した日だけを保存対象にする。
+    @State private var dirtyDateKeys: Set<String> = []
 
     @State private var isSameDayAvailable = false
     @State private var todayAvailableTimeCount = 0
@@ -155,6 +163,15 @@ struct CoachAvailabilityView: View {
             }
 
             Section("\(displayDate)の空き時間") {
+                if dirtyDateKeys.contains(formattedDate) {
+                    Label(
+                        "この日には未保存の変更があります",
+                        systemImage: "pencil.circle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
+
                 if isLoading {
                     HStack {
                         Spacer()
@@ -227,17 +244,30 @@ struct CoachAvailabilityView: View {
 
                         if isSaving {
                             ProgressView()
+                        } else if dirtyDateKeys.isEmpty {
+                            Text("変更はありません")
+                                .fontWeight(.semibold)
                         } else {
-                            Text("この日程を保存")
+                            Text("\(dirtyDateKeys.count)日分の変更を保存")
                                 .fontWeight(.semibold)
                         }
 
                         Spacer()
                     }
                 }
-                .disabled(isLoading || isSaving)
+                .disabled(
+                    isLoading ||
+                    isSaving ||
+                    dirtyDateKeys.isEmpty
+                )
                 .buttonStyle(.borderedProminent)
                 .tint(.green)
+
+                Text(
+                    "日付を移動しても未保存の選択内容は保持されます。複数日を編集して、最後にまとめて保存できます。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
                 if !errorMessage.isEmpty {
                     Text(errorMessage)
@@ -258,7 +288,7 @@ struct CoachAvailabilityView: View {
         .alert("保存完了", isPresented: $showSaveAlert) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("\(displayDate)の空き時間を保存しました")
+            Text(saveAlertMessage)
         }
         .alert("本日の受付", isPresented: $showSameDayAlert) {
             Button("OK", role: .cancel) { }
@@ -277,6 +307,13 @@ struct CoachAvailabilityView: View {
         } else {
             selectedTimes.insert(time)
         }
+
+        let dateKey = formattedDate
+
+        // 日付を移動しても選択内容が消えないよう、
+        // 変更のたびにその日の下書きを更新する。
+        draftTimesByDate[dateKey] = selectedTimes
+        dirtyDateKeys.insert(dateKey)
     }
 
     private func loadAvailability() {
@@ -287,19 +324,35 @@ struct CoachAvailabilityView: View {
             return
         }
 
+        let requestedDateKey = formattedDate
+
         errorMessage = ""
-        selectedTimes = []
         blockedTimes = []
+
+        // すでにこの画面内で編集した日なら、Firestore読込中も
+        // 下書きを先に表示して選択内容を消さない。
+        if let draft = draftTimesByDate[requestedDateKey] {
+            selectedTimes = draft
+        } else {
+            selectedTimes = []
+        }
+
         isLoading = true
 
         let availabilityRef = db.collection("coachAvailability")
             .document(uid)
             .collection("dates")
-            .document(formattedDate)
+            .document(requestedDateKey)
 
         availabilityRef.getDocument { availabilitySnapshot, availabilityError in
             if let availabilityError {
                 DispatchQueue.main.async {
+                    // すでに別の日へ移動していたら、
+                    // 古い通信結果で現在画面を上書きしない。
+                    guard formattedDate == requestedDateKey else {
+                        return
+                    }
+
                     isLoading = false
                     errorMessage =
                         "空き時間を取得できませんでした: " +
@@ -315,30 +368,51 @@ struct CoachAvailabilityView: View {
                 .whereField("coachId", isEqualTo: uid)
                 .getDocuments { reservationSnapshot, reservationError in
                     DispatchQueue.main.async {
+                        guard formattedDate == requestedDateKey else {
+                            return
+                        }
+
                         isLoading = false
 
                         if let reservationError {
                             errorMessage =
                                 "予約状況を取得できませんでした: " +
                                 reservationError.localizedDescription
-                            selectedTimes = []
                             blockedTimes = []
                             return
                         }
 
                         let reservedTimes = blockedTimes(
-                            for: formattedDate,
+                            for: requestedDateKey,
                             documents: reservationSnapshot?.documents ?? []
                         )
 
                         blockedTimes = reservedTimes
 
-                        // 以前に誤って空き枠へ戻された予約済み時間があっても、
-                        // 画面上では空き時間として選択しない。
-                        selectedTimes =
+                        let safeSavedTimes =
                             Set(savedTimes)
                                 .subtracting(reservedTimes)
 
+                        // ユーザーがまだこの日を変更していなければ、
+                        // Firestoreの最新値を下書きの初期値にする。
+                        // 変更済みなら下書きを絶対に上書きしない。
+                        if !dirtyDateKeys.contains(requestedDateKey) {
+                            draftTimesByDate[requestedDateKey] =
+                                safeSavedTimes
+                        }
+
+                        let draftTimes =
+                            draftTimesByDate[requestedDateKey]
+                            ?? safeSavedTimes
+
+                        // 編集中に新しい予約が入っていた場合にも、
+                        // 予約済み時間は選択状態から外す。
+                        let safeDraftTimes =
+                            draftTimes.subtracting(reservedTimes)
+
+                        draftTimesByDate[requestedDateKey] =
+                            safeDraftTimes
+                        selectedTimes = safeDraftTimes
                         errorMessage = ""
                     }
                 }
@@ -565,52 +639,174 @@ struct CoachAvailabilityView: View {
             return
         }
 
+        let dateKeysToSave =
+            dirtyDateKeys.sorted()
+
+        guard !dateKeysToSave.isEmpty else {
+            return
+        }
+
+        // Firestoreの1バッチ上限に十分余裕を持たせる。
+        // 通常利用では到達しないが、本番運用の安全策として制限する。
+        guard dateKeysToSave.count <= 400 else {
+            errorMessage =
+                "一度に保存できる変更日数を超えています。400日以下に分けて保存してください。"
+            return
+        }
+
         errorMessage = ""
         isSaving = true
 
-        // UIだけでなく保存時にも予約済み枠を必ず除外する。
-        let safeSelectedTimes =
-            selectedTimes.subtracting(blockedTimes)
+        Task {
+            do {
+                // 保存直前にも予約状況を再取得する。
+                // 編集中に予約が入った場合でも予約枠を空き枠へ戻さない。
+                let reservationSnapshot = try await db
+                    .collection("reservations")
+                    .whereField("coachId", isEqualTo: uid)
+                    .getDocuments()
 
-        let dateKeyBeingSaved = formattedDate
+                let reservationDocuments =
+                    reservationSnapshot.documents
 
-        var updateData: [String: Any] = [
-            "times": safeSelectedTimes.sorted()
-        ]
+                let batch = db.batch()
 
-        // 本日の空き枠を0件にした場合は、
-        // 「本日レッスン可能」も同じ日付ドキュメント内で自動OFFにする。
-        if dateKeyBeingSaved == todayKey &&
-            safeSelectedTimes.isEmpty {
-            updateData["sameDayAvailable"] = false
-        }
+                var sanitizedDrafts:
+                    [String: Set<String>] = [:]
 
-        db.collection("coachAvailability")
-            .document(uid)
-            .collection("dates")
-            .document(dateKeyBeingSaved)
-            .setData(
-                updateData,
-                merge: true
-            ) { error in
-                DispatchQueue.main.async {
-                    isSaving = false
+                for dateKey in dateKeysToSave {
+                    let latestBlockedTimes = blockedTimes(
+                        for: dateKey,
+                        documents: reservationDocuments
+                    )
 
-                    if let error {
-                        errorMessage =
-                            "保存できませんでした: " +
-                            error.localizedDescription
-                        return
+                    let draftTimes =
+                        draftTimesByDate[dateKey] ?? []
+
+                    let safeSelectedTimes =
+                        draftTimes.subtracting(
+                            latestBlockedTimes
+                        )
+
+                    sanitizedDrafts[dateKey] =
+                        safeSelectedTimes
+
+                    var updateData: [String: Any] = [
+                        "times": safeSelectedTimes.sorted()
+                    ]
+
+                    // 今日の空き枠を0件にした場合だけ、
+                    // 既存仕様どおり本日受付も自動OFFにする。
+                    if dateKey == todayKey &&
+                        safeSelectedTimes.isEmpty {
+                        updateData["sameDayAvailable"] = false
                     }
 
-                    selectedTimes = safeSelectedTimes
+                    let dateRef = db
+                        .collection("coachAvailability")
+                        .document(uid)
+                        .collection("dates")
+                        .document(dateKey)
+
+                    batch.setData(
+                        updateData,
+                        forDocument: dateRef,
+                        merge: true
+                    )
+                }
+
+                // 変更した複数日を1回のバッチでまとめて保存する。
+                try await batch.commit()
+
+                await MainActor.run {
+                    for (dateKey, safeTimes)
+                        in sanitizedDrafts {
+                        draftTimesByDate[dateKey] =
+                            safeTimes
+                    }
+
+                    dirtyDateKeys.subtract(
+                        Set(dateKeysToSave)
+                    )
+
+                    // 現在表示中の日も、保存直前の予約状況を反映する。
+                    if let currentSavedTimes =
+                        sanitizedDrafts[formattedDate] {
+                        let currentBlockedTimes =
+                            blockedTimes(
+                                for: formattedDate,
+                                documents:
+                                    reservationDocuments
+                            )
+
+                        blockedTimes =
+                            currentBlockedTimes
+
+                        selectedTimes =
+                            currentSavedTimes
+                                .subtracting(
+                                    currentBlockedTimes
+                                )
+                    }
+
+                    isSaving = false
+                    errorMessage = ""
+
+                    if dateKeysToSave.count == 1,
+                       let onlyDate = dateKeysToSave.first {
+                        saveAlertMessage =
+                            "\(displayDateString(from: onlyDate))の空き時間を保存しました"
+                    } else {
+                        saveAlertMessage =
+                            "\(dateKeysToSave.count)日分の空き時間をまとめて保存しました"
+                    }
+
                     showSaveAlert = true
 
-                    if dateKeyBeingSaved == todayKey {
+                    if dateKeysToSave.contains(todayKey) {
                         loadSameDayAvailabilityState()
                     }
                 }
+
+            } catch {
+                await MainActor.run {
+                    isSaving = false
+                    errorMessage =
+                        "保存できませんでした: " +
+                        error.localizedDescription
+                }
             }
+        }
+    }
+
+    private func displayDateString(
+        from dateKey: String
+    ) -> String {
+        let inputFormatter = DateFormatter()
+        inputFormatter.calendar =
+            Calendar(identifier: .gregorian)
+        inputFormatter.locale =
+            Locale(identifier: "en_US_POSIX")
+        inputFormatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        inputFormatter.dateFormat = "yyyy-MM-dd"
+
+        guard let date =
+            inputFormatter.date(from: dateKey)
+        else {
+            return dateKey
+        }
+
+        let outputFormatter = DateFormatter()
+        outputFormatter.calendar =
+            Calendar(identifier: .gregorian)
+        outputFormatter.locale =
+            Locale(identifier: "ja_JP")
+        outputFormatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        outputFormatter.dateFormat = "yyyy/MM/dd"
+
+        return outputFormatter.string(from: date)
     }
 
     private func isFutureTimeSlot(

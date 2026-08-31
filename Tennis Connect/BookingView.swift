@@ -212,6 +212,22 @@ struct BookingView: View {
     }
 
     private func continueToConfirmation() {
+        let dateKey = firestoreDate(from: lessonDate)
+        let hasExpiredSelection =
+            sortedSelectedTimes.contains {
+                !isFutureTimeSlot(
+                    $0,
+                    dateKey: dateKey
+                )
+            }
+
+        if hasExpiredSelection {
+            selectionMessage =
+                "開始時刻を過ぎた時間は予約できません。空き時間を選び直してください。"
+            loadAvailableTimes()
+            return
+        }
+
         if Auth.auth().currentUser == nil {
             showLogin = true
         } else {
@@ -281,7 +297,10 @@ struct BookingView: View {
 
             if snapshot?.exists == true {
                 let times = snapshot?.data()?["times"] as? [String] ?? []
-                finishLoading(times: times)
+                finishLoading(
+                    times: times,
+                    formattedDate: formattedDate
+                )
             } else {
                 loadLegacyAvailableTimes(
                     formattedDate: formattedDate,
@@ -316,7 +335,10 @@ struct BookingView: View {
                     }
                 }
 
-                finishLoading(times: times)
+                finishLoading(
+                    times: times,
+                    formattedDate: formattedDate
+                )
             }
     }
 
@@ -343,16 +365,82 @@ struct BookingView: View {
         .sorted()
     }
 
-    private func finishLoading(times: [String]) {
+    private func finishLoading(
+        times: [String],
+        formattedDate: String
+    ) {
         DispatchQueue.main.async {
-            availableTimes = Array(Set(times)).sorted()
+            // 日付を素早く切り替えた場合に、古い通信結果で
+            // 現在の日付の表示を上書きしない。
+            guard firestoreDate(from: lessonDate) == formattedDate else {
+                return
+            }
+
+            availableTimes = Array(Set(times))
+                .filter {
+                    isFutureTimeSlot(
+                        $0,
+                        dateKey: formattedDate
+                    )
+                }
+                .sorted()
         }
+    }
+
+    private func isFutureTimeSlot(
+        _ value: String,
+        dateKey: String
+    ) -> Bool {
+        let normalized =
+            value.replacingOccurrences(
+                of: "~",
+                with: "〜"
+            )
+
+        let startTime =
+            normalized
+                .components(
+                    separatedBy: "〜"
+                )
+                .first?
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                ?? ""
+
+        guard !startTime.isEmpty else {
+            return false
+        }
+
+        let formatter = DateFormatter()
+        formatter.calendar =
+            Calendar(identifier: .gregorian)
+        formatter.locale =
+            Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(
+                identifier: "Asia/Tokyo"
+            ) ?? .current
+        formatter.dateFormat =
+            "yyyy-MM-dd HH:mm"
+
+        guard let slotDate =
+            formatter.date(
+                from: "\(dateKey) \(startTime)"
+            )
+        else {
+            return false
+        }
+
+        return slotDate > Date()
     }
 
     private func firestoreDate(from date: Date) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
@@ -389,6 +477,8 @@ struct BookingView: View {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
         formatter.dateFormat = "HH:mm"
         return formatter
     }
