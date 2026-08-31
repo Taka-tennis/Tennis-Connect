@@ -1,0 +1,85 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function within20MB() {
+      return request.resource.size <= 20 * 1024 * 1024;
+    }
+
+    // コーチプロフィール画像
+    //
+    // 閲覧:
+    //   生徒側のコーチ一覧・詳細などで使用するため公開。
+    //
+    // 書き込み:
+    //   本人の固定ファイル coachImages/{uid}.jpg のみ。
+    //   既存の正常なプロフィール画像更新を壊さないため、
+    //   現在のアプリ実装と同じ最大20MBにしています。
+    match /coachImages/{fileName} {
+      allow read: if true;
+
+      allow create, update:
+        if signedIn()
+        && fileName == request.auth.uid + '.jpg'
+        && within20MB();
+
+      allow delete:
+        if signedIn()
+        && fileName == request.auth.uid + '.jpg';
+    }
+
+    // 生徒プロフィール画像
+    //
+    // クライアントSDKからの直接読取・書込は本人だけ。
+    // コーチ側の許可済みプロフィール表示は、
+    // 現在のアプリ/Functionsの既存フローを維持します。
+    match /studentImages/{fileName} {
+      allow read:
+        if signedIn()
+        && fileName == request.auth.uid + '.jpg';
+
+      allow create, update:
+        if signedIn()
+        && fileName == request.auth.uid + '.jpg'
+        && within20MB();
+
+      allow delete:
+        if signedIn()
+        && fileName == request.auth.uid + '.jpg';
+    }
+
+    // コーチプロフィール動画
+    //
+    // パス:
+    //   coachVideos/{coachId}/{UUID}.mp4
+    //
+    // 閲覧:
+    //   生徒側コーチ詳細で再生するため公開。
+    //
+    // 書き込み:
+    //   コーチ本人のみ。動画は20MB以下・MP4のみ。
+    match /coachVideos/{coachId}/{fileName} {
+      allow read: if true;
+
+      allow create, update:
+        if signedIn()
+        && request.auth.uid == coachId
+        && within20MB()
+        && request.resource.contentType == 'video/mp4';
+
+      allow delete:
+        if signedIn()
+        && request.auth.uid == coachId;
+    }
+
+    // 上記以外のStorageパスはすべて拒否。
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
