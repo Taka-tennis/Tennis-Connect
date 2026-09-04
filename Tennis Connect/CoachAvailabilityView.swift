@@ -2,6 +2,40 @@ import SwiftUI
 import FirebaseFirestore
 import FirebaseAuth
 
+private enum CoachAvailabilityUI {
+    static let brandGreen = Color(
+        red: 42 / 255,
+        green: 174 / 255,
+        blue: 102 / 255
+    )
+
+    static let softGreen = Color(
+        red: 232 / 255,
+        green: 245 / 255,
+        blue: 236 / 255
+    )
+
+    static let background = Color(
+        red: 248 / 255,
+        green: 250 / 255,
+        blue: 249 / 255
+    )
+
+    static let textPrimary = Color(
+        red: 34 / 255,
+        green: 34 / 255,
+        blue: 34 / 255
+    )
+
+    static let textSecondary = Color(
+        red: 102 / 255,
+        green: 110 / 255,
+        blue: 105 / 255
+    )
+
+    static let border = Color.black.opacity(0.08)
+}
+
 struct CoachAvailabilityView: View {
 
     @State private var selectedDate = Calendar.current.startOfDay(for: Date())
@@ -64,219 +98,43 @@ struct CoachAvailabilityView: View {
     }
 
     var body: some View {
-        Form {
+        ZStack {
+            CoachAvailabilityUI.background
+                .ignoresSafeArea()
 
-            Section("本日のレッスン受付") {
-                if isLoadingSameDayStatus {
-                    HStack {
-                        Spacer()
-                        ProgressView("本日の受付状況を確認中…")
-                        Spacer()
-                    }
-                } else {
-                    HStack(spacing: 10) {
-                        Image(
-                            systemName: isSameDayAvailable
-                                ? "bolt.circle.fill"
-                                : "bolt.circle"
-                        )
-                        .foregroundStyle(
-                            isSameDayAvailable ? .green : .secondary
-                        )
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(
-                                isSameDayAvailable
-                                    ? "本日レッスン可能として掲載中"
-                                    : "本日の受付はOFFです"
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("空き日程管理")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .foregroundStyle(
+                                CoachAvailabilityUI.textPrimary
                             )
-                            .fontWeight(.semibold)
 
-                            Text("現在の予約可能な空き枠：\(todayAvailableTimeCount)件")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text("受付できる日時をまとめて設定できます")
+                            .font(.subheadline)
+                            .foregroundStyle(
+                                CoachAvailabilityUI.textSecondary
+                            )
                     }
 
-                    Button {
-                        toggleSameDayAvailability()
-                    } label: {
-                        HStack {
-                            Spacer()
+                    sameDayStatusCard
 
-                            if isUpdatingSameDayStatus {
-                                ProgressView()
-                            } else {
-                                Image(
-                                    systemName: isSameDayAvailable
-                                        ? "stop.circle.fill"
-                                        : "bolt.fill"
-                                )
+                    dateSelectionCard
 
-                                Text(
-                                    isSameDayAvailable
-                                        ? "本日の受付を終了する"
-                                        : "本日レッスン可能にする"
-                                )
-                                .fontWeight(.semibold)
-                            }
+                    availabilityTimeCard
 
-                            Spacer()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(isSameDayAvailable ? .red : .green)
-                    .disabled(
-                        isUpdatingSameDayStatus ||
-                        (!isSameDayAvailable && todayAvailableTimeCount == 0)
-                    )
-
-                    if todayAvailableTimeCount == 0 && !isSameDayAvailable {
-                        Text("本日の空き時間を1枠以上登録すると受付をONにできます。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(
-                            "ONにした日だけ「本日レッスン可能コーチ」に掲載されます。日付が変わると自動的にOFF扱いになります。"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
+                    saveCard
                 }
-
-                if !sameDayErrorMessage.isEmpty {
-                    Text(sameDayErrorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Section("日付") {
-                DatePicker(
-                    "日付を選択",
-                    selection: $selectedDate,
-                    in: Calendar.current.startOfDay(for: Date())...,
-                    displayedComponents: .date
-                )
-                .datePickerStyle(.graphical)
-                .environment(\.locale, Locale(identifier: "ja_JP"))
-            }
-
-            Section("\(displayDate)の空き時間") {
-                if dirtyDateKeys.contains(formattedDate) {
-                    Label(
-                        "この日には未保存の変更があります",
-                        systemImage: "pencil.circle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                }
-
-                if isLoading {
-                    HStack {
-                        Spacer()
-                        ProgressView("読み込み中…")
-                        Spacer()
-                    }
-                } else {
-                    ForEach(timeSlots, id: \.self) { time in
-                        let isBlocked = blockedTimes.contains(time)
-                        let isSelected = selectedTimes.contains(time)
-
-                        Button {
-                            toggleTime(time)
-                        } label: {
-                            HStack {
-                                Text("\(time)〜\(endTime(for: time))")
-                                    .foregroundStyle(
-                                        isBlocked ? .secondary : .primary
-                                    )
-
-                                Spacer()
-
-                                if isBlocked {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "lock.fill")
-                                        Text("予約あり")
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                } else {
-                                    Image(
-                                        systemName: isSelected
-                                            ? "checkmark.circle.fill"
-                                            : "plus.circle.fill"
-                                    )
-                                    .foregroundStyle(
-                                        isSelected ? .blue : .green
-                                    )
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isBlocked)
-                        .opacity(isBlocked ? 0.55 : 1)
-                    }
-                }
-
-                if selectedTimes.isEmpty &&
-                    blockedTimes.isEmpty &&
-                    !isLoading {
-                    Text("この日の空き時間は登録されていません")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if !blockedTimes.isEmpty && !isLoading {
-                    Text("予約申請中・承認済み・支払い済みの時間は変更できません")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section {
-                Button {
-                    saveAvailability()
-                } label: {
-                    HStack {
-                        Spacer()
-
-                        if isSaving {
-                            ProgressView()
-                        } else if dirtyDateKeys.isEmpty {
-                            Text("変更はありません")
-                                .fontWeight(.semibold)
-                        } else {
-                            Text("\(dirtyDateKeys.count)日分の変更を保存")
-                                .fontWeight(.semibold)
-                        }
-
-                        Spacer()
-                    }
-                }
-                .disabled(
-                    isLoading ||
-                    isSaving ||
-                    dirtyDateKeys.isEmpty
-                )
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
-
-                Text(
-                    "日付を移動しても未保存の選択内容は保持されます。複数日を編集して、最後にまとめて保存できます。"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
             }
         }
-        .navigationTitle("空き日程管理")
+        .tint(CoachAvailabilityUI.brandGreen)
+        .navigationTitle("空き日程")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadAvailability()
@@ -294,6 +152,576 @@ struct CoachAvailabilityView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(sameDayAlertMessage)
+        }
+    }
+
+    private var sameDayStatusCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            isSameDayAvailable
+                                ? CoachAvailabilityUI.softGreen
+                                : Color(.systemGray6)
+                        )
+                        .frame(width: 42, height: 42)
+
+                    Image(
+                        systemName:
+                            isSameDayAvailable
+                                ? "bolt.fill"
+                                : "bolt"
+                    )
+                    .font(
+                        .system(
+                            size: 17,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        isSameDayAvailable
+                            ? CoachAvailabilityUI.brandGreen
+                            : CoachAvailabilityUI.textSecondary
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("本日のレッスン受付")
+                        .font(.headline)
+                        .foregroundStyle(
+                            CoachAvailabilityUI.textPrimary
+                        )
+
+                    if isLoadingSameDayStatus {
+                        Text("本日の受付状況を確認中…")
+                            .font(.caption)
+                            .foregroundStyle(
+                                CoachAvailabilityUI.textSecondary
+                            )
+                    } else {
+                        Text(
+                            "現在の予約可能な空き枠：\(todayAvailableTimeCount)件"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(
+                            CoachAvailabilityUI.textSecondary
+                        )
+                    }
+                }
+
+                Spacer()
+
+                if !isLoadingSameDayStatus {
+                    Text(
+                        isSameDayAvailable
+                            ? "受付中"
+                            : "停止中"
+                    )
+                    .font(
+                        .system(
+                            size: 12,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        isSameDayAvailable
+                            ? CoachAvailabilityUI.brandGreen
+                            : CoachAvailabilityUI.textSecondary
+                    )
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(
+                        isSameDayAvailable
+                            ? CoachAvailabilityUI.softGreen
+                            : Color(.systemGray6)
+                    )
+                    .clipShape(Capsule())
+                }
+            }
+
+            if isLoadingSameDayStatus {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+                .frame(height: 46)
+            } else {
+                Button {
+                    toggleSameDayAvailability()
+                } label: {
+                    HStack(spacing: 8) {
+                        Spacer()
+
+                        if isUpdatingSameDayStatus {
+                            ProgressView()
+                        } else {
+                            Image(
+                                systemName:
+                                    isSameDayAvailable
+                                        ? "stop.circle"
+                                        : "bolt.fill"
+                            )
+
+                            Text(
+                                isSameDayAvailable
+                                    ? "本日の受付を終了する"
+                                    : "本日レッスン可能にする"
+                            )
+                            .fontWeight(.semibold)
+                        }
+
+                        Spacer()
+                    }
+                    .frame(height: 46)
+                    .foregroundStyle(
+                        isSameDayAvailable
+                            ? Color.red
+                            : Color.white
+                    )
+                    .background(
+                        isSameDayAvailable
+                            ? Color.white
+                            : CoachAvailabilityUI.brandGreen
+                    )
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 14,
+                            style: .continuous
+                        )
+                    )
+                    .overlay {
+                        RoundedRectangle(
+                            cornerRadius: 14,
+                            style: .continuous
+                        )
+                        .stroke(
+                            isSameDayAvailable
+                                ? Color.red.opacity(0.45)
+                                : Color.clear,
+                            lineWidth: 1
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(
+                    isUpdatingSameDayStatus ||
+                    (!isSameDayAvailable &&
+                     todayAvailableTimeCount == 0)
+                )
+                .opacity(
+                    isUpdatingSameDayStatus ||
+                    (!isSameDayAvailable &&
+                     todayAvailableTimeCount == 0)
+                        ? 0.55
+                        : 1
+                )
+
+                if todayAvailableTimeCount == 0 &&
+                    !isSameDayAvailable {
+                    Text(
+                        "本日の空き時間を1枠以上登録すると受付をONにできます。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        CoachAvailabilityUI.textSecondary
+                    )
+                } else {
+                    Text(
+                        "ONにした日だけ「本日レッスン可能コーチ」に掲載されます。日付が変わると自動的にOFF扱いになります。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        CoachAvailabilityUI.textSecondary
+                    )
+                }
+            }
+
+            if !sameDayErrorMessage.isEmpty {
+                Text(sameDayErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                isSameDayAvailable
+                    ? CoachAvailabilityUI.brandGreen.opacity(0.22)
+                    : CoachAvailabilityUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var dateSelectionCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar")
+                    .font(
+                        .system(
+                            size: 16,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        CoachAvailabilityUI.brandGreen
+                    )
+
+                Text("日付を選択")
+                    .font(.headline)
+                    .foregroundStyle(
+                        CoachAvailabilityUI.textPrimary
+                    )
+            }
+
+            DatePicker(
+                "",
+                selection: $selectedDate,
+                in: Calendar.current.startOfDay(for: Date())...,
+                displayedComponents: .date
+            )
+            .labelsHidden()
+            .datePickerStyle(.graphical)
+            .environment(
+                \.locale,
+                Locale(identifier: "ja_JP")
+            )
+            .frame(maxWidth: .infinity)
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                CoachAvailabilityUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var availabilityTimeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(displayDate)の空き時間")
+                        .font(.headline)
+                        .foregroundStyle(
+                            CoachAvailabilityUI.textPrimary
+                        )
+
+                    Text("タップして受付可能な時間を選択")
+                        .font(.caption)
+                        .foregroundStyle(
+                            CoachAvailabilityUI.textSecondary
+                        )
+                }
+
+                Spacer()
+
+                if dirtyDateKeys.contains(formattedDate) {
+                    Label(
+                        "未保存",
+                        systemImage: "pencil"
+                    )
+                    .font(
+                        .system(
+                            size: 11,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .background(
+                        Color.orange.opacity(0.10)
+                    )
+                    .clipShape(Capsule())
+                }
+            }
+
+            if isLoading {
+                HStack {
+                    Spacer()
+                    ProgressView("読み込み中…")
+                    Spacer()
+                }
+                .frame(minHeight: 120)
+
+            } else {
+                LazyVGrid(
+                    columns: [
+                        GridItem(
+                            .flexible(),
+                            spacing: 10
+                        ),
+                        GridItem(
+                            .flexible(),
+                            spacing: 10
+                        )
+                    ],
+                    spacing: 10
+                ) {
+                    ForEach(timeSlots, id: \.self) { time in
+                        let isBlocked =
+                            blockedTimes.contains(time)
+                        let isSelected =
+                            selectedTimes.contains(time)
+
+                        Button {
+                            toggleTime(time)
+                        } label: {
+                            VStack(
+                                alignment: .leading,
+                                spacing: 8
+                            ) {
+                                HStack {
+                                    Image(
+                                        systemName:
+                                            isBlocked
+                                                ? "lock.fill"
+                                                : isSelected
+                                                    ? "checkmark.circle.fill"
+                                                    : "plus.circle"
+                                    )
+                                    .font(
+                                        .system(
+                                            size: 14,
+                                            weight: .semibold
+                                        )
+                                    )
+                                    .foregroundStyle(
+                                        isBlocked
+                                            ? CoachAvailabilityUI.textSecondary
+                                            : isSelected
+                                                ? CoachAvailabilityUI.brandGreen
+                                                : CoachAvailabilityUI.textSecondary
+                                    )
+
+                                    Spacer()
+
+                                    if isBlocked {
+                                        Text("予約あり")
+                                            .font(
+                                                .system(
+                                                    size: 10,
+                                                    weight: .semibold
+                                                )
+                                            )
+                                            .foregroundStyle(
+                                                CoachAvailabilityUI.textSecondary
+                                            )
+                                    }
+                                }
+
+                                Text(
+                                    "\(time)〜\(endTime(for: time))"
+                                )
+                                .font(
+                                    .system(
+                                        size: 14,
+                                        weight: .semibold
+                                    )
+                                )
+                                .foregroundStyle(
+                                    isBlocked
+                                        ? CoachAvailabilityUI.textSecondary
+                                        : CoachAvailabilityUI.textPrimary
+                                )
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                            }
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: 72,
+                                alignment: .leading
+                            )
+                            .padding(12)
+                            .background(
+                                isBlocked
+                                    ? Color(.systemGray6)
+                                    : isSelected
+                                        ? CoachAvailabilityUI.softGreen
+                                        : Color.white
+                            )
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: 14,
+                                    style: .continuous
+                                )
+                            )
+                            .overlay {
+                                RoundedRectangle(
+                                    cornerRadius: 14,
+                                    style: .continuous
+                                )
+                                .stroke(
+                                    isSelected
+                                        ? CoachAvailabilityUI.brandGreen.opacity(0.45)
+                                        : CoachAvailabilityUI.border,
+                                    lineWidth: 1
+                                )
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isBlocked)
+                        .opacity(isBlocked ? 0.65 : 1)
+                    }
+                }
+            }
+
+            if selectedTimes.isEmpty &&
+                blockedTimes.isEmpty &&
+                !isLoading {
+                Text("この日の空き時間は登録されていません")
+                    .font(.caption)
+                    .foregroundStyle(
+                        CoachAvailabilityUI.textSecondary
+                    )
+            }
+
+            if !blockedTimes.isEmpty && !isLoading {
+                HStack(
+                    alignment: .top,
+                    spacing: 7
+                ) {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(
+                            CoachAvailabilityUI.textSecondary
+                        )
+
+                    Text(
+                        "予約申請中・承認済み・支払い済みの時間は変更できません"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        CoachAvailabilityUI.textSecondary
+                    )
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                CoachAvailabilityUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var saveCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                saveAvailability()
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isSaving {
+                        ProgressView()
+                            .tint(.white)
+                    } else if dirtyDateKeys.isEmpty {
+                        Text("変更はありません")
+                            .fontWeight(.semibold)
+                    } else {
+                        Text(
+                            "\(dirtyDateKeys.count)日分の変更を保存"
+                        )
+                        .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+                .frame(height: 48)
+                .foregroundStyle(.white)
+                .background(
+                    dirtyDateKeys.isEmpty
+                        ? Color.gray
+                        : CoachAvailabilityUI.brandGreen
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(
+                isLoading ||
+                isSaving ||
+                dirtyDateKeys.isEmpty
+            )
+            .opacity(
+                dirtyDateKeys.isEmpty ? 0.55 : 1
+            )
+
+            Text(
+                "日付を移動しても未保存の選択内容は保持されます。複数日を編集して、最後にまとめて保存できます。"
+            )
+            .font(.caption)
+            .foregroundStyle(
+                CoachAvailabilityUI.textSecondary
+            )
+
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                CoachAvailabilityUI.border,
+                lineWidth: 1
+            )
         }
     }
 

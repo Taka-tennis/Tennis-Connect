@@ -1418,41 +1418,501 @@ private struct DashboardActionCard: View {
 }
 
 private struct CoachMyPageView: View {
+
+    @State private var coachName = "コーチ"
+    @State private var coachArea = ""
+    @State private var coachImageURL = ""
+    @State private var isLoadingProfile = true
+    @State private var profileErrorMessage = ""
+
+    private let db = Firestore.firestore()
+
     var body: some View {
-        List {
-            Section("プロフィール") {
-                NavigationLink {
-                    CoachRegisterView()
-                } label: {
-                    Label("プロフィールを編集", systemImage: "person.crop.circle")
-                }
-            }
+        ZStack {
+            CoachUI.background
+                .ignoresSafeArea()
 
-            Section("売上・入金") {
-                NavigationLink {
-                    CoachSalesView()
-                } label: {
-                    Label("売上管理", systemImage: "yensign.circle")
-                }
+            ScrollView {
+                VStack(
+                    alignment: .leading,
+                    spacing: 22
+                ) {
+                    VStack(
+                        alignment: .leading,
+                        spacing: 5
+                    ) {
+                        Text("マイページ")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
 
-                NavigationLink {
-                    CoachConnectSetupView()
-                } label: {
-                    Label(
-                        "売上受取設定",
-                        systemImage: "building.columns.circle"
-                    )
-                }
-            }
+                        Text(
+                            "プロフィールや売上設定を管理できます"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(
+                            CoachUI.textSecondary
+                        )
+                    }
 
-            Section("お知らせ") {
-                Label(
-                    "通知は右上のベルから確認できます",
-                    systemImage: "bell"
-                )
-                .foregroundStyle(.secondary)
+                    profileCard
+
+                    VStack(
+                        alignment: .leading,
+                        spacing: 12
+                    ) {
+                        Text("売上・入金")
+                            .font(.headline)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+
+                        VStack(spacing: 0) {
+                            NavigationLink {
+                                CoachSalesView()
+                            } label: {
+                                CoachMyPageMenuRow(
+                                    title: "売上管理",
+                                    detail:
+                                        "売上・返金・入金状況を確認",
+                                    icon: "chart.bar"
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Divider()
+                                .padding(.leading, 66)
+
+                            NavigationLink {
+                                CoachConnectSetupView()
+                            } label: {
+                                CoachMyPageMenuRow(
+                                    title: "売上受取設定",
+                                    detail:
+                                        "銀行口座・本人確認を管理",
+                                    icon:
+                                        "building.columns"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .background(Color.white)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 18,
+                                style: .continuous
+                            )
+                        )
+                        .overlay {
+                            RoundedRectangle(
+                                cornerRadius: 18,
+                                style: .continuous
+                            )
+                            .stroke(
+                                CoachUI.border,
+                                lineWidth: 1
+                            )
+                        }
+                    }
+
+                    VStack(
+                        alignment: .leading,
+                        spacing: 12
+                    ) {
+                        Text("お知らせ")
+                            .font(.headline)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+
+                        HStack(
+                            alignment: .top,
+                            spacing: 12
+                        ) {
+                            ZStack {
+                                Circle()
+                                    .fill(
+                                        CoachUI.softGreen
+                                    )
+                                    .frame(
+                                        width: 40,
+                                        height: 40
+                                    )
+
+                                Image(
+                                    systemName: "bell"
+                                )
+                                .font(
+                                    .system(
+                                        size: 16,
+                                        weight: .semibold
+                                    )
+                                )
+                                .foregroundStyle(
+                                    CoachUI.brandGreen
+                                )
+                            }
+
+                            VStack(
+                                alignment: .leading,
+                                spacing: 4
+                            ) {
+                                Text("通知")
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(
+                                        CoachUI.textPrimary
+                                    )
+
+                                Text(
+                                    "予約申請やキャンセルなどのお知らせは、画面右上のベルから確認できます。"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(
+                                    CoachUI.textSecondary
+                                )
+                                .fixedSize(
+                                    horizontal: false,
+                                    vertical: true
+                                )
+                            }
+                        }
+                        .padding(16)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+                        .background(Color.white)
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 18,
+                                style: .continuous
+                            )
+                        )
+                        .overlay {
+                            RoundedRectangle(
+                                cornerRadius: 18,
+                                style: .continuous
+                            )
+                            .stroke(
+                                CoachUI.border,
+                                lineWidth: 1
+                            )
+                        }
+                    }
+
+                    if !profileErrorMessage.isEmpty {
+                        Text(profileErrorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 28)
             }
         }
+        .onAppear {
+            loadCoachProfile()
+        }
+    }
+
+    private var profileCard: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 14) {
+                coachProfileImage
+
+                VStack(
+                    alignment: .leading,
+                    spacing: 5
+                ) {
+                    if isLoadingProfile {
+                        ProgressView()
+                    } else {
+                        Text(coachName)
+                            .font(.title3)
+                            .fontWeight(.bold)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+                            .lineLimit(1)
+
+                        HStack(spacing: 5) {
+                            Image(
+                                systemName:
+                                    "mappin.and.ellipse"
+                            )
+                            .font(.caption)
+
+                            Text(
+                                coachArea.isEmpty
+                                    ? "エリア未登録"
+                                    : coachArea
+                            )
+                            .font(.caption)
+                        }
+                        .foregroundStyle(
+                            CoachUI.textSecondary
+                        )
+                    }
+                }
+
+                Spacer()
+            }
+
+            NavigationLink {
+                CoachRegisterView()
+            } label: {
+                HStack {
+                    Image(
+                        systemName:
+                            "square.and.pencil"
+                    )
+
+                    Text("プロフィールを編集")
+                        .fontWeight(.semibold)
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(
+                            .system(
+                                size: 11,
+                                weight: .bold
+                            )
+                        )
+                }
+                .foregroundStyle(
+                    CoachUI.brandGreen
+                )
+                .padding(.horizontal, 14)
+                .frame(height: 44)
+                .background(
+                    CoachUI.softGreen
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 13,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                CoachUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var coachProfileImage: some View {
+        if let url = URL(
+            string: coachImageURL
+        ),
+           !coachImageURL.isEmpty {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+
+                case .failure:
+                    profileImagePlaceholder
+
+                case .empty:
+                    ZStack {
+                        profileImagePlaceholder
+                        ProgressView()
+                    }
+
+                @unknown default:
+                    profileImagePlaceholder
+                }
+            }
+            .frame(width: 74, height: 74)
+            .clipShape(Circle())
+
+        } else {
+            profileImagePlaceholder
+                .frame(width: 74, height: 74)
+        }
+    }
+
+    private var profileImagePlaceholder: some View {
+        ZStack {
+            Circle()
+                .fill(CoachUI.softGreen)
+
+            Image(
+                systemName:
+                    "person.crop.circle.fill"
+            )
+            .font(.system(size: 42))
+            .foregroundStyle(
+                CoachUI.brandGreen
+            )
+        }
+    }
+
+    private func loadCoachProfile() {
+        guard let uid =
+                Auth.auth().currentUser?.uid
+        else {
+            isLoadingProfile = false
+            profileErrorMessage =
+                "プロフィールの確認にはログインが必要です"
+            return
+        }
+
+        isLoadingProfile = true
+        profileErrorMessage = ""
+
+        db.collection("coaches")
+            .document(uid)
+            .getDocument {
+                snapshot,
+                error in
+
+                DispatchQueue.main.async {
+                    isLoadingProfile = false
+
+                    if let error {
+                        profileErrorMessage =
+                            "プロフィールを取得できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    let data =
+                        snapshot?.data() ?? [:]
+
+                    let savedName =
+                        (
+                            data["name"]
+                                as? String
+                        )?
+                        .trimmingCharacters(
+                            in:
+                                .whitespacesAndNewlines
+                        )
+                        ?? ""
+
+                    let savedArea =
+                        (
+                            data["area"]
+                                as? String
+                        )?
+                        .trimmingCharacters(
+                            in:
+                                .whitespacesAndNewlines
+                        )
+                        ?? ""
+
+                    let savedImageURL =
+                        (
+                            data["imageURL"]
+                                as? String
+                        )?
+                        .trimmingCharacters(
+                            in:
+                                .whitespacesAndNewlines
+                        )
+                        ?? ""
+
+                    coachName =
+                        savedName.isEmpty
+                            ? "コーチ"
+                            : savedName
+                    coachArea = savedArea
+                    coachImageURL =
+                        savedImageURL
+                    profileErrorMessage = ""
+                }
+            }
+    }
+}
+
+private struct CoachMyPageMenuRow: View {
+    let title: String
+    let detail: String
+    let icon: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(CoachUI.softGreen)
+                    .frame(
+                        width: 40,
+                        height: 40
+                    )
+
+                Image(systemName: icon)
+                    .font(
+                        .system(
+                            size: 16,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        CoachUI.brandGreen
+                    )
+            }
+
+            VStack(
+                alignment: .leading,
+                spacing: 3
+            ) {
+                Text(title)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(
+                        CoachUI.textPrimary
+                    )
+
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(
+                        CoachUI.textSecondary
+                    )
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(
+                    .system(
+                        size: 11,
+                        weight: .bold
+                    )
+                )
+                .foregroundStyle(
+                    CoachUI.brandGreen
+                )
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 68)
+        .contentShape(Rectangle())
     }
 }
 
