@@ -3,6 +3,40 @@ import FirebaseFirestore
 import FirebaseAuth
 import FirebaseFunctions
 
+private enum StudentReservationUI {
+    static let brandGreen = Color(
+        red: 42 / 255,
+        green: 174 / 255,
+        blue: 102 / 255
+    )
+
+    static let softGreen = Color(
+        red: 232 / 255,
+        green: 245 / 255,
+        blue: 236 / 255
+    )
+
+    static let background = Color(
+        red: 248 / 255,
+        green: 250 / 255,
+        blue: 249 / 255
+    )
+
+    static let textPrimary = Color(
+        red: 34 / 255,
+        green: 34 / 255,
+        blue: 34 / 255
+    )
+
+    static let textSecondary = Color(
+        red: 102 / 255,
+        green: 110 / 255,
+        blue: 105 / 255
+    )
+
+    static let border = Color.black.opacity(0.08)
+}
+
 struct ReservationItem: Identifiable {
     let id: String
     let coachId: String
@@ -21,6 +55,9 @@ struct ReservationItem: Identifiable {
     let reviewId: String
     let pricePerHour: Int
     let totalPrice: Int
+    let courtName: String
+    let courtAddress: String
+    let court: String
     let createdAt: Timestamp?
 
     init(
@@ -41,6 +78,9 @@ struct ReservationItem: Identifiable {
         times: [String] = [],
         pricePerHour: Int = 0,
         totalPrice: Int = 0,
+        courtName: String = "",
+        courtAddress: String = "",
+        court: String = "",
         createdAt: Timestamp? = nil
     ) {
         self.id = id
@@ -60,6 +100,9 @@ struct ReservationItem: Identifiable {
         self.times = times.isEmpty && !time.isEmpty ? [time] : times
         self.pricePerHour = pricePerHour
         self.totalPrice = totalPrice
+        self.courtName = courtName
+        self.courtAddress = courtAddress
+        self.court = court
         self.createdAt = createdAt
     }
 }
@@ -103,18 +146,70 @@ struct ReservationListView: View {
     var body: some View {
         Group {
             if isLoggedIn {
-                VStack(spacing: 0) {
-                    categoryPicker
+                ZStack {
+                    StudentReservationUI.background
+                        .ignoresSafeArea()
 
-                    Group {
-                        if isLoading && reservations.isEmpty {
-                            ProgressView("予約を読み込み中…")
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if filteredReservations.isEmpty {
-                            emptyState
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            reservationList
+                    VStack(spacing: 0) {
+                        VStack(
+                            alignment: .leading,
+                            spacing: 5
+                        ) {
+                            Text("予約")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .foregroundStyle(
+                                    StudentReservationUI.textPrimary
+                                )
+
+                            Text(
+                                "レッスンの予定・支払い状況・履歴を確認できます"
+                            )
+                            .font(.subheadline)
+                            .foregroundStyle(
+                                StudentReservationUI.textSecondary
+                            )
+                        }
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+
+                        categoryPicker
+                            .padding(.top, 14)
+
+                        Group {
+                            if isLoading &&
+                                reservations.isEmpty {
+                                VStack(spacing: 12) {
+                                    ProgressView()
+                                        .tint(
+                                            StudentReservationUI.brandGreen
+                                        )
+
+                                    Text("予約を読み込み中…")
+                                        .font(.subheadline)
+                                        .foregroundStyle(
+                                            StudentReservationUI.textSecondary
+                                        )
+                                }
+                                .frame(
+                                    maxWidth: .infinity,
+                                    maxHeight: .infinity
+                                )
+
+                            } else if filteredReservations.isEmpty {
+                                emptyState
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        maxHeight: .infinity
+                                    )
+
+                            } else {
+                                reservationList
+                            }
                         }
                     }
                 }
@@ -122,10 +217,12 @@ struct ReservationListView: View {
                 loggedOutView
             }
         }
+        .tint(StudentReservationUI.brandGreen)
         .navigationTitle("予約一覧")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
-            if isLoggedIn && !errorMessage.isEmpty {
+            if isLoggedIn &&
+                !errorMessage.isEmpty {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -136,7 +233,8 @@ struct ReservationListView: View {
             }
         }
         .onAppear {
-            isLoggedIn = Auth.auth().currentUser != nil
+            isLoggedIn =
+                Auth.auth().currentUser != nil
 
             if isLoggedIn {
                 loadReservations()
@@ -180,58 +278,192 @@ struct ReservationListView: View {
     }
 
     private var loggedOutView: some View {
-        VStack(spacing: 18) {
-            Spacer()
+        ZStack {
+            StudentReservationUI.background
+                .ignoresSafeArea()
 
-            Image(systemName: "calendar.badge.person.crop")
-                .font(.system(size: 58))
-                .foregroundStyle(.secondary)
+            VStack(spacing: 18) {
+                Spacer()
 
-            Text("予約を確認するにはログインが必要です")
-                .font(.title3)
-                .fontWeight(.semibold)
-                .multilineTextAlignment(.center)
+                ZStack {
+                    Circle()
+                        .fill(
+                            StudentReservationUI.softGreen
+                        )
+                        .frame(
+                            width: 88,
+                            height: 88
+                        )
 
-            Text("ログインすると、承認待ち・今後の予約・予約履歴を確認できます。")
+                    Image(
+                        systemName:
+                            "calendar.badge.person.crop"
+                    )
+                    .font(.system(size: 38))
+                    .foregroundStyle(
+                        StudentReservationUI.brandGreen
+                    )
+                }
+
+                Text("予約を確認するにはログインが必要です")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .foregroundStyle(
+                        StudentReservationUI.textPrimary
+                    )
+                    .multilineTextAlignment(.center)
+
+                Text(
+                    "ログインすると、承認待ち・今後の予約・予約履歴を確認できます。"
+                )
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(
+                    StudentReservationUI.textSecondary
+                )
                 .multilineTextAlignment(.center)
 
-            Button {
-                showLogin = true
-            } label: {
-                Label("ログイン・新規会員登録", systemImage: "person.crop.circle.badge.plus")
+                Button {
+                    showLogin = true
+                } label: {
+                    Label(
+                        "ログイン・新規会員登録",
+                        systemImage:
+                            "person.crop.circle.badge.plus"
+                    )
                     .fontWeight(.semibold)
                     .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green)
+                    .frame(height: 50)
+                    .background(
+                        StudentReservationUI.brandGreen
+                    )
                     .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-            }
-            .padding(.top, 6)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 15,
+                            style: .continuous
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
 
-            Spacer()
+                Spacer()
+            }
+            .padding(.horizontal, 28)
         }
-        .padding(.horizontal, 28)
     }
 
     private var categoryPicker: some View {
-        Picker("予約の種類", selection: $selectedCategory) {
-            ForEach(ReservationCategory.allCases) { category in
-                Text("\(category.title) \(categoryCount(category))")
-                    .tag(category)
+        HStack(spacing: 4) {
+            ForEach(
+                ReservationCategory.allCases
+            ) { category in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        selectedCategory = category
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(category.title)
+                            .font(
+                                .system(
+                                    size: 13,
+                                    weight: .semibold
+                                )
+                            )
+
+                        Text(
+                            "\(categoryCount(category))"
+                        )
+                        .font(
+                            .system(
+                                size: 10,
+                                weight: .bold
+                            )
+                        )
+                        .foregroundStyle(
+                            selectedCategory == category
+                                ? .white
+                                : StudentReservationUI.textSecondary
+                        )
+                        .frame(
+                            minWidth: 20,
+                            minHeight: 20
+                        )
+                        .background(
+                            selectedCategory == category
+                                ? StudentReservationUI.brandGreen
+                                : Color.black.opacity(0.05)
+                        )
+                        .clipShape(Capsule())
+                    }
+                    .foregroundStyle(
+                        selectedCategory == category
+                            ? StudentReservationUI.brandGreen
+                            : StudentReservationUI.textSecondary
+                    )
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: 44
+                    )
+                    .background(
+                        selectedCategory == category
+                            ? Color.white
+                            : Color.clear
+                    )
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 13,
+                            style: .continuous
+                        )
+                    )
+                    .overlay {
+                        if selectedCategory == category {
+                            RoundedRectangle(
+                                cornerRadius: 13,
+                                style: .continuous
+                            )
+                            .stroke(
+                                StudentReservationUI.brandGreen.opacity(0.28),
+                                lineWidth: 1
+                            )
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
         }
-        .pickerStyle(.segmented)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(Color(.systemBackground))
+        .padding(4)
+        .background(
+            Color.black.opacity(0.045)
+        )
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
     }
 
     private var reservationList: some View {
-        List {
-            Section {
-                ForEach(filteredReservations) { reservation in
+        ScrollView {
+            LazyVStack(
+                alignment: .leading,
+                spacing: 12
+            ) {
+                Text(sectionTitle)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(
+                        StudentReservationUI.textSecondary
+                    )
+                    .padding(.horizontal, 2)
+
+                ForEach(
+                    filteredReservations
+                ) { reservation in
                     HStack(
                         alignment: .top,
                         spacing: 12
@@ -246,7 +478,7 @@ struct ReservationListView: View {
                                     coachImageURLs[
                                         reservation.coachId
                                     ] ?? "",
-                                size: 44
+                                size: 52
                             )
                         }
                         .buttonStyle(.plain)
@@ -262,7 +494,6 @@ struct ReservationListView: View {
                             reservationCardMainContent(
                                 reservation
                             )
-                            .foregroundStyle(.primary)
                         }
                         .buttonStyle(.plain)
                         .frame(
@@ -271,43 +502,28 @@ struct ReservationListView: View {
                         )
                     }
                     .padding(16)
-                    .background(
-                        Color(
-                            .secondarySystemGroupedBackground
-                        )
-                    )
+                    .background(Color.white)
                     .clipShape(
                         RoundedRectangle(
-                            cornerRadius: 16
+                            cornerRadius: 18,
+                            style: .continuous
                         )
                     )
                     .overlay {
                         RoundedRectangle(
-                            cornerRadius: 16
+                            cornerRadius: 18,
+                            style: .continuous
                         )
                         .stroke(
-                            Color.primary.opacity(0.06),
+                            StudentReservationUI.border,
                             lineWidth: 1
                         )
                     }
-                    .listRowInsets(
-                        EdgeInsets(
-                            top: 6,
-                            leading: 16,
-                            bottom: 6,
-                            trailing: 16
-                        )
-                    )
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
                 }
-            } header: {
-                Text(sectionTitle)
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 28)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .background(Color(.systemGroupedBackground))
         .refreshable {
             loadReservations()
         }
@@ -315,17 +531,37 @@ struct ReservationListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 14) {
-            Image(systemName: emptyStateIcon)
-                .font(.system(size: 50))
-                .foregroundStyle(.secondary)
+            ZStack {
+                Circle()
+                    .fill(
+                        StudentReservationUI.softGreen
+                    )
+                    .frame(
+                        width: 78,
+                        height: 78
+                    )
+
+                Image(
+                    systemName: emptyStateIcon
+                )
+                .font(.system(size: 32))
+                .foregroundStyle(
+                    StudentReservationUI.brandGreen
+                )
+            }
 
             Text(emptyStateTitle)
                 .font(.title3)
-                .fontWeight(.semibold)
+                .fontWeight(.bold)
+                .foregroundStyle(
+                    StudentReservationUI.textPrimary
+                )
 
             Text(emptyStateMessage)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(
+                    StudentReservationUI.textSecondary
+                )
                 .multilineTextAlignment(.center)
         }
         .padding()
@@ -403,69 +639,162 @@ struct ReservationListView: View {
     private func reservationCardMainContent(
         _ reservation: ReservationItem
     ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
+        VStack(
+            alignment: .leading,
+            spacing: 12
+        ) {
+            HStack(
+                alignment: .top,
+                spacing: 10
+            ) {
+                VStack(
+                    alignment: .leading,
+                    spacing: 3
+                ) {
                     Text(reservation.coachName)
                         .font(.headline)
+                        .foregroundStyle(
+                            StudentReservationUI.textPrimary
+                        )
 
-                    Text(statusDescription(reservation))
+                    Text(
+                        statusDescription(
+                            reservation
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        StudentReservationUI.textSecondary
+                    )
+                    .lineLimit(2)
+                }
+
+                Spacer(minLength: 6)
+
+                statusBadge(reservation)
+            }
+
+            VStack(spacing: 10) {
+                HStack(spacing: 14) {
+                    Label(
+                        displayDate(
+                            reservation.date
+                        ),
+                        systemImage: "calendar"
+                    )
+
+                    Spacer()
+
+                    Label(
+                        combinedTimeRange(
+                            reservation.times
+                        ),
+                        systemImage: "clock"
+                    )
+                }
+
+                HStack(spacing: 14) {
+                    Label(
+                        "\(max(reservation.times.count, 1))時間",
+                        systemImage: "hourglass"
+                    )
+
+                    Spacer()
+
+                    if reservation.totalPrice > 0 {
+                        Label(
+                            "¥\(reservation.totalPrice.formatted())",
+                            systemImage:
+                                "yensign.circle"
+                        )
+                        .fontWeight(.semibold)
+                        .foregroundStyle(
+                            StudentReservationUI.brandGreen
+                        )
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(
+                StudentReservationUI.textSecondary
+            )
+            .padding(12)
+            .background(
+                StudentReservationUI.softGreen.opacity(0.48)
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 13,
+                    style: .continuous
+                )
+            )
+
+            if let location =
+                reservationLocationText(
+                    reservation
+                ) {
+                HStack(
+                    alignment: .top,
+                    spacing: 7
+                ) {
+                    Image(
+                        systemName:
+                            "mappin.and.ellipse"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        StudentReservationUI.brandGreen
+                    )
+
+                    Text(location)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(
+                            StudentReservationUI.textSecondary
+                        )
+                        .lineLimit(2)
+                }
+            }
+
+            HStack {
+                if reservation.status ==
+                    "confirmed" &&
+                    !isRefunded(
+                        reservation
+                    ) {
+                    Label(
+                        "支払いが必要です",
+                        systemImage:
+                            "creditcard.fill"
+                    )
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(
+                        StudentReservationUI.brandGreen
+                    )
+                } else {
+                    Text("予約詳細を見る")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(
+                            StudentReservationUI.brandGreen
+                        )
                 }
 
                 Spacer()
 
-                statusBadge(reservation)
-
                 Image(
-                    systemName: "chevron.right"
+                    systemName:
+                        "chevron.right"
                 )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.top, 4)
-            }
-
-            Divider()
-
-            HStack(spacing: 18) {
-                Label(
-                    displayDate(reservation.date),
-                    systemImage: "calendar"
-                )
-
-                Label(
-                    combinedTimeRange(reservation.times),
-                    systemImage: "clock"
-                )
-            }
-            .font(.subheadline)
-
-            HStack(spacing: 14) {
-                Label(
-                    "\(max(reservation.times.count, 1))時間",
-                    systemImage: "hourglass"
-                )
-
-                if reservation.totalPrice > 0 {
-                    Label(
-                        "¥\(reservation.totalPrice)",
-                        systemImage: "yensign.circle"
+                .font(
+                    .system(
+                        size: 11,
+                        weight: .bold
                     )
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            if reservation.status == "confirmed" &&
-                !isRefunded(reservation) {
-                Label(
-                    "タップして支払い手続きへ進めます",
-                    systemImage: "creditcard.fill"
                 )
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.blue)
+                .foregroundStyle(
+                    StudentReservationUI.brandGreen
+                )
             }
         }
         .frame(
@@ -473,6 +802,47 @@ struct ReservationListView: View {
             alignment: .leading
         )
         .contentShape(Rectangle())
+    }
+
+    private func reservationLocationText(
+        _ reservation: ReservationItem
+    ) -> String? {
+        let name =
+            reservation.courtName
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        let address =
+            reservation.courtAddress
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        let legacy =
+            reservation.court
+                .trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+        if !name.isEmpty &&
+            !address.isEmpty {
+            return "\(name)（\(address)）"
+        }
+
+        if !name.isEmpty {
+            return name
+        }
+
+        if !address.isEmpty {
+            return address
+        }
+
+        if !legacy.isEmpty {
+            return legacy
+        }
+
+        return nil
     }
 
     private func categoryCount(
@@ -773,6 +1143,15 @@ struct ReservationListView: View {
                             times: reservationTimes,
                             pricePerHour: pricePerHour,
                             totalPrice: totalPrice,
+                            courtName:
+                                data["courtName"] as? String
+                                ?? "",
+                            courtAddress:
+                                data["courtAddress"] as? String
+                                ?? "",
+                            court:
+                                data["court"] as? String
+                                ?? "",
                             createdAt:
                                 data["createdAt"] as? Timestamp
                         )
@@ -834,48 +1213,52 @@ struct ReservationListView: View {
         _ reservation: ReservationItem
     ) -> some View {
         if isRefunded(reservation) {
-            Label(
-                reservation.status == "student_cancelled" &&
-                reservation.cancellationRefundPercent == 50
-                ? "50%返金済み"
-                : "全額返金済み",
-                systemImage:
-                    "arrow.uturn.backward.circle.fill"
+            reservationBadge(
+                title:
+                    reservation.status ==
+                        "student_cancelled" &&
+                    reservation.cancellationRefundPercent == 50
+                        ? "50%返金済み"
+                        : "返金済み",
+                icon:
+                    "arrow.uturn.backward",
+                color: .purple
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.purple)
 
-        } else if isRefundFailed(reservation) {
-            Label(
-                "返金確認中",
-                systemImage:
-                    "exclamationmark.triangle.fill"
+        } else if isRefundFailed(
+            reservation
+        ) {
+            reservationBadge(
+                title: "返金確認中",
+                icon:
+                    "exclamationmark.triangle",
+                color: .red
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.red)
 
-        } else if reservation.weatherCancellationStatus == "pending" {
-            Label(
-                reservation.weatherCancellationRequesterRole == "student"
-                    ? "回答待ち"
-                    : "要回答",
-                systemImage: "cloud.rain.fill"
+        } else if
+            reservation
+                .weatherCancellationStatus
+                == "pending" {
+            reservationBadge(
+                title:
+                    reservation
+                        .weatherCancellationRequesterRole
+                        == "student"
+                        ? "回答待ち"
+                        : "要回答",
+                icon: "cloud.rain",
+                color: .orange
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.orange)
 
-        } else if isRefundProcessing(reservation) {
-            Label(
-                "返金処理中",
-                systemImage:
-                    "arrow.triangle.2.circlepath"
+        } else if isRefundProcessing(
+            reservation
+        ) {
+            reservationBadge(
+                title: "返金処理中",
+                icon:
+                    "arrow.triangle.2.circlepath",
+                color: .orange
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.orange)
 
         } else {
             reservationStatusBadge(
@@ -890,95 +1273,105 @@ struct ReservationListView: View {
     ) -> some View {
         switch status {
         case "confirmed":
-            Label(
-                "承認済み",
-                systemImage: "checkmark.circle.fill"
+            reservationBadge(
+                title: "支払い待ち",
+                icon: "creditcard",
+                color:
+                    StudentReservationUI.brandGreen
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.blue)
 
         case "paid":
-            Label(
-                "支払い済み",
-                systemImage: "creditcard.fill"
+            reservationBadge(
+                title: "予約確定",
+                icon: "checkmark.circle",
+                color:
+                    StudentReservationUI.brandGreen
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.green)
 
         case "rejected":
-            Label(
-                "却下済み",
-                systemImage: "xmark.circle.fill"
+            reservationBadge(
+                title: "却下",
+                icon: "xmark.circle",
+                color: .red
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.red)
 
         case "reserved":
-            Label(
-                "予約済み",
-                systemImage: "checkmark.circle.fill"
+            reservationBadge(
+                title: "予約済み",
+                icon: "checkmark.circle",
+                color:
+                    StudentReservationUI.brandGreen
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.green)
 
         case "coach_cancelled":
-            Label(
-                "コーチ都合キャンセル",
-                systemImage: "minus.circle.fill"
+            reservationBadge(
+                title: "コーチ都合",
+                icon: "minus.circle",
+                color: .purple
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.purple)
 
         case "weather_cancelled":
-            Label(
-                "雨天キャンセル",
-                systemImage: "cloud.rain.fill"
+            reservationBadge(
+                title: "雨天中止",
+                icon: "cloud.rain",
+                color: .blue
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.blue)
 
         case "student_cancelled":
-            Label(
-                "生徒都合キャンセル",
-                systemImage: "minus.circle.fill"
+            reservationBadge(
+                title: "キャンセル",
+                icon: "minus.circle",
+                color:
+                    StudentReservationUI.textSecondary
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.secondary)
 
         case "cancelled", "canceled":
-            Label(
-                "キャンセル",
-                systemImage: "minus.circle.fill"
+            reservationBadge(
+                title: "キャンセル",
+                icon: "minus.circle",
+                color:
+                    StudentReservationUI.textSecondary
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.secondary)
 
         case "completed":
-            Label(
-                "受講済み",
-                systemImage: "checkmark.seal.fill"
+            reservationBadge(
+                title: "受講済み",
+                icon: "checkmark.seal",
+                color:
+                    StudentReservationUI.textSecondary
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.secondary)
 
         default:
-            Label(
-                "承認待ち",
-                systemImage: "clock.fill"
+            reservationBadge(
+                title: "承認待ち",
+                icon: "clock",
+                color: .orange
             )
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.orange)
         }
+    }
+
+    private func reservationBadge(
+        title: String,
+        icon: String,
+        color: Color
+    ) -> some View {
+        Label(
+            title,
+            systemImage: icon
+        )
+        .font(
+            .system(
+                size: 10,
+                weight: .semibold
+            )
+        )
+        .foregroundStyle(color)
+        .padding(.horizontal, 9)
+        .frame(height: 27)
+        .background(
+            color.opacity(0.10)
+        )
+        .clipShape(Capsule())
     }
 
     private func isRefunded(
@@ -1178,270 +1571,74 @@ private struct StudentReservationDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 22) {
-                statusHeader
+        ZStack {
+            StudentReservationUI.background
+                .ignoresSafeArea()
 
-                VStack(spacing: 16) {
-                    HStack(spacing: 12) {
-                        Text("コーチ")
+            ScrollView {
+                VStack(spacing: 18) {
+                    statusHeader
 
-                        Spacer()
+                    coachInformationCard
 
+                    reservationInformationCard
+
+                    if currentReservationAllowsChat &&
+                        canMessageCoach &&
+                        !isCheckingChatAccess {
                         NavigationLink {
-                            CoachProfileDestinationView(
-                                coachId:
-                                    reservation.coachId
-                            )
+                            ChatView(coach: coach)
                         } label: {
-                            ReservationCoachAvatarView(
-                                imageURL: coachImageURL,
-                                size: 40
+                            actionButtonLabel(
+                                title: "メッセージを送る",
+                                icon: "message.fill"
                             )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(
-                            "\(reservation.coachName)コーチのプロフィール"
-                        )
-
-                        Text(reservation.coachName)
-                            .bold()
-                            .multilineTextAlignment(
-                                .trailing
-                            )
                     }
 
-                    Divider()
-                    detailRow(
-                        title: "日付",
-                        value: displayDate(reservation.date)
-                    )
-                    Divider()
-                    detailRow(
-                        title: "時間",
-                        value: combinedTimeRange(reservation.times)
-                    )
-                    Divider()
-                    detailRow(
-                        title: "レッスン時間",
-                        value: "\(reservation.times.count)時間"
-                    )
-                    Divider()
-                    detailRow(
-                        title: "料金",
-                        value: "¥\(reservation.totalPrice)"
-                    )
-                }
-                .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(18)
-
-                if currentReservationAllowsChat &&
-                    canMessageCoach &&
-                    !isCheckingChatAccess {
-                    NavigationLink {
-                        ChatView(coach: coach)
-                    } label: {
-                        Label(
-                            "メッセージを送る",
-                            systemImage: "message.fill"
-                        )
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .foregroundStyle(.white)
-                        .background(Color.green)
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: 14
-                            )
-                        )
+                    if canWithdrawUnpaidReservation {
+                        withdrawalCard
                     }
-                    .buttonStyle(.plain)
-                }
 
-                if canWithdrawUnpaidReservation {
-                    VStack(spacing: 10) {
-                        Text(
-                            reservation.status == "pending"
-                            ? "コーチが承認する前であれば、予約申請を取り下げられます。"
-                            : "まだ支払いは完了していません。取り下げると予約枠は再び予約可能になります。"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Button {
-                            showReservationWithdrawalConfirmation = true
-                        } label: {
-                            if isWithdrawingReservation {
-                                ProgressView()
-                                    .frame(maxWidth: .infinity)
-                            } else {
-                                Label(
-                                    reservation.status == "pending"
-                                    ? "予約申請を取り下げる"
-                                    : "予約を取り下げる",
-                                    systemImage: "arrow.uturn.backward.circle"
-                                )
-                                .fontWeight(.semibold)
-                                .frame(maxWidth: .infinity)
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .disabled(isWithdrawingReservation)
-
-                        if !reservationWithdrawalErrorMessage.isEmpty {
-                            Text(reservationWithdrawalErrorMessage)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .padding()
-                    .background(Color.red.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                }
-
-                if reservation.status == "confirmed" {
-                    NavigationLink {
-                        PaymentView(
-                            reservationId: reservation.id,
-                            coach: coach,
-                            date: lessonDate,
-                            times: reservation.times,
-                            totalPrice: reservation.totalPrice
-                        )
-                    } label: {
-                        Label(
-                            "支払いへ進む",
-                            systemImage: "creditcard.fill"
-                        )
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.green)
-                        .foregroundColor(.white)
-                        .cornerRadius(14)
-                    }
-                }
-
-                if shouldShowWeatherCancellationSection {
-                    weatherCancellationSection
-                }
-
-                if canCancelPaidReservation {
-                    VStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("キャンセル時の返金")
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-
-                            Text(cancellationPolicyPreview)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Text("最終的な返金率・返金額は、キャンセル実行時にサーバー側で確定します。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Button {
-                            showCancellationConfirmation = true
-                        } label: {
-                            if isCancelling {
-                                ProgressView()
-                                    .tint(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                            } else {
-                                Label(
-                                    "予約をキャンセルする",
-                                    systemImage: "xmark.circle.fill"
-                                )
-                                .fontWeight(.semibold)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                            }
-                        }
-                        .background(Color.red)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .disabled(isCancelling)
-
-                        if !cancellationErrorMessage.isEmpty {
-                            Text(cancellationErrorMessage)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .padding()
-                    .background(Color.red.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                }
-
-                if reviewSubmitted {
-                    Label(
-                        "レビュー投稿済み",
-                        systemImage: "checkmark.seal.fill"
-                    )
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.green)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                } else if canWriteReview {
-                    if isCheckingCoachReview {
-                        ProgressView("レビュー状況を確認中…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                    } else if !reviewEligibilityError.isEmpty {
-                        VStack(spacing: 10) {
-                            Text("レビュー状況を確認できませんでした")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Button("再確認") {
-                                checkExistingCoachReview()
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                        .frame(maxWidth: .infinity)
-                    } else if !hasReviewedCoach {
+                    if reservation.status ==
+                        "confirmed" {
                         NavigationLink {
-                            ReviewSubmissionView(
-                                reservationId: reservation.id,
-                                coachName: reservation.coachName
-                            ) {
-                                reviewSubmitted = true
-                                hasReviewedCoach = true
-                            }
-                        } label: {
-                            Label(
-                                "レビューを書く",
-                                systemImage: "star.bubble.fill"
+                            PaymentView(
+                                reservationId:
+                                    reservation.id,
+                                coach: coach,
+                                date: lessonDate,
+                                times:
+                                    reservation.times,
+                                totalPrice:
+                                    reservation.totalPrice
                             )
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.green)
-                            .foregroundColor(.white)
-                            .cornerRadius(14)
+                        } label: {
+                            actionButtonLabel(
+                                title: "支払いへ進む",
+                                icon: "creditcard.fill"
+                            )
                         }
+                        .buttonStyle(.plain)
                     }
+
+                    if shouldShowWeatherCancellationSection {
+                        weatherCancellationSection
+                    }
+
+                    if canCancelPaidReservation {
+                        paidCancellationCard
+                    }
+
+                    reviewSection
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 28)
             }
-            .padding()
         }
+        .tint(StudentReservationUI.brandGreen)
         .navigationTitle("予約詳細")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
@@ -1568,6 +1765,544 @@ private struct StudentReservationDetailView: View {
         }
     }
 
+
+    private var coachInformationCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 14
+        ) {
+            HStack {
+                Text("担当コーチ")
+                    .font(.headline)
+                    .foregroundStyle(
+                        StudentReservationUI.textPrimary
+                    )
+
+                Spacer()
+
+                Text("画像をタップしてプロフィール")
+                    .font(.caption2)
+                    .foregroundStyle(
+                        StudentReservationUI.textSecondary
+                    )
+            }
+
+            HStack(spacing: 14) {
+                NavigationLink {
+                    CoachProfileDestinationView(
+                        coachId:
+                            reservation.coachId
+                    )
+                } label: {
+                    ReservationCoachAvatarView(
+                        imageURL: coachImageURL,
+                        size: 58
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "\(reservation.coachName)コーチのプロフィール"
+                )
+
+                VStack(
+                    alignment: .leading,
+                    spacing: 4
+                ) {
+                    Text(
+                        reservation.coachName
+                    )
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .foregroundStyle(
+                        StudentReservationUI.textPrimary
+                    )
+
+                    Text("予約したコーチ")
+                        .font(.caption)
+                        .foregroundStyle(
+                            StudentReservationUI.textSecondary
+                        )
+                }
+
+                Spacer()
+
+                Image(
+                    systemName:
+                        "chevron.right"
+                )
+                .font(
+                    .system(
+                        size: 11,
+                        weight: .bold
+                    )
+                )
+                .foregroundStyle(
+                    StudentReservationUI.brandGreen
+                )
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                StudentReservationUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var reservationInformationCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 14
+        ) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(
+                        StudentReservationUI.brandGreen
+                    )
+
+                Text("レッスン情報")
+                    .font(.headline)
+                    .foregroundStyle(
+                        StudentReservationUI.textPrimary
+                    )
+            }
+
+            detailRow(
+                title: "日付",
+                value:
+                    displayDate(
+                        reservation.date
+                    )
+            )
+
+            Divider()
+
+            detailRow(
+                title: "時間",
+                value:
+                    combinedTimeRange(
+                        reservation.times
+                    )
+            )
+
+            Divider()
+
+            detailRow(
+                title: "レッスン時間",
+                value:
+                    "\(max(reservation.times.count, 1))時間"
+            )
+
+            Divider()
+
+            detailRow(
+                title: "料金",
+                value:
+                    "¥\(reservation.totalPrice.formatted())"
+            )
+
+            Divider()
+
+            VStack(
+                alignment: .leading,
+                spacing: 8
+            ) {
+                Label(
+                    "レッスン場所",
+                    systemImage:
+                        "mappin.and.ellipse"
+                )
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(
+                    StudentReservationUI.brandGreen
+                )
+
+                if !reservation.courtName
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    .isEmpty {
+                    Text(reservation.courtName)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(
+                            StudentReservationUI.textPrimary
+                        )
+                }
+
+                if !reservation.courtAddress
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    .isEmpty {
+                    Text(reservation.courtAddress)
+                        .font(.subheadline)
+                        .foregroundStyle(
+                            StudentReservationUI.textSecondary
+                        )
+                }
+
+                if reservation.courtName
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    .isEmpty &&
+                    reservation.courtAddress
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    .isEmpty {
+                    Text(
+                        reservation.court
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+                            .isEmpty
+                            ? "場所未登録"
+                            : reservation.court
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(
+                        StudentReservationUI.textSecondary
+                    )
+                }
+            }
+            .frame(
+                maxWidth: .infinity,
+                alignment: .leading
+            )
+            .padding(12)
+            .background(
+                StudentReservationUI.softGreen.opacity(0.45)
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 13,
+                    style: .continuous
+                )
+            )
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                StudentReservationUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private func actionButtonLabel(
+        title: String,
+        icon: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Spacer()
+
+            Image(systemName: icon)
+
+            Text(title)
+                .fontWeight(.semibold)
+
+            Spacer()
+        }
+        .frame(height: 50)
+        .foregroundStyle(.white)
+        .background(
+            StudentReservationUI.brandGreen
+        )
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 15,
+                style: .continuous
+            )
+        )
+    }
+
+    private var withdrawalCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 12
+        ) {
+            Label(
+                reservation.status == "pending"
+                    ? "予約申請の取り下げ"
+                    : "予約の取り下げ",
+                systemImage:
+                    "arrow.uturn.backward.circle"
+            )
+            .font(.headline)
+            .foregroundStyle(
+                StudentReservationUI.textPrimary
+            )
+
+            Text(
+                reservation.status == "pending"
+                    ? "コーチが承認する前であれば、予約申請を取り下げられます。"
+                    : "まだ支払いは完了していません。取り下げると予約枠は再び予約可能になります。"
+            )
+            .font(.caption)
+            .foregroundStyle(
+                StudentReservationUI.textSecondary
+            )
+
+            Button {
+                showReservationWithdrawalConfirmation = true
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isWithdrawingReservation {
+                        ProgressView()
+                    } else {
+                        Text(
+                            reservation.status == "pending"
+                                ? "予約申請を取り下げる"
+                                : "予約を取り下げる"
+                        )
+                        .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+                .frame(height: 46)
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .disabled(isWithdrawingReservation)
+
+            if !reservationWithdrawalErrorMessage.isEmpty {
+                Text(
+                    reservationWithdrawalErrorMessage
+                )
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                Color.red.opacity(0.15),
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var paidCancellationCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 12
+        ) {
+            Label(
+                "予約キャンセル",
+                systemImage:
+                    "exclamationmark.circle"
+            )
+            .font(.headline)
+            .foregroundStyle(
+                StudentReservationUI.textPrimary
+            )
+
+            Text("キャンセル時の返金")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            Text(cancellationPolicyPreview)
+                .font(.caption)
+                .foregroundStyle(
+                    StudentReservationUI.textSecondary
+                )
+
+            Text(
+                "最終的な返金率・返金額は、キャンセル実行時にサーバー側で確定します。"
+            )
+            .font(.caption2)
+            .foregroundStyle(
+                StudentReservationUI.textSecondary
+            )
+
+            Button {
+                showCancellationConfirmation = true
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isCancelling {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Label(
+                            "予約をキャンセルする",
+                            systemImage:
+                                "xmark.circle.fill"
+                        )
+                        .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+                .frame(height: 48)
+                .foregroundStyle(.white)
+                .background(Color.red)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isCancelling)
+
+            if !cancellationErrorMessage.isEmpty {
+                Text(
+                    cancellationErrorMessage
+                )
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                Color.red.opacity(0.15),
+                lineWidth: 1
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var reviewSection: some View {
+        if reviewSubmitted {
+            Label(
+                "レビュー投稿済み",
+                systemImage:
+                    "checkmark.seal.fill"
+            )
+            .fontWeight(.semibold)
+            .foregroundStyle(
+                StudentReservationUI.brandGreen
+            )
+            .frame(
+                maxWidth: .infinity
+            )
+            .padding(16)
+            .background(Color.white)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
+                .stroke(
+                    StudentReservationUI.border,
+                    lineWidth: 1
+                )
+            }
+
+        } else if canWriteReview {
+            if isCheckingCoachReview {
+                ProgressView(
+                    "レビュー状況を確認中…"
+                )
+                .font(.caption)
+                .foregroundStyle(
+                    StudentReservationUI.textSecondary
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+
+            } else if
+                !reviewEligibilityError.isEmpty {
+                VStack(spacing: 10) {
+                    Text(
+                        "レビュー状況を確認できませんでした"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        StudentReservationUI.textSecondary
+                    )
+
+                    Button("再確認") {
+                        checkExistingCoachReview()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(
+                    maxWidth: .infinity
+                )
+
+            } else if !hasReviewedCoach {
+                NavigationLink {
+                    ReviewSubmissionView(
+                        reservationId:
+                            reservation.id,
+                        coachName:
+                            reservation.coachName
+                    ) {
+                        reviewSubmitted = true
+                        hasReviewedCoach = true
+                    }
+                } label: {
+                    actionButtonLabel(
+                        title: "レビューを書く",
+                        icon: "star.fill"
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     @ViewBuilder
     private var weatherCancellationSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1576,7 +2311,7 @@ private struct StudentReservationDetailView: View {
                 systemImage: "cloud.rain.fill"
             )
             .font(.headline)
-            .foregroundStyle(.blue)
+            .foregroundStyle(StudentReservationUI.brandGreen)
 
             if weatherCancellationStatus == "pending" {
                 if weatherCancellationRequesterRole == "student" {
@@ -1671,8 +2406,23 @@ private struct StudentReservationDetailView: View {
             }
         }
         .padding()
-        .background(Color.blue.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .background(Color.white)
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                StudentReservationUI.border,
+                lineWidth: 1
+            )
+        }
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
     }
 
     private var shouldShowWeatherCancellationSection: Bool {
@@ -2340,28 +3090,94 @@ private struct StudentReservationDetailView: View {
         title: String,
         message: String
     ) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 52))
-                .foregroundStyle(color)
+        HStack(
+            alignment: .top,
+            spacing: 14
+        ) {
+            ZStack {
+                Circle()
+                    .fill(
+                        color.opacity(0.10)
+                    )
+                    .frame(
+                        width: 48,
+                        height: 48
+                    )
 
-            Text(title)
-                .font(.title3)
-                .fontWeight(.bold)
+                Image(systemName: icon)
+                    .font(
+                        .system(
+                            size: 20,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(color)
+            }
 
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            VStack(
+                alignment: .leading,
+                spacing: 4
+            ) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(
+                        StudentReservationUI.textPrimary
+                    )
+
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(
+                        StudentReservationUI.textSecondary
+                    )
+                    .fixedSize(
+                        horizontal: false,
+                        vertical: true
+                    )
+            }
+
+            Spacer()
+        }
+        .padding(16)
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                color.opacity(0.18),
+                lineWidth: 1
+            )
         }
     }
 
-    private func detailRow(title: String, value: String) -> some View {
+    private func detailRow(
+        title: String,
+        value: String
+    ) -> some View {
         HStack {
             Text(title)
+                .foregroundStyle(
+                    StudentReservationUI.textSecondary
+                )
+
             Spacer()
+
             Text(value)
                 .fontWeight(.semibold)
+                .foregroundStyle(
+                    StudentReservationUI.textPrimary
+                )
                 .multilineTextAlignment(.trailing)
         }
     }
@@ -2446,7 +3262,7 @@ private struct ReservationCoachAvatarView: View {
             height: size
         )
         .background(
-            Color(.systemGray5)
+            StudentReservationUI.softGreen
         )
         .clipShape(Circle())
         .overlay(
@@ -2464,7 +3280,7 @@ private struct ReservationCoachAvatarView: View {
             .resizable()
             .scaledToFit()
             .padding(size * 0.22)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(StudentReservationUI.brandGreen)
     }
 }
 
