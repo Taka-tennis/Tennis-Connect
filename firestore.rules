@@ -44,22 +44,44 @@ service cloud.firestore {
     }
 
     // 生徒プロフィール：本人だけ
+    // 削除は正式な退会処理（Cloud Functions）からのみ行う
     match /students/{studentId} {
-      allow create, read, update, delete:
+      allow create, read, update:
         if signedIn() && request.auth.uid == studentId;
 
-      match /{document=**} {
+      allow delete: if false;
+
+      match /{subcollection}/{document=**} {
         allow read, write:
           if signedIn() && request.auth.uid == studentId;
       }
     }
 
     // コーチプロフィール：閲覧は公開、編集は本人だけ
+    // 削除は正式な退会処理（Cloud Functions）からのみ行う
     match /coaches/{coachId} {
       allow read: if true;
 
       allow create:
-        if signedIn() && request.auth.uid == coachId;
+        if signedIn()
+        && request.auth.uid == coachId
+        && request.resource.data.keys().hasAll([
+          'coachId',
+          'ownerId',
+          'rating',
+          'reviewCount',
+          'createdAt'
+        ])
+        && request.resource.data.coachId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.rating == 5.0
+        && request.resource.data.reviewCount == 0
+        && request.resource.data.createdAt == request.time
+        && !request.resource.data.keys().hasAny([
+          'ratingAverage',
+          'ratingCount',
+          'ratingSum'
+        ]);
 
       allow update:
         if signedIn()
@@ -68,15 +90,17 @@ service cloud.firestore {
           .diff(resource.data)
           .affectedKeys()
           .hasAny([
+            'coachId',
+            'ownerId',
             'rating',
             'ratingAverage',
             'ratingCount',
             'ratingSum',
-            'reviewCount'
+            'reviewCount',
+            'createdAt'
           ]);
 
-      allow delete:
-        if signedIn() && request.auth.uid == coachId;
+      allow delete: if false;
     }
 
     // 空き日程
@@ -130,11 +154,46 @@ service cloud.firestore {
 
       allow create:
         if signedIn()
-        && ('studentId' in request.resource.data)
-        && ('coachId' in request.resource.data)
-        && ('senderId' in request.resource.data)
+        && request.resource.data.keys().hasAll([
+          'conversationId',
+          'coachId',
+          'coachName',
+          'studentId',
+          'studentDisplayName',
+          'text',
+          'sender',
+          'senderId',
+          'createdAt',
+          'isRead'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'conversationId',
+          'coachId',
+          'coachName',
+          'studentId',
+          'studentDisplayName',
+          'text',
+          'sender',
+          'senderId',
+          'createdAt',
+          'isRead'
+        ])
+        && request.resource.data.conversationId is string
+        && request.resource.data.coachId is string
+        && request.resource.data.coachName is string
+        && request.resource.data.studentId is string
+        && request.resource.data.studentDisplayName is string
+        && request.resource.data.text is string
+        && request.resource.data.sender is string
+        && request.resource.data.senderId is string
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.isRead == false
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 2000
+        && request.resource.data.coachName.size() <= 100
+        && request.resource.data.studentDisplayName.size() <= 100
+        && request.resource.data.studentId != request.resource.data.coachId
         && request.resource.data.senderId == request.auth.uid
-        && ('conversationId' in request.resource.data)
         && request.resource.data.conversationId
           == request.resource.data.studentId
             + '__'
@@ -147,7 +206,6 @@ service cloud.firestore {
           request.resource.data.studentId,
           request.resource.data.coachId
         )
-        && ('sender' in request.resource.data)
         && (
           (
             request.resource.data.sender == 'user'
@@ -261,7 +319,11 @@ service cloud.firestore {
       allow update: if false;
     }
 
-    // ブロック：ブロックした本人だけが自分のブロック情報を扱える
+    // ブロック：
+    // 作成・更新はCloud FunctionsのblockCoachだけが行う。
+    //
+    // ブロック時には予約取り下げ・予約枠復活・返金などの
+    // 整合性処理が必要なため、クライアントからの直接作成を禁止する。
     match /blocks/{blockId} {
 
       // 一覧・状態確認は blockerId == 自分 のデータだけ
@@ -270,49 +332,11 @@ service cloud.firestore {
         && ('blockerId' in resource.data)
         && resource.data.blockerId == request.auth.uid;
 
-      allow create:
-        if signedIn()
-        && request.resource.data.keys().hasAll([
-          'blockerId',
-          'blockedUserId',
-          'blockedRole',
-          'source',
-          'createdAt'
-        ])
-        && request.resource.data.keys().hasOnly([
-          'blockerId',
-          'blockedUserId',
-          'blockedRole',
-          'source',
-          'createdAt'
-        ])
-        && request.resource.data.blockerId == request.auth.uid
-        && request.resource.data.blockedUserId is string
-        && request.resource.data.blockedUserId != request.auth.uid
-        && request.resource.data.blockedRole == 'coach'
-        && request.resource.data.source == 'coachDetail'
-        && request.resource.data.createdAt == request.time
-        && blockId
-          == request.auth.uid
-            + '__'
-            + request.resource.data.blockedUserId;
+      // Admin SDKを使うCloud FunctionsはSecurity Rulesの対象外。
+      allow create, update: if false;
 
-      // 同じブロックを再保存する場合でも、
-      // 対象ユーザーや所有者は変更させない
-      allow update:
-        if signedIn()
-        && ('blockerId' in resource.data)
-        && resource.data.blockerId == request.auth.uid
-        && request.resource.data.blockerId == resource.data.blockerId
-        && request.resource.data.blockedUserId == resource.data.blockedUserId
-        && request.resource.data.blockedRole == resource.data.blockedRole
-        && request.resource.data.source == resource.data.source
-        && request.resource.data
-          .diff(resource.data)
-          .affectedKeys()
-          .hasOnly(['createdAt'])
-        && request.resource.data.createdAt == request.time;
-
+      // 現在のブロック解除UIは本人が直接deleteするため、
+      // 本人所有のブロックだけ削除を許可する。
       allow delete:
         if signedIn()
         && ('blockerId' in resource.data)

@@ -4,6 +4,214 @@ import SwiftUI
 import FirebaseAuth
 import FirebaseFirestore
 
+private struct CoachSortMetadata {
+    let rating: Double
+    let reviewCount: Int
+    let createdAt: Date?
+}
+
+private enum CoachSearchSortOption: String, CaseIterable, Identifiable {
+    case recommended
+    case priceLow
+    case priceHigh
+    case ratingHigh
+    case newest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recommended:
+            return "おすすめ順"
+        case .priceLow:
+            return "料金が安い順"
+        case .priceHigh:
+            return "料金が高い順"
+        case .ratingHigh:
+            return "評価が高い順"
+        case .newest:
+            return "新着順"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .recommended:
+            return "sparkles"
+        case .priceLow:
+            return "arrow.down"
+        case .priceHigh:
+            return "arrow.up"
+        case .ratingHigh:
+            return "star.fill"
+        case .newest:
+            return "clock.badge.checkmark"
+        }
+    }
+}
+
+private enum SameDaySortOption: String, CaseIterable, Identifiable {
+    case earliest
+    case recommended
+    case priceLow
+    case priceHigh
+    case ratingHigh
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .earliest:
+            return "直近で予約できる順"
+        case .recommended:
+            return "おすすめ順"
+        case .priceLow:
+            return "料金が安い順"
+        case .priceHigh:
+            return "料金が高い順"
+        case .ratingHigh:
+            return "評価が高い順"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .earliest:
+            return "直近順"
+        case .recommended:
+            return "おすすめ"
+        case .priceLow:
+            return "安い順"
+        case .priceHigh:
+            return "高い順"
+        case .ratingHigh:
+            return "評価順"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .earliest:
+            return "clock"
+        case .recommended:
+            return "sparkles"
+        case .priceLow:
+            return "arrow.down"
+        case .priceHigh:
+            return "arrow.up"
+        case .ratingHigh:
+            return "star.fill"
+        }
+    }
+}
+
+private func dailyRecommendationContext() -> String {
+    let viewerId: String
+
+    if let uid = Auth.auth().currentUser?.uid,
+       !uid.isEmpty {
+        viewerId = uid
+    } else {
+        let defaults = UserDefaults.standard
+        let key = "tennisConnectAnonymousSortSeed"
+
+        if let saved = defaults.string(forKey: key),
+           !saved.isEmpty {
+            viewerId = saved
+        } else {
+            let newValue = UUID().uuidString
+            defaults.set(newValue, forKey: key)
+            viewerId = newValue
+        }
+    }
+
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone =
+        TimeZone(identifier: "Asia/Tokyo") ?? .current
+    formatter.dateFormat = "yyyy-MM-dd"
+
+    return viewerId + "|" + formatter.string(from: Date())
+}
+
+private func stableRotationScore(
+    coachId: String,
+    context: String
+) -> UInt64 {
+    // SwiftのhashValueは起動ごとに変わるため使わない。
+    // FNV-1aで、同じユーザー・同じ日なら同じ順番になる
+    // 決定的なスコアを生成する。
+    var hash: UInt64 = 1469598103934665603
+
+    for byte in (context + "|" + coachId).utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 1099511628211
+    }
+
+    return hash
+}
+
+private func recommendedComesFirst(
+    _ lhs: Coach,
+    _ rhs: Coach,
+    context: String
+) -> Bool {
+    let left = stableRotationScore(
+        coachId: lhs.id,
+        context: context
+    )
+    let right = stableRotationScore(
+        coachId: rhs.id,
+        context: context
+    )
+
+    if left != right {
+        return left < right
+    }
+
+    return lhs.id < rhs.id
+}
+
+private func ratingComesFirst(
+    _ lhs: Coach,
+    _ rhs: Coach,
+    metadata: [String: CoachSortMetadata],
+    context: String
+) -> Bool {
+    let left = metadata[lhs.id]
+    let right = metadata[rhs.id]
+
+    let leftHasReviews = (left?.reviewCount ?? 0) > 0
+    let rightHasReviews = (right?.reviewCount ?? 0) > 0
+
+    // 新規コーチは rating=5.0 / reviewCount=0 なので、
+    // 「評価順」でレビュー済みコーチより上に固定されないようにする。
+    if leftHasReviews != rightHasReviews {
+        return leftHasReviews
+    }
+
+    let leftRating = left?.rating ?? 0
+    let rightRating = right?.rating ?? 0
+
+    if leftRating != rightRating {
+        return leftRating > rightRating
+    }
+
+    let leftCount = left?.reviewCount ?? 0
+    let rightCount = right?.reviewCount ?? 0
+
+    if leftCount != rightCount {
+        return leftCount > rightCount
+    }
+
+    return recommendedComesFirst(
+        lhs,
+        rhs,
+        context: context
+    )
+}
+
 struct HomeView: View {
     let db = Firestore.firestore()
     let unreadNotificationCount: Int
@@ -20,6 +228,19 @@ struct HomeView: View {
 
     // UIScreenの幅ではなく、このセクションが実際に使える横幅を測る。
     @State private var sameDaySectionWidth: CGFloat = 0
+
+    // Coach本体のモデルは広げず、この画面内だけで
+    // 並び替えに必要な評価・登録日時を保持する。
+    @State private var coachSortMetadata:
+        [String: CoachSortMetadata] = [:]
+
+    // 「本日レッスン可能」は最短で予約できる時間順を
+    // デフォルトにするため、各コーチの直近空き時刻を保持する。
+    @State private var sameDayEarliestLessonDates:
+        [String: Date] = [:]
+
+    @State private var sameDaySortOption:
+        SameDaySortOption = .earliest
 
     init(unreadNotificationCount: Int = 0) {
         self.unreadNotificationCount = unreadNotificationCount
@@ -47,19 +268,92 @@ struct HomeView: View {
         return (sameDaySectionWidth - 12) / 2
     }
 
+    private var displayedSameDayCoaches: [Coach] {
+        let context = dailyRecommendationContext()
+
+        return sameDayCoaches.sorted { lhs, rhs in
+            switch sameDaySortOption {
+            case .earliest:
+                let leftDate = sameDayEarliestLessonDates[lhs.id]
+                let rightDate = sameDayEarliestLessonDates[rhs.id]
+
+                switch (leftDate, rightDate) {
+                case let (left?, right?):
+                    if left != right {
+                        return left < right
+                    }
+
+                case (_?, nil):
+                    return true
+
+                case (nil, _?):
+                    return false
+
+                case (nil, nil):
+                    break
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .recommended:
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .priceLow:
+                if lhs.price != rhs.price {
+                    return lhs.price < rhs.price
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .priceHigh:
+                if lhs.price != rhs.price {
+                    return lhs.price > rhs.price
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .ratingHigh:
+                return ratingComesFirst(
+                    lhs,
+                    rhs,
+                    metadata: coachSortMetadata,
+                    context: context
+                )
+            }
+        }
+    }
+
     private var sameDayCoachRows: [[Coach]] {
-        stride(
+        let displayed = displayedSameDayCoaches
+
+        return stride(
             from: 0,
-            to: sameDayCoaches.count,
+            to: displayed.count,
             by: 2
         ).map { startIndex in
             let endIndex = min(
                 startIndex + 2,
-                sameDayCoaches.count
+                displayed.count
             )
 
             return Array(
-                sameDayCoaches[startIndex..<endIndex]
+                displayed[startIndex..<endIndex]
             )
         }
     }
@@ -73,13 +367,15 @@ struct HomeView: View {
                     .collection("coaches")
                     .getDocuments()
 
-                let fetchedCoaches = snapshot.documents
-                    .filter { document in
-                        !blockedCoachIDs.contains(
-                            document.documentID
-                        )
-                    }
-                    .map { document in
+                let visibleDocuments = snapshot.documents.filter {
+                    !blockedCoachIDs.contains($0.documentID)
+                }
+
+                var fetchedCoaches: [Coach] = []
+                var fetchedMetadata:
+                    [String: CoachSortMetadata] = [:]
+
+                for document in visibleDocuments {
                     let data = document.data()
 
                     let savedCareers =
@@ -137,7 +433,7 @@ struct HomeView: View {
                                 in: .whitespacesAndNewlines
                             )
 
-                    return Coach(
+                    let coach = Coach(
                         id: document.documentID,
                         name: data["name"] as? String ?? "名前未登録",
                         price: data["price"] as? Int ?? 0,
@@ -168,10 +464,34 @@ struct HomeView: View {
                                 ? "自己紹介はまだありません。"
                                 : introduction
                     )
+
+                    fetchedCoaches.append(coach)
+
+                    let rating =
+                        (data["rating"] as? NSNumber)?
+                            .doubleValue
+                        ?? 0
+
+                    let reviewCount =
+                        (data["reviewCount"] as? NSNumber)?
+                            .intValue
+                        ?? 0
+
+                    let createdAt =
+                        (data["createdAt"] as? Timestamp)?
+                            .dateValue()
+
+                    fetchedMetadata[document.documentID] =
+                        CoachSortMetadata(
+                            rating: rating,
+                            reviewCount: reviewCount,
+                            createdAt: createdAt
+                        )
                 }
 
                 await MainActor.run {
                     coaches = fetchedCoaches
+                    coachSortMetadata = fetchedMetadata
                 }
 
                 loadSameDayCoaches(from: fetchedCoaches)
@@ -184,7 +504,9 @@ struct HomeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+
             HStack(spacing: 12) {
+
                 Button {
                     NotificationCenter.default.post(
                         name: .returnToStartScreen,
@@ -192,20 +514,15 @@ struct HomeView: View {
                     )
                 } label: {
                     Image(systemName: "chevron.backward")
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.primary)
-                        .frame(width: 36, height: 36)
-                        .background(Color(.systemGray6))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(Color.tcBrandGreen)
+                        .frame(width: 38, height: 38)
+                        .background(Color.tcSoftGreen)
                         .clipShape(Circle())
                 }
                 .accessibilityLabel("スタート画面へ戻る")
 
-                Text("🎾 Tennis Connect")
-                    .font(.title)
-                    .bold()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                HomeBrandTitle()
 
                 Spacer(minLength: 4)
 
@@ -218,10 +535,10 @@ struct HomeView: View {
                                 ? "bell.fill"
                                 : "bell"
                         )
-                        .font(.title3)
-                        .foregroundStyle(.primary)
-                        .frame(width: 36, height: 36)
-                        .background(Color(.systemGray6))
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.tcBrandGreen)
+                        .frame(width: 38, height: 38)
+                        .background(Color.tcSoftGreen)
                         .clipShape(Circle())
                         .overlay(alignment: .topTrailing) {
                             if unreadNotificationCount > 0 {
@@ -250,104 +567,187 @@ struct HomeView: View {
                         showLogin = true
                     } label: {
                         Image(systemName: "person.crop.circle.badge.plus")
-                            .font(.title3)
-                            .foregroundStyle(.primary)
-                            .frame(width: 36, height: 36)
-                            .background(Color(.systemGray6))
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(Color.tcBrandGreen)
+                            .frame(width: 38, height: 38)
+                            .background(Color.tcSoftGreen)
                             .clipShape(Circle())
                     }
                     .accessibilityLabel("ログイン")
                 }
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .background(Color.tcBackground)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 18) {
 
                     NavigationLink {
                         ReservationListView()
                     } label: {
-                        HStack {
-                            Image(systemName: "calendar")
-                            Text("予約一覧を見る")
-
-                            Spacer()
-
-                            Image(systemName: "chevron.right")
-                        }
-                        .padding()
-                        .background(Color.green.opacity(0.1))
-                        .cornerRadius(12)
+                        HomeActionCard(
+                            title: "予約一覧を見る",
+                            subtitle: "予約状況とレッスン予定を確認",
+                            systemImage: "calendar"
+                        )
                     }
                     .buttonStyle(.plain)
 
                     NavigationLink {
-                        StudentCoachSearchView(coaches: coaches)
+                        StudentCoachSearchView(
+                            coaches: coaches,
+                            sortMetadata: coachSortMetadata
+                        )
                     } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: "magnifyingglass")
-                                .font(.title2)
-                                .foregroundStyle(.blue)
-                                .frame(width: 38, height: 38)
-                                .background(Color.blue.opacity(0.1))
-                                .clipShape(Circle())
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("コーチを探す")
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-
-                                Text("地域・駅名・希望日から検索")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding()
-                        .background(Color(.systemGray6))
-                        .cornerRadius(14)
+                        HomeActionCard(
+                            title: "コーチを探す",
+                            subtitle: "地域・駅名・希望日から検索",
+                            systemImage: "magnifyingglass"
+                        )
                     }
                     .buttonStyle(.plain)
 
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 14) {
 
-                        Text("🔥 本日レッスン可能コーチ")
-                            .font(.title2)
-                            .bold()
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 9) {
+                                Image(systemName: "flame.fill")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(Color.tcBrandGreen)
+
+                                Text("本日レッスン可能コーチ")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(Color.tcTextPrimary)
+
+                                Spacer(minLength: 8)
+
+                                if sameDayCoaches.count > 1 {
+                                    Menu {
+                                        ForEach(
+                                            SameDaySortOption.allCases
+                                        ) { option in
+                                            Button {
+                                                sameDaySortOption = option
+                                            } label: {
+                                                HStack {
+                                                    Label(
+                                                        option.title,
+                                                        systemImage:
+                                                            option.systemImage
+                                                    )
+
+                                                    if sameDaySortOption
+                                                        == option {
+                                                        Image(
+                                                            systemName:
+                                                                "checkmark"
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(
+                                                systemName:
+                                                    "arrow.up.arrow.down"
+                                            )
+                                            .font(
+                                                .system(
+                                                    size: 11,
+                                                    weight: .bold
+                                                )
+                                            )
+
+                                            Text(
+                                                sameDaySortOption
+                                                    .shortTitle
+                                            )
+                                            .font(
+                                                .system(
+                                                    size: 12,
+                                                    weight: .semibold
+                                                )
+                                            )
+                                        }
+                                        .foregroundStyle(
+                                            Color.tcBrandGreen
+                                        )
+                                        .padding(.horizontal, 10)
+                                        .frame(height: 32)
+                                        .background(Color.tcSoftGreen)
+                                        .clipShape(Capsule())
+                                    }
+                                }
+                            }
+
+                            Text("すぐに予約できるコーチをチェック")
+                                .font(.caption)
+                                .foregroundStyle(Color.tcTextSecondary)
+                        }
 
                         if isLoadingSameDayCoaches {
                             HStack {
                                 Spacer()
-                                ProgressView("本日受付中のコーチを確認中…")
+
+                                VStack(spacing: 10) {
+                                    ProgressView()
+                                        .tint(Color.tcBrandGreen)
+
+                                    Text("本日受付中のコーチを確認中…")
+                                        .font(.caption)
+                                        .foregroundStyle(Color.tcTextSecondary)
+                                }
+
                                 Spacer()
                             }
-                            .padding(.vertical, 28)
+                            .padding(.vertical, 30)
 
                         } else if sameDayCoaches.isEmpty {
-                            VStack(spacing: 10) {
-                                Image(systemName: "figure.tennis")
-                                    .font(.system(size: 34))
-                                    .foregroundStyle(.secondary)
+                            VStack(spacing: 12) {
+
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.tcSoftGreen)
+                                        .frame(width: 64, height: 64)
+
+                                    Image(systemName: "figure.tennis")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(Color.tcBrandGreen)
+                                }
 
                                 Text("現在、本日レッスン可能なコーチはいません")
                                     .font(.headline)
+                                    .foregroundStyle(Color.tcTextPrimary)
                                     .multilineTextAlignment(.center)
 
                                 Text("時間をおいてもう一度確認してみてください")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.tcTextSecondary)
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 28)
-                            .padding(.horizontal)
-                            .background(Color(.systemGray6))
-                            .cornerRadius(14)
+                            .padding(.horizontal, 18)
+                            .background(Color.white)
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: 18,
+                                    style: .continuous
+                                )
+                            )
+                            .overlay {
+                                RoundedRectangle(
+                                    cornerRadius: 18,
+                                    style: .continuous
+                                )
+                                .stroke(
+                                    Color.tcBorder,
+                                    lineWidth: 1
+                                )
+                            }
 
                         } else {
                             LazyVStack(spacing: 16) {
@@ -369,7 +769,15 @@ struct HomeView: View {
                                                 SameDayCoachCard(
                                                     coach: coach,
                                                     cardWidth:
-                                                        sameDayCardWidth
+                                                        sameDayCardWidth,
+                                                    metadata:
+                                                        coachSortMetadata[
+                                                            coach.id
+                                                        ],
+                                                    earliestLessonDate:
+                                                        sameDayEarliestLessonDates[
+                                                            coach.id
+                                                        ]
                                                 )
                                                 .contentShape(Rectangle())
                                             }
@@ -430,9 +838,13 @@ struct HomeView: View {
                     maxWidth: .infinity,
                     alignment: .leading
                 )
-                .padding()
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
             }
+            .background(Color.tcBackground)
         }
+        .background(Color.tcBackground.ignoresSafeArea())
         .onAppear {
             isLoggedIn = Auth.auth().currentUser != nil
             fetchCoaches()
@@ -489,9 +901,11 @@ struct HomeView: View {
         isLoadingSameDayCoaches = true
         sameDayErrorMessage = ""
         sameDayCoaches = []
+        sameDayEarliestLessonDates = [:]
 
         Task {
             var availableCoaches: [Coach] = []
+            var earliestDates: [String: Date] = [:]
             var didEncounterError = false
 
             for coach in coaches {
@@ -513,20 +927,24 @@ struct HomeView: View {
                         continue
                     }
 
-                    let hasFutureTime = times.contains { time in
+                    let futureDates = times.compactMap { time -> Date? in
                         guard let lessonDate = lessonDate(
                             dateKey: dateKey,
                             time: time
-                        ) else {
-                            return false
+                        ),
+                        lessonDate > now else {
+                            return nil
                         }
 
-                        return lessonDate > now
+                        return lessonDate
                     }
 
-                    if hasFutureTime {
-                        availableCoaches.append(coach)
+                    guard let earliestDate = futureDates.min() else {
+                        continue
                     }
+
+                    availableCoaches.append(coach)
+                    earliestDates[coach.id] = earliestDate
 
                 } catch {
                     didEncounterError = true
@@ -539,6 +957,7 @@ struct HomeView: View {
 
             await MainActor.run {
                 sameDayCoaches = availableCoaches
+                sameDayEarliestLessonDates = earliestDates
                 isLoadingSameDayCoaches = false
 
                 sameDayErrorMessage = didEncounterError
@@ -582,10 +1001,185 @@ struct HomeView: View {
     }
 }
 
+
+private struct HomeBrandTitle: View {
+
+    var body: some View {
+        HStack(spacing: 9) {
+            HomeLogoMark()
+                .frame(width: 30, height: 30)
+
+            Text("Tennis Connect")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.tcBrandGreen)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+    }
+}
+
+private struct HomeLogoMark: View {
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.tcBrandGreen, lineWidth: 1.8)
+
+            Circle()
+                .fill(Color.tcBrandGreen)
+                .frame(width: 5, height: 5)
+                .offset(y: -15)
+
+            Circle()
+                .fill(Color.tcBrandGreen)
+                .frame(width: 5, height: 5)
+                .offset(x: 15)
+
+            Circle()
+                .fill(Color.tcLime)
+                .frame(width: 16, height: 16)
+                .overlay {
+                    HomeTennisBallSeams()
+                        .stroke(
+                            Color.white,
+                            style: StrokeStyle(
+                                lineWidth: 1.1,
+                                lineCap: .round
+                            )
+                        )
+                        .clipShape(Circle())
+                }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct HomeTennisBallSeams: Shape {
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        let w = rect.width
+        let h = rect.height
+
+        path.move(
+            to: CGPoint(
+                x: -w * 0.04,
+                y: h * 0.24
+            )
+        )
+
+        path.addCurve(
+            to: CGPoint(
+                x: w * 1.04,
+                y: h * 0.24
+            ),
+            control1: CGPoint(
+                x: w * 0.27,
+                y: h * 0.39
+            ),
+            control2: CGPoint(
+                x: w * 0.73,
+                y: h * 0.39
+            )
+        )
+
+        path.move(
+            to: CGPoint(
+                x: -w * 0.04,
+                y: h * 0.76
+            )
+        )
+
+        path.addCurve(
+            to: CGPoint(
+                x: w * 1.04,
+                y: h * 0.76
+            ),
+            control1: CGPoint(
+                x: w * 0.27,
+                y: h * 0.61
+            ),
+            control2: CGPoint(
+                x: w * 0.73,
+                y: h * 0.61
+            )
+        )
+
+        return path
+    }
+}
+
+private struct HomeActionCard: View {
+
+    let title: String
+    let subtitle: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+
+            ZStack {
+                Circle()
+                    .fill(Color.tcSoftGreen)
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: systemImage)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(Color.tcBrandGreen)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(Color.tcTextPrimary)
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(Color.tcTextSecondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.tcBrandGreen)
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .frame(height: 74)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                Color.tcBorder,
+                lineWidth: 1
+            )
+        }
+        .shadow(
+            color: Color.black.opacity(0.035),
+            radius: 10,
+            y: 4
+        )
+    }
+}
+
 private struct StudentCoachSearchView: View {
     let coaches: [Coach]
+    let sortMetadata: [String: CoachSortMetadata]
 
     @State private var searchText = ""
+    @State private var sortOption:
+        CoachSearchSortOption = .recommended
     @State private var isDateFilterEnabled = false
     @State private var selectedDate =
         Calendar.current.startOfDay(for: Date())
@@ -593,19 +1187,26 @@ private struct StudentCoachSearchView: View {
     @State private var isCheckingAvailability = false
     @State private var availabilityErrorMessage = ""
 
+    // 「本日レッスン可能」と同じ方式で、
+    // 検索結果エリアが実際に使える幅を測る。
+    @State private var coachGridWidth: CGFloat = 0
+
     private let db = Firestore.firestore()
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    private var coachGridCardWidth: CGFloat {
+        guard coachGridWidth > 12 else {
+            return 0
+        }
+
+        return (coachGridWidth - 12) / 2
+    }
 
     private var filteredCoaches: [Coach] {
         let keyword = searchText.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
 
-        return coaches.filter { coach in
+        let filtered = coaches.filter { coach in
             let matchesKeyword =
                 keyword.isEmpty ||
                 coach.name.localizedCaseInsensitiveContains(keyword) ||
@@ -619,6 +1220,92 @@ private struct StudentCoachSearchView: View {
                 availableCoachIDs.contains(coach.id)
 
             return matchesKeyword && matchesDate
+        }
+
+        let context = dailyRecommendationContext()
+
+        return filtered.sorted { lhs, rhs in
+            switch sortOption {
+            case .recommended:
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .priceLow:
+                if lhs.price != rhs.price {
+                    return lhs.price < rhs.price
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .priceHigh:
+                if lhs.price != rhs.price {
+                    return lhs.price > rhs.price
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .ratingHigh:
+                return ratingComesFirst(
+                    lhs,
+                    rhs,
+                    metadata: sortMetadata,
+                    context: context
+                )
+
+            case .newest:
+                let leftDate = sortMetadata[lhs.id]?.createdAt
+                let rightDate = sortMetadata[rhs.id]?.createdAt
+
+                switch (leftDate, rightDate) {
+                case let (left?, right?):
+                    if left != right {
+                        return left > right
+                    }
+
+                case (_?, nil):
+                    return true
+
+                case (nil, _?):
+                    return false
+
+                case (nil, nil):
+                    break
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+            }
+        }
+    }
+
+    private var coachRows: [[Coach]] {
+        stride(
+            from: 0,
+            to: filteredCoaches.count,
+            by: 2
+        ).map { startIndex in
+            let endIndex = min(
+                startIndex + 2,
+                filteredCoaches.count
+            )
+
+            return Array(
+                filteredCoaches[startIndex..<endIndex]
+            )
         }
     }
 
@@ -661,8 +1348,20 @@ private struct StudentCoachSearchView: View {
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 50)
-                .background(Color(.systemGray6))
-                .cornerRadius(12)
+                .background(Color.white)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                    .stroke(Color.tcBorder, lineWidth: 1)
+                }
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -679,6 +1378,7 @@ private struct StudentCoachSearchView: View {
                             isOn: $isDateFilterEnabled
                         )
                         .labelsHidden()
+                        .tint(Color.tcBrandGreen)
                     }
 
                     if isDateFilterEnabled {
@@ -723,12 +1423,80 @@ private struct StudentCoachSearchView: View {
                     }
                 }
                 .padding()
-                .background(Color(.systemGray6))
-                .cornerRadius(14)
+                .background(Color.white)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 16,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 16,
+                        style: .continuous
+                    )
+                    .stroke(Color.tcBorder, lineWidth: 1)
+                }
 
-                Text(resultTitle)
-                    .font(.title2)
-                    .bold()
+                HStack(alignment: .center, spacing: 10) {
+                    Text(resultTitle)
+                        .font(.title2)
+                        .bold()
+                        .foregroundStyle(Color.tcTextPrimary)
+
+                    Spacer(minLength: 8)
+
+                    Menu {
+                        ForEach(
+                            CoachSearchSortOption.allCases
+                        ) { option in
+                            Button {
+                                sortOption = option
+                            } label: {
+                                HStack {
+                                    Label(
+                                        option.title,
+                                        systemImage:
+                                            option.systemImage
+                                    )
+
+                                    if sortOption == option {
+                                        Image(
+                                            systemName: "checkmark"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(
+                                systemName:
+                                    "arrow.up.arrow.down"
+                            )
+                            .font(
+                                .system(
+                                    size: 12,
+                                    weight: .bold
+                                )
+                            )
+
+                            Text(sortOption.title)
+                                .font(
+                                    .system(
+                                        size: 13,
+                                        weight: .semibold
+                                    )
+                                )
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color.tcBrandGreen)
+                        .padding(.horizontal, 11)
+                        .frame(height: 34)
+                        .background(Color.tcSoftGreen)
+                        .clipShape(Capsule())
+                    }
+                }
 
                 if isCheckingAvailability && isDateFilterEnabled {
                     VStack(spacing: 12) {
@@ -763,20 +1531,72 @@ private struct StudentCoachSearchView: View {
                     .padding(.vertical, 44)
 
                 } else {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(filteredCoaches) { coach in
-                            NavigationLink {
-                                CoachDetailView(coach: coach)
-                            } label: {
-                                CoachGridCard(coach: coach)
+                    LazyVStack(spacing: 16) {
+                        ForEach(
+                            Array(coachRows.enumerated()),
+                            id: \.offset
+                        ) { _, row in
+                            HStack(
+                                alignment: .top,
+                                spacing: 12
+                            ) {
+                                ForEach(row) { coach in
+                                    NavigationLink {
+                                        CoachDetailView(coach: coach)
+                                    } label: {
+                                        CoachGridCard(
+                                            coach: coach,
+                                            metadata:
+                                                sortMetadata[coach.id],
+                                            cardWidth:
+                                                coachGridCardWidth
+                                        )
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .frame(
+                                        width: coachGridCardWidth,
+                                        alignment: .topLeading
+                                    )
+                                }
+
+                                if row.count == 1 {
+                                    Color.clear
+                                        .frame(
+                                            width: coachGridCardWidth
+                                        )
+                                        .accessibilityHidden(true)
+                                }
                             }
-                            .buttonStyle(.plain)
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
+                        }
+                    }
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .leading
+                    )
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear {
+                                    coachGridWidth =
+                                        proxy.size.width
+                                }
+                                .onChange(
+                                    of: proxy.size.width
+                                ) { newWidth in
+                                    coachGridWidth = newWidth
+                                }
                         }
                     }
                 }
             }
             .padding()
         }
+        .background(Color.tcBackground)
         .navigationTitle("コーチを探す")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: isDateFilterEnabled) { isEnabled in
@@ -935,9 +1755,20 @@ private struct SameDayCoachCard: View {
 
     let coach: Coach
     let cardWidth: CGFloat
+    let metadata: CoachSortMetadata?
+    let earliestLessonDate: Date?
 
     private var contentWidth: CGFloat {
         max(cardWidth - 20, 0)
+    }
+
+    private func earliestTimeText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.timeZone =
+            TimeZone(identifier: "Asia/Tokyo") ?? .current
+        formatter.dateFormat = "H:mm"
+        return "最短 " + formatter.string(from: date)
     }
 
     var body: some View {
@@ -954,30 +1785,32 @@ private struct SameDayCoachCard: View {
 
                 case .failure:
                     ZStack {
-                        Color.gray.opacity(0.15)
+                        Color.tcSoftGreen
 
                         Image(
                             systemName:
                                 "person.crop.circle.fill"
                         )
                         .font(.system(size: 45))
-                        .foregroundStyle(.gray)
+                        .foregroundStyle(
+                            Color.tcBrandGreen.opacity(0.55)
+                        )
                     }
 
                 case .empty:
                     ZStack {
-                        Color.gray.opacity(0.15)
+                        Color.tcSoftGreen
+
                         ProgressView()
+                            .tint(Color.tcBrandGreen)
                     }
 
                 @unknown default:
                     ZStack {
-                        Color.gray.opacity(0.15)
+                        Color.tcSoftGreen
                     }
                 }
             }
-            // 成功画像・読み込み中・失敗画像のすべてを
-            // まったく同じ幅に固定する。
             .frame(
                 width: contentWidth,
                 height: 130
@@ -985,14 +1818,29 @@ private struct SameDayCoachCard: View {
             .clipped()
             .clipShape(
                 RoundedRectangle(
-                    cornerRadius: 12
+                    cornerRadius: 13,
+                    style: .continuous
                 )
             )
+            .overlay(alignment: .bottomLeading) {
+                Text("本日可")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.tcBrandGreen)
+                    .clipShape(Capsule())
+                    .padding(8)
+            }
 
             Text(coach.name)
                 .font(.headline)
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.tcTextPrimary)
                 .lineLimit(1)
+                .frame(
+                    width: contentWidth,
+                    alignment: .leading
+                )
                 .frame(
                     width: contentWidth,
                     alignment: .leading
@@ -1003,7 +1851,7 @@ private struct SameDayCoachCard: View {
                     ?? "経歴未登録"
             )
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.tcTextSecondary)
             .lineLimit(1)
             .frame(
                 width: contentWidth,
@@ -1016,8 +1864,53 @@ private struct SameDayCoachCard: View {
                     "mappin.and.ellipse"
             )
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.tcTextSecondary)
             .lineLimit(1)
+            .frame(
+                width: contentWidth,
+                alignment: .leading
+            )
+
+            HStack(spacing: 8) {
+                if let earliestLessonDate {
+                    Label(
+                        earliestTimeText(
+                            earliestLessonDate
+                        ),
+                        systemImage: "clock"
+                    )
+                    .font(
+                        .system(
+                            size: 11,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(Color.tcBrandGreen)
+                }
+
+                if let metadata,
+                   metadata.reviewCount > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+
+                        Text(
+                            String(
+                                format: "%.1f",
+                                metadata.rating
+                            )
+                        )
+                        .font(
+                            .system(
+                                size: 11,
+                                weight: .semibold
+                            )
+                        )
+                        .foregroundStyle(Color.tcTextSecondary)
+                    }
+                }
+            }
             .frame(
                 width: contentWidth,
                 alignment: .leading
@@ -1028,7 +1921,7 @@ private struct SameDayCoachCard: View {
             )
             .font(.subheadline)
             .fontWeight(.bold)
-            .foregroundStyle(.blue)
+            .foregroundStyle(Color.tcBrandGreen)
             .lineLimit(1)
             .minimumScaleFactor(0.75)
             .frame(
@@ -1036,8 +1929,6 @@ private struct SameDayCoachCard: View {
                 alignment: .leading
             )
         }
-        // contentWidth + 左右10pt = cardWidth。
-        // 内部Viewの理想サイズに左右されない。
         .frame(
             width: contentWidth,
             alignment: .leading
@@ -1046,21 +1937,37 @@ private struct SameDayCoachCard: View {
         .background(Color.white)
         .clipShape(
             RoundedRectangle(
-                cornerRadius: 14
+                cornerRadius: 16,
+                style: .continuous
             )
         )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+            .stroke(
+                Color.tcBorder,
+                lineWidth: 1
+            )
+        }
         .shadow(
-            color:
-                Color.black.opacity(0.08),
-            radius: 5,
+            color: Color.black.opacity(0.045),
+            radius: 9,
             x: 0,
-            y: 2
+            y: 4
         )
     }
 }
 
 private struct CoachGridCard: View {
     let coach: Coach
+    let metadata: CoachSortMetadata?
+    let cardWidth: CGFloat
+
+    private var contentWidth: CGFloat {
+        max(cardWidth - 20, 0)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1074,60 +1981,139 @@ private struct CoachGridCard: View {
 
                 case .failure:
                     ZStack {
-                        Color.gray.opacity(0.15)
+                        Color.tcSoftGreen
 
                         Image(systemName: "person.crop.circle.fill")
                             .font(.system(size: 45))
-                            .foregroundColor(.gray)
+                            .foregroundStyle(
+                                Color.tcBrandGreen.opacity(0.55)
+                            )
                     }
 
                 case .empty:
                     ZStack {
-                        Color.gray.opacity(0.15)
+                        Color.tcSoftGreen
+
                         ProgressView()
+                            .tint(Color.tcBrandGreen)
                     }
 
                 @unknown default:
-                    EmptyView()
+                    ZStack {
+                        Color.tcSoftGreen
+                    }
                 }
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 130)
+            .frame(
+                width: contentWidth,
+                height: 130
+            )
             .clipped()
-            .cornerRadius(12)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 13,
+                    style: .continuous
+                )
+            )
 
             Text(coach.name)
                 .font(.headline)
-                .foregroundColor(.primary)
+                .foregroundStyle(Color.tcTextPrimary)
                 .lineLimit(1)
 
             Text(coach.careers.first ?? "経歴未登録")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(Color.tcTextSecondary)
                 .lineLimit(1)
+                .frame(
+                    width: contentWidth,
+                    alignment: .leading
+                )
 
-            Label(coach.area, systemImage: "mappin.and.ellipse")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
+            Label(
+                coach.area,
+                systemImage: "mappin.and.ellipse"
+            )
+            .font(.caption)
+            .foregroundStyle(Color.tcTextSecondary)
+            .lineLimit(1)
+            .frame(
+                width: contentWidth,
+                alignment: .leading
+            )
+
+            Group {
+                if let metadata,
+                   metadata.reviewCount > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.orange)
+
+                        Text(
+                            String(
+                                format: "%.1f",
+                                metadata.rating
+                            )
+                        )
+                        .font(
+                            .system(
+                                size: 12,
+                                weight: .semibold
+                            )
+                        )
+                        .foregroundStyle(Color.tcTextPrimary)
+
+                        Text("(\(metadata.reviewCount))")
+                            .font(.caption2)
+                            .foregroundStyle(Color.tcTextSecondary)
+                    }
+                } else {
+                    Text("レビューなし")
+                        .font(.caption2)
+                        .foregroundStyle(Color.tcTextSecondary)
+                }
+            }
+            .frame(
+                width: contentWidth,
+                alignment: .leading
+            )
 
             Text("¥\(coach.price) / 1時間")
                 .font(.subheadline)
                 .fontWeight(.bold)
-                .foregroundColor(.blue)
+                .foregroundStyle(Color.tcBrandGreen)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(
+                    width: contentWidth,
+                    alignment: .leading
+                )
         }
-        .padding(10)
         .frame(
-            maxWidth: .infinity,
+            width: contentWidth,
             alignment: .leading
         )
+        .padding(10)
         .background(Color.white)
-        .cornerRadius(14)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+            .stroke(Color.tcBorder, lineWidth: 1)
+        }
         .shadow(
-            color: Color.black.opacity(0.08),
-            radius: 5,
+            color: Color.black.opacity(0.045),
+            radius: 9,
             x: 0,
-            y: 2
+            y: 4
         )
     }
 }
@@ -1166,6 +2152,52 @@ struct LessonCard: View {
         .background(Color(.systemGray6))
         .cornerRadius(15)
     }
+}
+
+
+private extension Color {
+
+    static let tcBrandGreen = Color(
+        red: 34 / 255,
+        green: 168 / 255,
+        blue: 102 / 255
+    )
+
+    static let tcLime = Color(
+        red: 151 / 255,
+        green: 207 / 255,
+        blue: 63 / 255
+    )
+
+    static let tcSoftGreen = Color(
+        red: 232 / 255,
+        green: 245 / 255,
+        blue: 236 / 255
+    )
+
+    static let tcBackground = Color(
+        red: 250 / 255,
+        green: 251 / 255,
+        blue: 250 / 255
+    )
+
+    static let tcTextPrimary = Color(
+        red: 34 / 255,
+        green: 34 / 255,
+        blue: 34 / 255
+    )
+
+    static let tcTextSecondary = Color(
+        red: 101 / 255,
+        green: 109 / 255,
+        blue: 104 / 255
+    )
+
+    static let tcBorder = Color(
+        red: 226 / 255,
+        green: 232 / 255,
+        blue: 228 / 255
+    )
 }
 
 #Preview {

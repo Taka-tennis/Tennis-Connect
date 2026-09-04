@@ -30,14 +30,15 @@ struct ChatView: View {
         region: "asia-northeast1"
     )
 
+    private let maxMessageLength = 2000
+
     @State private var message = ""
     @State private var messages: [Message] = []
     @State private var studentDisplayName: String
     @State private var partnerImageURL: String
     @State private var errorMessage = ""
-    @State private var isMessagingAllowed = false
+    @State private var isMessagingAllowed = true
     @State private var isCheckingMessagingStatus = false
-    @State private var messagingRestrictionReason = "checking"
     @State private var listener: ListenerRegistration?
 
     init(coach: Coach) {
@@ -437,27 +438,11 @@ struct ChatView: View {
     }
 
     private var messagingRestrictionText: String {
-        switch messagingRestrictionReason {
-        case "blocked":
-            if currentRole == .student {
-                return "このコーチをブロックしているため、メッセージを送信できません。"
-            }
-
-            return "現在このチャットではメッセージを送信できません。"
-
-        case "payment_required":
-            if currentRole == .student {
-                return "支払いが完了した予約があるコーチとだけメッセージできます。"
-            }
-
-            return "支払いが完了した予約がある生徒とだけメッセージできます。"
-
-        case "checking":
-            return "チャットの利用状態を確認しています。"
-
-        default:
-            return "現在このチャットではメッセージを送信できません。"
+        if currentRole == .student {
+            return "このコーチをブロックしているため、メッセージを送信できません。"
         }
+
+        return "現在このチャットではメッセージを送信できません。"
     }
 
     private var canSendMessage: Bool {
@@ -555,6 +540,12 @@ struct ChatView: View {
             )
 
         guard !trimmedMessage.isEmpty else {
+            return
+        }
+
+        guard trimmedMessage.count <= maxMessageLength else {
+            errorMessage =
+                "メッセージは2000文字以内で入力してください"
             return
         }
 
@@ -702,7 +693,6 @@ struct ChatView: View {
             !coachId.isEmpty
         else {
             isMessagingAllowed = false
-            messagingRestrictionReason = "unknown"
             completion(false)
             return
         }
@@ -728,8 +718,6 @@ struct ChatView: View {
                         // 送信を許可しない。
                         isMessagingAllowed =
                             false
-                        messagingRestrictionReason =
-                            "unknown"
                         errorMessage =
                             "チャットの利用状態を確認できませんでした: "
                             + error.localizedDescription
@@ -753,20 +741,14 @@ struct ChatView: View {
                         as? Bool
                         ?? false
 
-                    messagingRestrictionReason =
-                        data["restrictionReason"]
-                        as? String
-                        ?? (
-                            allowed
-                                ? ""
-                                : "unknown"
-                        )
-
                     isMessagingAllowed =
                         allowed
 
                     if allowed {
-                        errorMessage = ""
+                        if errorMessage
+                            == messagingRestrictionText {
+                            errorMessage = ""
+                        }
                     }
 
                     completion(allowed)

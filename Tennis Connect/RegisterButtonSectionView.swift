@@ -78,6 +78,7 @@ struct RegisterButtonSectionView: View {
                 "introduction": introduction,
                 "rating": 5.0,
                 "reviewCount": 0,
+                "createdAt": FieldValue.serverTimestamp(),
                 "availableTimes": availabilityEntries,
                 "ageGroup": ageGroup
             ],
