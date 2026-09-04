@@ -1103,9 +1103,143 @@ exports.getStudentPublicProfile = onCall(
 
 
 /**
+ * 支払い実績のある予約かどうかを判定します。
+ *
+ * 全額返金済みの予約だけではチャットを解放しません。
+ * 部分返金や返金失敗など、実際の支払いが残っている予約は
+ * 支払い実績として扱います。
+ *
+ * @param {object} reservation 予約データ
+ * @return {boolean} チャット解放対象ならtrue
+ */
+function reservationAllowsChat(reservation) {
+  const status = String(
+    reservation.status || "",
+  );
+  const paymentStatus = String(
+    reservation.paymentStatus || "",
+  );
+  const refundStatus = String(
+    reservation.refundStatus || "",
+  );
+
+  const amountPaid = Number(
+    reservation.amountPaid || 0,
+  );
+  const refundAmount = Number(
+    reservation.refundAmount || 0,
+  );
+
+  const wasPaid =
+    status === "paid" ||
+    paymentStatus === "paid" ||
+    paymentStatus === "partially_refunded" ||
+    paymentStatus === "refund_processing" ||
+    paymentStatus === "refund_failed" ||
+    Boolean(reservation.paidAt) ||
+    amountPaid > 0;
+
+  if (!wasPaid) {
+    return false;
+  }
+
+  if (paymentStatus === "refunded") {
+    return false;
+  }
+
+  const fullyRefunded =
+    refundStatus === "succeeded" &&
+    amountPaid > 0 &&
+    refundAmount >= amountPaid;
+
+  return !fullyRefunded;
+}
+
+
+/**
+ * 現在の予約実績からチャット送信許可を同期します。
+ *
+ * Firestore Rules側はreservationsを検索できないため、
+ * Admin SDKで支払い実績を確認し、短時間だけ有効な
+ * chatPermissionsドキュメントをサーバー側で発行します。
+ *
+ * @param {string} studentId 生徒UID
+ * @param {string} coachId コーチUID
+ * @return {Promise<boolean>} 支払い実績があればtrue
+ */
+async function syncChatPermission(
+  studentId,
+  coachId,
+) {
+  const db = getFirestore();
+
+  const reservationSnapshot = await db
+    .collection("reservations")
+    .where("studentId", "==", studentId)
+    .get();
+
+  const qualifyingReservation =
+    reservationSnapshot.docs.find(
+      (document) => {
+        const reservation =
+          document.data();
+
+        return (
+          String(
+            reservation.coachId || "",
+          ) === coachId &&
+          reservationAllowsChat(
+            reservation,
+          )
+        );
+      },
+    );
+
+  const permissionRef = db
+    .collection("chatPermissions")
+    .doc(`${studentId}__${coachId}`);
+
+  if (!qualifyingReservation) {
+    await permissionRef.delete();
+    return false;
+  }
+
+  // ChatViewは送信直前にもこのFunctionを呼ぶため、
+  // 長期間残る恒久権限ではなく短時間の許可証にします。
+  // キャンセル・全額返金後の古い権限も長く残りません。
+  const validUntil =
+    new Date(
+      Date.now() +
+      2 * 60 * 1000,
+    );
+
+  await permissionRef.set(
+    {
+      studentId,
+      coachId,
+      enabled: true,
+      sourceReservationId:
+        qualifyingReservation.id,
+      validUntil,
+      updatedAt:
+        FieldValue.serverTimestamp(),
+    },
+    {merge: true},
+  );
+
+  return true;
+}
+
+
+/**
  * チャットで新しいメッセージを送信できるか確認します。
- * 呼び出せるのは当該生徒または当該コーチ本人だけです。
- * ブロック理由そのものは返さず、送信可否だけを返します。
+ *
+ * 条件:
+ * - 当該生徒または当該コーチ本人
+ * - 支払い実績のある予約が存在する
+ * - 生徒がコーチをブロックしていない
+ *
+ * 支払い前の利用者にはchatPermissionsを発行しません。
  */
 exports.getChatMessagingStatus = onCall(
   {invoker: "public"},
@@ -1141,14 +1275,37 @@ exports.getChatMessagingStatus = onCall(
       );
     }
 
+    const hasPaidReservation =
+      await syncChatPermission(
+        studentId,
+        coachId,
+      );
+
     const db = getFirestore();
     const blockSnap = await db
       .collection("blocks")
       .doc(`${studentId}__${coachId}`)
       .get();
 
+    const isBlocked = blockSnap.exists;
+    const canSend =
+      hasPaidReservation &&
+      !isBlocked;
+
+    let restrictionReason = "";
+
+    if (isBlocked) {
+      restrictionReason = "blocked";
+    } else if (!hasPaidReservation) {
+      restrictionReason =
+        "payment_required";
+    }
+
     return {
-      canSend: !blockSnap.exists,
+      canSend,
+      hasPaidReservation,
+      isBlocked,
+      restrictionReason,
     };
   },
 );
@@ -1351,6 +1508,62 @@ exports.submitReservationRequest = onCall(
       .filter((time) => time !== "")
       .sort();
 
+    const rawCourtName = request.data?.courtName;
+    const rawCourtAddress = request.data?.courtAddress;
+
+    if (
+      typeof rawCourtName !== "string" ||
+      typeof rawCourtAddress !== "string"
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "レッスン場所を入力してください。",
+      );
+    }
+
+    const normalizeLocationText = (value) => {
+      return value
+        .trim()
+        .replace(/[\r\n\t]+/g, " ")
+        .replace(/\s{2,}/g, " ");
+    };
+
+    const courtName =
+      normalizeLocationText(rawCourtName);
+    const courtAddress =
+      normalizeLocationText(rawCourtAddress);
+
+    if (!courtName) {
+      throw new HttpsError(
+        "invalid-argument",
+        "テニスコート名を入力してください。",
+      );
+    }
+
+    if (!courtAddress) {
+      throw new HttpsError(
+        "invalid-argument",
+        "所在地を入力してください。",
+      );
+    }
+
+    if (Array.from(courtName).length > 100) {
+      throw new HttpsError(
+        "invalid-argument",
+        "テニスコート名は100文字以内で入力してください。",
+      );
+    }
+
+    if (Array.from(courtAddress).length > 200) {
+      throw new HttpsError(
+        "invalid-argument",
+        "所在地は200文字以内で入力してください。",
+      );
+    }
+
+    const court =
+      `${courtName}（${courtAddress}）`;
+
     if (!coachId) {
       throw new HttpsError(
         "invalid-argument",
@@ -1412,6 +1625,33 @@ exports.submitReservationRequest = onCall(
           "連続した時間を選択してください。",
         );
       }
+    }
+
+    // クライアント表示だけに頼らず、予約作成直前にも
+    // 日本時間で開始時刻が未来か必ず検証します。
+    // 古いアプリや改変リクエストから過去枠が送られても拒否します。
+    const requestedLessonStart =
+      new Date(
+        `${date}T${selectedTimes[0]}:00+09:00`,
+      );
+
+    if (
+      Number.isNaN(requestedLessonStart.getTime())
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約日時が正しくありません。",
+      );
+    }
+
+    if (
+      requestedLessonStart.getTime() <= Date.now()
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "開始時刻を過ぎた時間は予約できません。" +
+        "空き時間を選び直してください。",
+      );
     }
 
     const db = getFirestore();
@@ -1548,6 +1788,9 @@ exports.submitReservationRequest = onCall(
             durationHours: selectedTimes.length,
             pricePerHour,
             totalPrice,
+            courtName,
+            courtAddress,
+            court,
             status: "pending",
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
@@ -1574,7 +1817,8 @@ exports.submitReservationRequest = onCall(
             title: "新しい予約申請が届きました",
             message:
               `${displayDate} ${timeRange}の予約申請が` +
-              "届きました。内容を確認してください。",
+              `届きました。場所：${courtName}。` +
+              "内容を確認してください。",
             date,
             times: selectedTimes,
             isRead: false,
@@ -2792,39 +3036,60 @@ exports.createCheckoutSession = onCall(
       );
     }
 
-    const coachSnap = await db
-      .collection("coaches")
-      .doc(reservation.coachId)
-      .get();
-
-    if (!coachSnap.exists) {
-      throw new HttpsError(
-        "not-found",
-        "コーチ情報が見つかりません。",
-      );
-    }
-
-    const coach = coachSnap.data();
-    const pricePerHour = Number(coach.price);
-
     const selectedTimes =
       Array.isArray(reservation.times) &&
       reservation.times.length > 0 ?
-        reservation.times :
+        reservation.times.map((time) => String(time)) :
         typeof reservation.time === "string" &&
         reservation.time !== "" ?
-          [reservation.time] : [];
+          [String(reservation.time)] : [];
 
     const lessonHours = selectedTimes.length;
+
+    // 料金は「予約申請した瞬間」にreservationへ保存した値だけを使います。
+    // 支払い時のcoaches.priceは参照しません。
+    // これにより、申請後にコーチが料金を変更しても
+    // 既存予約の請求額は変わりません。
+    const pricePerHour = Number(
+      reservation.pricePerHour,
+    );
+    const totalPrice = Number(
+      reservation.totalPrice,
+    );
 
     if (
       !Number.isInteger(pricePerHour) ||
       pricePerHour <= 0 ||
+      !Number.isInteger(totalPrice) ||
+      totalPrice <= 0 ||
       lessonHours <= 0
     ) {
       throw new HttpsError(
         "failed-precondition",
-        "料金または予約時間が正しくありません。",
+        "予約時の料金情報を確認できません。" +
+        "この予約は支払いを開始できません。",
+      );
+    }
+
+    const calculatedTotal =
+      pricePerHour * lessonHours;
+
+    if (totalPrice !== calculatedTotal) {
+      logger.error(
+        "予約の固定料金と時間数が一致しません。",
+        {
+          reservationId,
+          pricePerHour,
+          totalPrice,
+          lessonHours,
+          calculatedTotal,
+        },
+      );
+
+      throw new HttpsError(
+        "failed-precondition",
+        "予約料金の整合性を確認できません。" +
+        "運営へお問い合わせください。",
       );
     }
 
@@ -2845,9 +3110,35 @@ exports.createCheckoutSession = onCall(
         }
 
         if (oldSession.status === "open" && oldSession.url) {
-          return {
-            checkoutUrl: oldSession.url,
-          };
+          const oldSessionAmount =
+            Number(oldSession.amount_total || 0);
+          const oldSessionCurrency =
+            String(oldSession.currency || "")
+              .toLowerCase();
+
+          if (
+            oldSessionAmount === totalPrice &&
+            oldSessionCurrency === "jpy"
+          ) {
+            return {
+              checkoutUrl: oldSession.url,
+            };
+          }
+
+          logger.warn(
+            "既存Checkout Sessionの金額が予約固定額と一致しないため失効させます。",
+            {
+              reservationId,
+              sessionId: oldSession.id,
+              oldSessionAmount,
+              lockedTotalPrice: totalPrice,
+              oldSessionCurrency,
+            },
+          );
+
+          await stripe.checkout.sessions.expire(
+            oldSession.id,
+          );
         }
 
         if (oldSession.status === "complete") {
@@ -2885,6 +3176,8 @@ exports.createCheckoutSession = onCall(
       studentId: request.auth.uid,
       coachId: reservation.coachId,
       lessonHours: String(lessonHours),
+      pricePerHour: String(pricePerHour),
+      totalPrice: String(totalPrice),
     };
 
     const session = await stripe.checkout.sessions.create({
@@ -2898,7 +3191,7 @@ exports.createCheckoutSession = onCall(
             product_data: {
               name:
                 `テニスレッスン（${
-                  coach.name || "コーチ"
+                  reservation.coachName || "コーチ"
                 }）`,
               description:
                 `${reservation.date || ""} ` +
@@ -2923,8 +3216,6 @@ exports.createCheckoutSession = onCall(
       {
         stripeCheckoutSessionId: session.id,
         paymentStatus: "checkout_created",
-        pricePerHour,
-        totalPrice: pricePerHour * lessonHours,
         updatedAt: FieldValue.serverTimestamp(),
       },
       {merge: true},
@@ -6199,67 +6490,13 @@ exports.requestCoachPayout = onCall(
 );
 
 /**
- * 退会しようとしているユーザーがコーチとして持つ売上について、
- * 出金完了前ならアカウント削除を止めます。
- *
- * @param {object} reservation 予約データ
- * @param {string} role 予約における退会ユーザーの役割
- * @return {string} 削除を止める理由。問題なければ空文字
- */
-function coachPayoutDeletionBlockReason(reservation, role) {
-  if (!["coach", "student_and_coach"].includes(role)) {
-    return "";
-  }
-
-  const coachPayoutStatus = String(
-    reservation.coachPayoutStatus || "",
-  );
-  const coachPayoutRequestId = String(
-    reservation.coachPayoutRequestId || "",
-  ).trim();
-
-  if (coachPayoutStatus === "paid") {
-    return "";
-  }
-
-  if (
-    coachPayoutRequestId ||
-    [
-      "claimed",
-      "transferred",
-      "payout_pending",
-      "payout_failed",
-    ].includes(coachPayoutStatus)
-  ) {
-    return "出金処理中または再処理が必要な売上があります。";
-  }
-
-  const wallet = coachWalletAmountsForReservation(reservation);
-
-  if (wallet.coachAmount <= 0) {
-    return "";
-  }
-
-  if (wallet.state === "available") {
-    return "未出金の売上があります。退会前に出金してください。";
-  }
-
-  if (wallet.state === "pending") {
-    return "出金可能になる前の売上があります。";
-  }
-
-  return "";
-}
-
-/**
  * アカウント削除前に、未処理の予約が残っていないか確認します。
  * この関数自体はデータ削除を行いません。
  *
  * @param {object} reservation 予約データ
- * @param {string} role 予約における退会ユーザーの役割
  * @return {string} 削除を止める理由。問題なければ空文字
  */
-function accountDeletionBlockReason(reservation, role) {
+function accountDeletionBlockReason(reservation) {
   const status = String(reservation.status || "");
   const paymentStatus = String(reservation.paymentStatus || "");
   const refundStatus = String(reservation.refundStatus || "");
@@ -6279,27 +6516,6 @@ function accountDeletionBlockReason(reservation, role) {
     return "返金処理が完了していない予約があります。";
   }
 
-  if (status === "paid" || paymentStatus === "paid") {
-    const lessonEndDate = lessonEndDateFromReservation(reservation);
-
-    if (!lessonEndDate) {
-      return "予約日時を確認できない支払い済み予約があります。";
-    }
-
-    if (lessonEndDate > new Date()) {
-      return "これから受講する支払い済み予約があります。";
-    }
-  }
-
-  const payoutReason = coachPayoutDeletionBlockReason(
-    reservation,
-    role,
-  );
-
-  if (payoutReason) {
-    return payoutReason;
-  }
-
   if (
     [
       "coach_cancelled",
@@ -6312,68 +6528,103 @@ function accountDeletionBlockReason(reservation, role) {
     return "";
   }
 
-  return "";
-}
+  if (status === "paid" || paymentStatus === "paid") {
+    const lessonEndDate = lessonEndDateFromReservation(reservation);
 
-/**
- * 予約とは別に保存されるConnect出金状態を確認し、
- * 進行中・再処理待ちの出金があればアカウント削除を止めます。
- *
- * @param {string} uid Firebase Authentication UID
- * @param {FirebaseFirestore.Firestore} db Firestore
- * @return {Promise<object|null>} 出金ブロッカー。問題なければnull
- */
-async function getCoachPayoutAccountDeletionBlocker(uid, db) {
-  const connectRef = db
-    .collection("stripeConnectAccounts")
-    .doc(uid);
-  const connectSnap = await connectRef.get();
+    if (!lessonEndDate) {
+      return "予約日時を確認できない支払い済み予約があります。";
+    }
 
-  if (!connectSnap.exists) {
-    return null;
-  }
-
-  const connectData = connectSnap.data() || {};
-  const activePayoutRequestId = String(
-    connectData.activePayoutRequestId || "",
-  ).trim();
-  const retryPayoutRequestId = String(
-    connectData.retryPayoutRequestId || "",
-  ).trim();
-
-  let reason = "";
-
-  if (
-    Boolean(connectData.payoutInProgress) ||
-    activePayoutRequestId
-  ) {
-    reason = "銀行口座への出金処理が完了していません。";
-  } else if (retryPayoutRequestId) {
-    reason = "再処理が必要な出金があります。";
-  } else {
-    const recoverable =
-      await findRecoverableCoachPayoutRequest(connectRef);
-
-    if (recoverable) {
-      reason = "再処理が必要な出金があります。";
+    if (lessonEndDate > new Date()) {
+      return "これから受講する支払い済み予約があります。";
     }
   }
 
-  if (!reason) {
-    return null;
+  return "";
+}
+
+
+/**
+ * コーチとして受け取るべき売上が残っている場合、
+ * アカウント削除を止める理由を返します。
+ *
+ * 売上計算は通常のウォレット表示と同じ
+ * coachWalletAmountsForReservation() を使うため、
+ * 手数料・返金後金額・24時間保留条件と整合させます。
+ *
+ * @param {object} reservation 予約データ
+ * @param {Date} now 現在日時
+ * @return {string} 削除を止める理由。問題なければ空文字
+ */
+function accountDeletionCoachPayoutBlockReason(
+  reservation,
+  now = new Date(),
+) {
+  const coachPayoutStatus = String(
+    reservation.coachPayoutStatus || "",
+  );
+  const coachPayoutRequestId = String(
+    reservation.coachPayoutRequestId || "",
+  ).trim();
+
+  // 銀行口座への出金完了まで確認できている売上は問題ありません。
+  if (coachPayoutStatus === "paid") {
+    return "";
   }
 
-  return {
-    type: "coach_payout",
-    reservationId: "",
-    role: "coach",
-    reason,
-    status: "payout_blocked",
-    paymentStatus: "",
-    refundStatus: "",
-    date: "",
-    times: [],
-  };
+  const wallet = coachWalletAmountsForReservation(
+    reservation,
+    now,
+  );
+
+  // 全額返金済み等でコーチ受取額が0円なら、
+  // 売上を理由に退会を止める必要はありません。
+  if (wallet.coachAmount <= 0) {
+    return "";
+  }
+
+  if (coachPayoutStatus === "payout_failed") {
+    return (
+      "銀行口座への出金に失敗した売上があります。" +
+      "売上管理から再出金を完了してからアカウントを削除してください。"
+    );
+  }
+
+  if (
+    [
+      "claimed",
+      "transferred",
+      "payout_pending",
+    ].includes(coachPayoutStatus) ||
+    coachPayoutRequestId
+  ) {
+    return (
+      "出金処理中の売上があります。" +
+      "銀行口座への出金完了後にアカウントを削除してください。"
+    );
+  }
+
+  if (wallet.state === "available") {
+    return (
+      "未出金の売上があります。" +
+      "売上管理から出金を完了してからアカウントを削除してください。"
+    );
+  }
+
+  if (wallet.state === "pending") {
+    return (
+      "まだ出金可能になっていない売上があります。" +
+      "出金可能になった後、銀行口座への出金を完了してから" +
+      "アカウントを削除してください。"
+    );
+  }
+
+  // 受取額が残っているのに既知の状態へ分類できない場合は、
+  // 誤って退会を許可せず安全側に倒します。
+  return (
+    "受取処理が完了していないコーチ売上があります。" +
+    "売上管理をご確認ください。"
+  );
 }
 
 /**
@@ -6416,13 +6667,26 @@ async function getAccountDeletionBlockers(uid, db) {
   }
 
   const blockers = [];
+  const now = new Date();
 
   for (const [reservationId, entry] of reservationMap.entries()) {
     const reservation = entry.document.data();
-    const reason = accountDeletionBlockReason(
-      reservation,
-      entry.role,
-    );
+    let reason = accountDeletionBlockReason(reservation);
+
+    // 予約自体に削除阻止理由がなくても、
+    // コーチとして未受取の売上が残っていれば退会を止めます。
+    if (
+      !reason &&
+      (
+        entry.role === "coach" ||
+        entry.role === "student_and_coach"
+      )
+    ) {
+      reason = accountDeletionCoachPayoutBlockReason(
+        reservation,
+        now,
+      );
+    }
 
     if (!reason) {
       continue;
@@ -6445,11 +6709,58 @@ async function getAccountDeletionBlockers(uid, db) {
     });
   }
 
-  const payoutBlocker =
-    await getCoachPayoutAccountDeletionBlocker(uid, db);
+  // 予約側の状態に加え、Connect全体で進行中・再試行待ちの
+  // Payoutが残っていないかも防御的に確認します。
+  const connectSnap = await db
+    .collection("stripeConnectAccounts")
+    .doc(uid)
+    .get();
 
-  if (payoutBlocker) {
-    blockers.push(payoutBlocker);
+  if (connectSnap.exists) {
+    const connect = connectSnap.data() || {};
+    const payoutInProgress = Boolean(
+      connect.payoutInProgress,
+    );
+    const activePayoutRequestId = String(
+      connect.activePayoutRequestId || "",
+    ).trim();
+    const retryPayoutRequestId = String(
+      connect.retryPayoutRequestId || "",
+    ).trim();
+
+    let connectReason = "";
+
+    if (retryPayoutRequestId) {
+      connectReason =
+        "再出金が必要な売上があります。" +
+        "売上管理から出金を完了してからアカウントを削除してください。";
+    } else if (
+      payoutInProgress ||
+      activePayoutRequestId
+    ) {
+      connectReason =
+        "出金処理中の売上があります。" +
+        "銀行口座への出金完了後にアカウントを削除してください。";
+    }
+
+    if (
+      connectReason &&
+      !blockers.some(
+        (item) => item.reason === connectReason,
+      )
+    ) {
+      blockers.push({
+        reservationId: "",
+        role: "coach",
+        reason: connectReason,
+        status: "",
+        paymentStatus: "",
+        refundStatus: "",
+        coachPayoutStatus: "",
+        date: "",
+        times: [],
+      });
+    }
   }
 
   return blockers;
@@ -6718,29 +7029,66 @@ async function anonymizeReservationsForDeletedAccount(uid, db) {
 }
 
 /**
- * 固定パスのコーチプロフィール画像を削除します。
- * ファイルが存在しない場合は正常扱いにします。
+ * 退会するユーザーのFirebase Storage上のプロフィール関連データを削除します。
+ *
+ * 対象:
+ * - coachImages/{uid}.jpg
+ * - studentImages/{uid}.jpg
+ * - coachVideos/{uid}/ 配下の全動画
+ *
+ * 存在しないファイルは正常扱いにします。
  *
  * @param {string} uid Firebase Authentication UID
  * @return {Promise<void>}
  */
-async function deleteCoachProfileImage(uid) {
-  const file = getStorage()
-    .bucket()
-    .file(`coachImages/${uid}.jpg`);
+async function deleteUserStorageAssets(uid) {
+  const bucket = getStorage().bucket();
 
-  try {
-    await file.delete();
-  } catch (error) {
-    const statusCode = Number(
-      error.code || error.statusCode || 0,
-    );
+  const deleteIfExists = async (path) => {
+    const file = bucket.file(path);
 
-    if (statusCode === 404) {
-      return;
+    try {
+      await file.delete();
+    } catch (error) {
+      const statusCode = Number(
+        error.code || error.statusCode || 0,
+      );
+
+      if (statusCode === 404) {
+        return;
+      }
+
+      throw error;
     }
+  };
 
-    throw error;
+  await Promise.all([
+    deleteIfExists(`coachImages/${uid}.jpg`),
+    deleteIfExists(`studentImages/${uid}.jpg`),
+  ]);
+
+  const [videoFiles] = await bucket.getFiles({
+    prefix: `coachVideos/${uid}/`,
+  });
+
+  if (videoFiles.length > 0) {
+    await Promise.all(
+      videoFiles.map(async (file) => {
+        try {
+          await file.delete();
+        } catch (error) {
+          const statusCode = Number(
+            error.code || error.statusCode || 0,
+          );
+
+          if (statusCode === 404) {
+            return;
+          }
+
+          throw error;
+        }
+      }),
+    );
   }
 }
 
@@ -6837,6 +7185,14 @@ exports.deleteAccount = onCall(
               .where("coachId", "==", uid),
             db.collection("inquiries")
               .where("userId", "==", uid),
+            db.collection("blocks")
+              .where("blockerId", "==", uid),
+            db.collection("blocks")
+              .where("blockedUserId", "==", uid),
+            db.collection("chatPermissions")
+              .where("studentId", "==", uid),
+            db.collection("chatPermissions")
+              .where("coachId", "==", uid),
           ],
           db,
         );
@@ -6854,7 +7210,7 @@ exports.deleteAccount = onCall(
         db.collection("coaches").doc(uid),
       );
 
-      await deleteCoachProfileImage(uid);
+      await deleteUserStorageAssets(uid);
 
       await getAuth().deleteUser(uid);
 

@@ -5,6 +5,157 @@ import FirebaseAuth
 import FirebaseFirestore
 import FirebaseFunctions
 
+private enum CoachUI {
+    static let brandGreen = Color(
+        red: 42 / 255,
+        green: 174 / 255,
+        blue: 102 / 255
+    )
+
+    static let lime = Color(
+        red: 151 / 255,
+        green: 207 / 255,
+        blue: 63 / 255
+    )
+
+    static let softGreen = Color(
+        red: 232 / 255,
+        green: 245 / 255,
+        blue: 236 / 255
+    )
+
+    static let background = Color(
+        red: 248 / 255,
+        green: 250 / 255,
+        blue: 249 / 255
+    )
+
+    static let textPrimary = Color(
+        red: 34 / 255,
+        green: 34 / 255,
+        blue: 34 / 255
+    )
+
+    static let textSecondary = Color(
+        red: 102 / 255,
+        green: 110 / 255,
+        blue: 105 / 255
+    )
+
+    static let border = Color.black.opacity(0.08)
+}
+
+private struct CoachBrandMark: View {
+
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(
+                    CoachUI.brandGreen,
+                    lineWidth: max(1.5, size * 0.07)
+                )
+                .frame(width: size, height: size)
+
+            Circle()
+                .fill(CoachUI.brandGreen)
+                .frame(
+                    width: size * 0.16,
+                    height: size * 0.16
+                )
+                .offset(y: -size * 0.5)
+
+            Circle()
+                .fill(CoachUI.brandGreen)
+                .frame(
+                    width: size * 0.16,
+                    height: size * 0.16
+                )
+                .offset(x: size * 0.5)
+
+            Circle()
+                .fill(CoachUI.lime)
+                .frame(
+                    width: size * 0.48,
+                    height: size * 0.48
+                )
+                .overlay {
+                    CoachMiniTennisSeams()
+                        .stroke(
+                            .white,
+                            style: StrokeStyle(
+                                lineWidth: max(1.1, size * 0.055),
+                                lineCap: .round
+                            )
+                        )
+                        .clipShape(Circle())
+                }
+        }
+        .frame(
+            width: size * 1.18,
+            height: size * 1.18
+        )
+        .accessibilityHidden(true)
+    }
+}
+
+private struct CoachMiniTennisSeams: Shape {
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        let w = rect.width
+        let h = rect.height
+
+        path.move(
+            to: CGPoint(
+                x: -w * 0.04,
+                y: h * 0.25
+            )
+        )
+
+        path.addCurve(
+            to: CGPoint(
+                x: w * 1.04,
+                y: h * 0.25
+            ),
+            control1: CGPoint(
+                x: w * 0.27,
+                y: h * 0.38
+            ),
+            control2: CGPoint(
+                x: w * 0.73,
+                y: h * 0.38
+            )
+        )
+
+        path.move(
+            to: CGPoint(
+                x: -w * 0.04,
+                y: h * 0.75
+            )
+        )
+
+        path.addCurve(
+            to: CGPoint(
+                x: w * 1.04,
+                y: h * 0.75
+            ),
+            control1: CGPoint(
+                x: w * 0.27,
+                y: h * 0.62
+            ),
+            control2: CGPoint(
+                x: w * 0.73,
+                y: h * 0.62
+            )
+        )
+
+        return path
+    }
+}
+
 struct CoachHomeView: View {
 
     @State private var selectedTab = 0
@@ -53,9 +204,40 @@ struct CoachHomeView: View {
                 }
                 .tag(4)
         }
-        .navigationTitle(tabTitle)
+        .tint(CoachUI.brandGreen)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                if selectedTab == 0 {
+                    HStack(spacing: 8) {
+                        CoachBrandMark(size: 24)
+
+                        Text("Tennis Connect")
+                            .font(
+                                .system(
+                                    size: 18,
+                                    weight: .bold,
+                                    design: .rounded
+                                )
+                            )
+                            .foregroundStyle(
+                                CoachUI.brandGreen
+                            )
+                    }
+                } else {
+                    Text(tabTitle)
+                        .font(
+                            .system(
+                                size: 17,
+                                weight: .semibold
+                            )
+                        )
+                        .foregroundStyle(
+                            CoachUI.textPrimary
+                        )
+                }
+            }
+
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink {
                     NotificationView(audience: .coach)
@@ -65,6 +247,18 @@ struct CoachHomeView: View {
                             ? "bell.fill"
                             : "bell"
                     )
+                    .font(
+                        .system(
+                            size: 16,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        CoachUI.brandGreen
+                    )
+                    .frame(width: 34, height: 34)
+                    .background(CoachUI.softGreen)
+                    .clipShape(Circle())
                     .overlay(alignment: .topTrailing) {
                         if unreadNotificationCount > 0 {
                             Text(
@@ -78,7 +272,7 @@ struct CoachHomeView: View {
                             .frame(minWidth: 16, minHeight: 16)
                             .background(Color.red)
                             .clipShape(Capsule())
-                            .offset(x: 8, y: -8)
+                            .offset(x: 5, y: -5)
                         }
                     }
                 }
@@ -247,107 +441,215 @@ private struct CoachTabDashboardView: View {
     ]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("🎾 コーチホーム")
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
+        ZStack {
+            CoachUI.background
+                .ignoresSafeArea()
 
-                sameDayAvailabilityCard
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
 
-                LazyVGrid(columns: columns, spacing: 12) {
-                    Button {
-                        selectedTab = 1
-                    } label: {
-                        DashboardSummaryCard(
-                            title: "承認待ち",
-                            value: "\(pendingCount)件",
-                            icon: "clock.fill",
-                            color: .orange
-                        )
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("コーチダッシュボード")
+                            .font(.title2)
+                            .fontWeight(.bold)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+
+                        Text("今日の予定と売上をまとめて確認できます")
+                            .font(.subheadline)
+                            .foregroundStyle(
+                                CoachUI.textSecondary
+                            )
                     }
-                    .buttonStyle(.plain)
 
-                    Button {
-                        selectedTab = 1
-                    } label: {
-                        DashboardSummaryCard(
-                            title: "今日のレッスン",
-                            value: "\(todayLessonCount)件",
-                            icon: "figure.tennis",
-                            color: .green
-                        )
+                    sameDayAvailabilityCard
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("今日の状況")
+                            .font(.headline)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+
+                        LazyVGrid(
+                            columns: columns,
+                            spacing: 12
+                        ) {
+                            Button {
+                                selectedTab = 1
+                            } label: {
+                                DashboardSummaryCard(
+                                    title: "承認待ち",
+                                    value: "\(pendingCount)件",
+                                    icon: "clock",
+                                    color: .orange
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                selectedTab = 1
+                            } label: {
+                                DashboardSummaryCard(
+                                    title: "今日のレッスン",
+                                    value: "\(todayLessonCount)件",
+                                    icon: "figure.tennis",
+                                    color: CoachUI.brandGreen
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                selectedTab = 3
+                            } label: {
+                                DashboardSummaryCard(
+                                    title: "未読チャット",
+                                    value: "\(unreadChatCount)件",
+                                    icon: "message",
+                                    color: CoachUI.brandGreen
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            NavigationLink {
+                                CoachSalesView()
+                            } label: {
+                                DashboardSummaryCard(
+                                    title: "今月の売上",
+                                    value:
+                                        "¥\(monthlySales.formatted())",
+                                    icon: "chart.bar",
+                                    color: CoachUI.brandGreen
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
 
-                    Button {
-                        selectedTab = 3
-                    } label: {
-                        DashboardSummaryCard(
-                            title: "未読チャット",
-                            value: "\(unreadChatCount)件",
-                            icon: "message.fill",
-                            color: .blue
-                        )
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("クイックアクション")
+                            .font(.headline)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+
+                        LazyVGrid(
+                            columns: columns,
+                            spacing: 12
+                        ) {
+                            Button {
+                                selectedTab = 1
+                            } label: {
+                                DashboardActionCard(
+                                    title: "予約一覧",
+                                    detail:
+                                        pendingCount > 0
+                                            ? "対応待ち \(pendingCount)件"
+                                            : "予約を確認",
+                                    icon: "calendar"
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                selectedTab = 2
+                            } label: {
+                                DashboardActionCard(
+                                    title: "空き日程",
+                                    detail: "受付枠を設定",
+                                    icon: "calendar.badge.plus"
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                selectedTab = 4
+                            } label: {
+                                DashboardActionCard(
+                                    title: "プロフィール",
+                                    detail: "情報を確認・編集",
+                                    icon: "person"
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            NavigationLink {
+                                CoachSalesView()
+                            } label: {
+                                DashboardActionCard(
+                                    title: "売上確認",
+                                    detail: "売上・返金を確認",
+                                    icon: "chart.bar"
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
 
-                    NavigationLink {
-                        CoachSalesView()
-                    } label: {
-                        DashboardSummaryCard(
-                            title: "今月の売上",
-                            value: "¥\(monthlySales.formatted())",
-                            icon: "yensign.circle.fill",
-                            color: .orange
-                        )
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Image(
+                                systemName:
+                                    "calendar.badge.clock"
+                            )
+                            .font(
+                                .system(
+                                    size: 16,
+                                    weight: .semibold
+                                )
+                            )
+                            .foregroundStyle(
+                                CoachUI.brandGreen
+                            )
+
+                            Text("次のレッスン")
+                                .font(.headline)
+                                .foregroundStyle(
+                                    CoachUI.textPrimary
+                                )
+                        }
+
+                        Text(nextLesson)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(
+                                CoachUI.textPrimary
+                            )
+
+                        Text("予定の詳細は予約一覧から確認できます")
+                            .font(.caption)
+                            .foregroundStyle(
+                                CoachUI.textSecondary
+                            )
                     }
-                    .buttonStyle(.plain)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("次のレッスン", systemImage: "calendar.badge.clock")
-                        .font(.headline)
-
-                    Text(nextLesson)
-                        .font(.title3)
-                        .fontWeight(.semibold)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-                .background(Color.blue.opacity(0.08))
-                .cornerRadius(16)
-
-                Text("クイックメニュー")
-                    .font(.headline)
-
-                Button {
-                    selectedTab = 1
-                } label: {
-                    DashboardActionRow(
-                        title: "予約を確認する",
-                        detail: pendingCount > 0
-                            ? "対応待ちが\(pendingCount)件あります"
-                            : "予約一覧を開く",
-                        icon: "list.bullet.rectangle",
-                        color: .green
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .leading
                     )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    selectedTab = 2
-                } label: {
-                    DashboardActionRow(
-                        title: "空き日程を管理する",
-                        detail: "空き時間の追加・変更",
-                        icon: "calendar.badge.plus",
-                        color: .blue
+                    .padding(16)
+                    .background(Color.white)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 18,
+                            style: .continuous
+                        )
                     )
+                    .overlay {
+                        RoundedRectangle(
+                            cornerRadius: 18,
+                            style: .continuous
+                        )
+                        .stroke(
+                            CoachUI.border,
+                            lineWidth: 1
+                        )
+                    }
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 28)
             }
-            .padding()
         }
         .onAppear {
             startReservationListener()
@@ -370,53 +672,103 @@ private struct CoachTabDashboardView: View {
     }
 
     private var sameDayAvailabilityCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(
-                    systemName: isSameDayAvailable
-                        ? "bolt.circle.fill"
-                        : "bolt.circle"
-                )
-                .font(.title2)
-                .foregroundStyle(
-                    isSameDayAvailable ? .green : .secondary
-                )
+        VStack(alignment: .leading, spacing: 14) {
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(
-                        isSameDayAvailable
-                            ? "本日レッスン可能として掲載中"
-                            : "本日のレッスン受付"
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            isSameDayAvailable
+                                ? CoachUI.softGreen
+                                : Color(.systemGray6)
+                        )
+                        .frame(width: 42, height: 42)
+
+                    Image(
+                        systemName:
+                            isSameDayAvailable
+                                ? "bolt.fill"
+                                : "bolt"
                     )
-                    .font(.headline)
+                    .font(
+                        .system(
+                            size: 17,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        isSameDayAvailable
+                            ? CoachUI.brandGreen
+                            : CoachUI.textSecondary
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("本日のレッスン受付")
+                        .font(.headline)
+                        .foregroundStyle(
+                            CoachUI.textPrimary
+                        )
 
                     if isLoadingSameDayStatus {
                         Text("本日の空き枠を確認中…")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(
+                                CoachUI.textSecondary
+                            )
                     } else {
-                        Text("現在の予約可能な空き枠：\(todayAvailableTimeCount)件")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            "予約可能な空き枠：\(todayAvailableTimeCount)件"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(
+                            CoachUI.textSecondary
+                        )
                     }
                 }
 
                 Spacer()
+
+                Text(
+                    isSameDayAvailable
+                        ? "受付中"
+                        : "停止中"
+                )
+                .font(
+                    .system(
+                        size: 12,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(
+                    isSameDayAvailable
+                        ? CoachUI.brandGreen
+                        : CoachUI.textSecondary
+                )
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(
+                    isSameDayAvailable
+                        ? CoachUI.softGreen
+                        : Color(.systemGray6)
+                )
+                .clipShape(Capsule())
             }
 
             Button {
                 toggleSameDayAvailability()
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Spacer()
 
                     if isUpdatingSameDayStatus {
                         ProgressView()
                     } else {
                         Image(
-                            systemName: isSameDayAvailable
-                                ? "stop.circle.fill"
-                                : "bolt.fill"
+                            systemName:
+                                isSameDayAvailable
+                                    ? "stop.circle"
+                                    : "bolt.fill"
                         )
 
                         Text(
@@ -429,13 +781,50 @@ private struct CoachTabDashboardView: View {
 
                     Spacer()
                 }
+                .frame(height: 46)
+                .foregroundStyle(
+                    isSameDayAvailable
+                        ? Color.red
+                        : Color.white
+                )
+                .background(
+                    isSameDayAvailable
+                        ? Color.white
+                        : CoachUI.brandGreen
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                    .stroke(
+                        isSameDayAvailable
+                            ? Color.red.opacity(0.45)
+                            : Color.clear,
+                        lineWidth: 1
+                    )
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(isSameDayAvailable ? .red : .green)
+            .buttonStyle(.plain)
             .disabled(
                 isLoadingSameDayStatus ||
                 isUpdatingSameDayStatus ||
-                (!isSameDayAvailable && todayAvailableTimeCount == 0)
+                (!isSameDayAvailable &&
+                    todayAvailableTimeCount == 0)
+            )
+            .opacity(
+                isLoadingSameDayStatus ||
+                isUpdatingSameDayStatus ||
+                (!isSameDayAvailable &&
+                    todayAvailableTimeCount == 0)
+                    ? 0.55
+                    : 1
             )
 
             if todayAvailableTimeCount == 0 &&
@@ -443,12 +832,21 @@ private struct CoachTabDashboardView: View {
                 Button {
                     selectedTab = 2
                 } label: {
-                    Label(
-                        "本日の空き時間を設定する",
-                        systemImage: "calendar.badge.plus"
-                    )
+                    HStack(spacing: 7) {
+                        Image(
+                            systemName:
+                                "calendar.badge.plus"
+                        )
+
+                        Text("本日の空き時間を設定する")
+                            .fontWeight(.semibold)
+                    }
                     .font(.subheadline)
+                    .foregroundStyle(
+                        CoachUI.brandGreen
+                    )
                 }
+                .buttonStyle(.plain)
             }
 
             if !sameDayErrorMessage.isEmpty {
@@ -457,13 +855,26 @@ private struct CoachTabDashboardView: View {
                     .foregroundStyle(.red)
             }
         }
-        .padding()
-        .background(
-            isSameDayAvailable
-                ? Color.green.opacity(0.10)
-                : Color(.systemGray6)
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
         )
-        .cornerRadius(16)
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                isSameDayAvailable
+                    ? CoachUI.brandGreen.opacity(0.22)
+                    : CoachUI.border,
+                lineWidth: 1
+            )
+        }
     }
 
     private func loadSameDayAvailabilityState() {
@@ -860,57 +1271,149 @@ private struct DashboardSummaryCard: View {
     let color: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(color)
+        VStack(alignment: .leading, spacing: 12) {
+
+            HStack {
+                ZStack {
+                    Circle()
+                        .fill(color.opacity(0.10))
+                        .frame(width: 36, height: 36)
+
+                    Image(systemName: icon)
+                        .font(
+                            .system(
+                                size: 15,
+                                weight: .semibold
+                            )
+                        )
+                        .foregroundStyle(color)
+                }
+
+                Spacer()
+            }
 
             Text(value)
-                .font(.title2)
-                .fontWeight(.bold)
+                .font(
+                    .system(
+                        size: 22,
+                        weight: .bold,
+                        design: .rounded
+                    )
+                )
+                .foregroundStyle(CoachUI.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
 
             Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(
+                    .system(
+                        size: 12,
+                        weight: .medium
+                    )
+                )
+                .foregroundStyle(CoachUI.textSecondary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(16)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: 112,
+            alignment: .leading
+        )
+        .padding(14)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 17,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 17,
+                style: .continuous
+            )
+            .stroke(CoachUI.border, lineWidth: 1)
+        }
     }
 }
 
-private struct DashboardActionRow: View {
+private struct DashboardActionCard: View {
     let title: String
     let detail: String
     let icon: String
-    let color: Color
 
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(color)
-                .frame(width: 36)
+        VStack(alignment: .leading, spacing: 12) {
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.primary)
+            HStack {
+                ZStack {
+                    Circle()
+                        .fill(CoachUI.softGreen)
+                        .frame(width: 38, height: 38)
 
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Image(systemName: icon)
+                        .font(
+                            .system(
+                                size: 16,
+                                weight: .semibold
+                            )
+                        )
+                        .foregroundStyle(
+                            CoachUI.brandGreen
+                        )
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(
+                        .system(
+                            size: 11,
+                            weight: .bold
+                        )
+                    )
+                    .foregroundStyle(
+                        CoachUI.brandGreen
+                    )
             }
 
-            Spacer()
+            Text(title)
+                .font(
+                    .system(
+                        size: 15,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(
+                    CoachUI.textPrimary
+                )
 
-            Image(systemName: "chevron.right")
-                .foregroundStyle(.secondary)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(
+                    CoachUI.textSecondary
+                )
+                .lineLimit(1)
         }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(14)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: 108,
+            alignment: .leading
+        )
+        .padding(14)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 17,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 17,
+                style: .continuous
+            )
+            .stroke(CoachUI.border, lineWidth: 1)
+        }
     }
 }
 

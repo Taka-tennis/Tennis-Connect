@@ -50,6 +50,89 @@ private enum CoachSearchSortOption: String, CaseIterable, Identifiable {
     }
 }
 
+private enum CoachAgeFilterOption: String, CaseIterable, Identifiable {
+    case all
+    case teens
+    case twenties
+    case thirties
+    case forties
+    case fifties
+    case sixties
+    case seventiesPlus
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "すべて"
+        case .teens:
+            return "10代"
+        case .twenties:
+            return "20代"
+        case .thirties:
+            return "30代"
+        case .forties:
+            return "40代"
+        case .fifties:
+            return "50代"
+        case .sixties:
+            return "60代"
+        case .seventiesPlus:
+            return "70代以上"
+        }
+    }
+
+    var coachAgeGroup: String? {
+        switch self {
+        case .all:
+            return nil
+        default:
+            return title
+        }
+    }
+}
+
+private enum CoachPriceFilterOption: String, CaseIterable, Identifiable {
+    case noLimit
+    case upTo3000
+    case upTo5000
+    case upTo10000
+    case upTo20000
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .noLimit:
+            return "上限なし"
+        case .upTo3000:
+            return "3,000円以下"
+        case .upTo5000:
+            return "5,000円以下"
+        case .upTo10000:
+            return "10,000円以下"
+        case .upTo20000:
+            return "20,000円以下"
+        }
+    }
+
+    var maximumPrice: Int? {
+        switch self {
+        case .noLimit:
+            return nil
+        case .upTo3000:
+            return 3000
+        case .upTo5000:
+            return 5000
+        case .upTo10000:
+            return 10000
+        case .upTo20000:
+            return 20000
+        }
+    }
+}
+
 private enum SameDaySortOption: String, CaseIterable, Identifiable {
     case earliest
     case recommended
@@ -339,8 +422,12 @@ struct HomeView: View {
         }
     }
 
+    private var homeSameDayCoaches: [Coach] {
+        Array(displayedSameDayCoaches.prefix(4))
+    }
+
     private var sameDayCoachRows: [[Coach]] {
-        let displayed = displayedSameDayCoaches
+        let displayed = homeSameDayCoaches
 
         return stride(
             from: 0,
@@ -806,6 +893,59 @@ struct HomeView: View {
                                 maxWidth: .infinity,
                                 alignment: .leading
                             )
+
+                            NavigationLink {
+                                SameDayCoachListView(
+                                    coaches: sameDayCoaches,
+                                    sortMetadata: coachSortMetadata,
+                                    earliestLessonDates:
+                                        sameDayEarliestLessonDates,
+                                    initialSortOption:
+                                        sameDaySortOption
+                                )
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text("本日受付中のコーチをすべて見る")
+                                        .font(
+                                            .system(
+                                                size: 14,
+                                                weight: .semibold
+                                            )
+                                        )
+
+                                    Image(systemName: "chevron.right")
+                                        .font(
+                                            .system(
+                                                size: 11,
+                                                weight: .bold
+                                            )
+                                        )
+                                }
+                                .foregroundStyle(
+                                    Color.tcBrandGreen
+                                )
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
+                                .background(Color.white)
+                                .clipShape(
+                                    RoundedRectangle(
+                                        cornerRadius: 14,
+                                        style: .continuous
+                                    )
+                                )
+                                .overlay {
+                                    RoundedRectangle(
+                                        cornerRadius: 14,
+                                        style: .continuous
+                                    )
+                                    .stroke(
+                                        Color.tcBorder,
+                                        lineWidth: 1
+                                    )
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 2)
                         }
 
                         if !sameDayErrorMessage.isEmpty {
@@ -1180,6 +1320,13 @@ private struct StudentCoachSearchView: View {
     @State private var searchText = ""
     @State private var sortOption:
         CoachSearchSortOption = .recommended
+
+    @State private var selectedAgeFilter:
+        CoachAgeFilterOption = .all
+    @State private var selectedPriceFilter:
+        CoachPriceFilterOption = .noLimit
+    @State private var showFilterSheet = false
+
     @State private var isDateFilterEnabled = false
     @State private var selectedDate =
         Calendar.current.startOfDay(for: Date())
@@ -1201,6 +1348,24 @@ private struct StudentCoachSearchView: View {
         return (coachGridWidth - 12) / 2
     }
 
+    private var activeFilterCount: Int {
+        var count = 0
+
+        if selectedAgeFilter != .all {
+            count += 1
+        }
+
+        if selectedPriceFilter != .noLimit {
+            count += 1
+        }
+
+        return count
+    }
+
+    private var hasActiveFilters: Bool {
+        activeFilterCount > 0
+    }
+
     private var filteredCoaches: [Coach] {
         let keyword = searchText.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -1219,7 +1384,30 @@ private struct StudentCoachSearchView: View {
                 !isDateFilterEnabled ||
                 availableCoachIDs.contains(coach.id)
 
-            return matchesKeyword && matchesDate
+            let matchesAge: Bool
+
+            if let requiredAge =
+                selectedAgeFilter.coachAgeGroup {
+                matchesAge =
+                    coach.ageGroup == requiredAge
+            } else {
+                matchesAge = true
+            }
+
+            let matchesPrice: Bool
+
+            if let maximumPrice =
+                selectedPriceFilter.maximumPrice {
+                matchesPrice =
+                    coach.price <= maximumPrice
+            } else {
+                matchesPrice = true
+            }
+
+            return matchesKeyword &&
+                matchesDate &&
+                matchesAge &&
+                matchesPrice
         }
 
         let context = dailyRecommendationContext()
@@ -1438,63 +1626,177 @@ private struct StudentCoachSearchView: View {
                     .stroke(Color.tcBorder, lineWidth: 1)
                 }
 
-                HStack(alignment: .center, spacing: 10) {
-                    Text(resultTitle)
-                        .font(.title2)
-                        .bold()
-                        .foregroundStyle(Color.tcTextPrimary)
+                VStack(alignment: .leading, spacing: 10) {
 
-                    Spacer(minLength: 8)
+                    HStack(alignment: .center, spacing: 10) {
+                        Text(resultTitle)
+                            .font(.title2)
+                            .bold()
+                            .foregroundStyle(Color.tcTextPrimary)
 
-                    Menu {
-                        ForEach(
-                            CoachSearchSortOption.allCases
-                        ) { option in
-                            Button {
-                                sortOption = option
-                            } label: {
-                                HStack {
-                                    Label(
-                                        option.title,
-                                        systemImage:
-                                            option.systemImage
+                        Spacer(minLength: 8)
+                    }
+
+                    HStack(spacing: 10) {
+
+                        Button {
+                            showFilterSheet = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(
+                                    systemName:
+                                        "line.3.horizontal.decrease"
+                                )
+                                .font(
+                                    .system(
+                                        size: 12,
+                                        weight: .bold
+                                    )
+                                )
+
+                                Text("絞り込み")
+                                    .font(
+                                        .system(
+                                            size: 13,
+                                            weight: .semibold
+                                        )
                                     )
 
-                                    if sortOption == option {
-                                        Image(
-                                            systemName: "checkmark"
+                                if activeFilterCount > 0 {
+                                    Text("\(activeFilterCount)")
+                                        .font(
+                                            .system(
+                                                size: 10,
+                                                weight: .bold
+                                            )
                                         )
+                                        .foregroundStyle(.white)
+                                        .frame(
+                                            minWidth: 18,
+                                            minHeight: 18
+                                        )
+                                        .background(
+                                            Color.tcBrandGreen
+                                        )
+                                        .clipShape(Circle())
+                                }
+                            }
+                            .foregroundStyle(
+                                hasActiveFilters
+                                    ? Color.tcBrandGreen
+                                    : Color.tcTextSecondary
+                            )
+                            .padding(.horizontal, 11)
+                            .frame(height: 36)
+                            .background(
+                                hasActiveFilters
+                                    ? Color.tcSoftGreen
+                                    : Color.white
+                            )
+                            .clipShape(Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(
+                                        hasActiveFilters
+                                            ? Color.tcBrandGreen
+                                                .opacity(0.35)
+                                            : Color.tcBorder,
+                                        lineWidth: 1
+                                    )
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer(minLength: 4)
+
+                        Menu {
+                            ForEach(
+                                CoachSearchSortOption.allCases
+                            ) { option in
+                                Button {
+                                    sortOption = option
+                                } label: {
+                                    HStack {
+                                        Label(
+                                            option.title,
+                                            systemImage:
+                                                option.systemImage
+                                        )
+
+                                        if sortOption == option {
+                                            Image(
+                                                systemName:
+                                                    "checkmark"
+                                            )
+                                        }
                                     }
                                 }
                             }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(
+                                    systemName:
+                                        "arrow.up.arrow.down"
+                                )
+                                .font(
+                                    .system(
+                                        size: 12,
+                                        weight: .bold
+                                    )
+                                )
+
+                                Text(sortOption.title)
+                                    .font(
+                                        .system(
+                                            size: 13,
+                                            weight: .semibold
+                                        )
+                                    )
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(Color.tcBrandGreen)
+                            .padding(.horizontal, 11)
+                            .frame(height: 36)
+                            .background(Color.tcSoftGreen)
+                            .clipShape(Capsule())
                         }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(
-                                systemName:
-                                    "arrow.up.arrow.down"
-                            )
+                    }
+
+                    if hasActiveFilters {
+                        HStack(spacing: 8) {
+
+                            if selectedAgeFilter != .all {
+                                FilterConditionChip(
+                                    text:
+                                        selectedAgeFilter.title
+                                ) {
+                                    selectedAgeFilter = .all
+                                }
+                            }
+
+                            if selectedPriceFilter != .noLimit {
+                                FilterConditionChip(
+                                    text:
+                                        selectedPriceFilter.title
+                                ) {
+                                    selectedPriceFilter = .noLimit
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+
+                            Button("すべて解除") {
+                                selectedAgeFilter = .all
+                                selectedPriceFilter = .noLimit
+                            }
                             .font(
                                 .system(
                                     size: 12,
-                                    weight: .bold
+                                    weight: .semibold
                                 )
                             )
-
-                            Text(sortOption.title)
-                                .font(
-                                    .system(
-                                        size: 13,
-                                        weight: .semibold
-                                    )
-                                )
-                                .lineLimit(1)
+                            .foregroundStyle(Color.tcBrandGreen)
                         }
-                        .foregroundStyle(Color.tcBrandGreen)
-                        .padding(.horizontal, 11)
-                        .frame(height: 34)
-                        .background(Color.tcSoftGreen)
-                        .clipShape(Capsule())
                     }
                 }
 
@@ -1520,9 +1822,13 @@ private struct StudentCoachSearchView: View {
                             .font(.headline)
 
                         Text(
-                            isDateFilterEnabled
-                                ? "別の日付や検索条件でお試しください"
-                                : "検索条件を変えてお試しください"
+                            hasActiveFilters
+                                ? "年代や料金などの絞り込み条件を変えてお試しください"
+                                : (
+                                    isDateFilterEnabled
+                                        ? "別の日付や検索条件でお試しください"
+                                        : "検索条件を変えてお試しください"
+                                )
                         )
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -1599,6 +1905,14 @@ private struct StudentCoachSearchView: View {
         .background(Color.tcBackground)
         .navigationTitle("コーチを探す")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showFilterSheet) {
+            CoachSearchFilterSheet(
+                selectedAgeFilter: $selectedAgeFilter,
+                selectedPriceFilter: $selectedPriceFilter
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .onChange(of: isDateFilterEnabled) { isEnabled in
             if isEnabled {
                 loadAvailableCoachesForSelectedDate()
@@ -1748,6 +2062,786 @@ private struct StudentCoachSearchView: View {
             TimeZone(identifier: "Asia/Tokyo") ?? .current
         formatter.dateFormat = "yyyy/M/d"
         return formatter.string(from: date)
+    }
+}
+
+private struct SameDayCoachListView: View {
+
+    let coaches: [Coach]
+    let sortMetadata: [String: CoachSortMetadata]
+    let earliestLessonDates: [String: Date]
+
+    @State private var sortOption:
+        SameDaySortOption
+    @State private var searchText = ""
+    @State private var selectedAgeFilter:
+        CoachAgeFilterOption = .all
+    @State private var selectedPriceFilter:
+        CoachPriceFilterOption = .noLimit
+    @State private var showFilterSheet = false
+    @State private var gridWidth: CGFloat = 0
+
+    init(
+        coaches: [Coach],
+        sortMetadata: [String: CoachSortMetadata],
+        earliestLessonDates: [String: Date],
+        initialSortOption: SameDaySortOption
+    ) {
+        self.coaches = coaches
+        self.sortMetadata = sortMetadata
+        self.earliestLessonDates = earliestLessonDates
+        _sortOption = State(
+            initialValue: initialSortOption
+        )
+    }
+
+    private var cardWidth: CGFloat {
+        guard gridWidth > 12 else {
+            return 0
+        }
+
+        return (gridWidth - 12) / 2
+    }
+
+    private var activeFilterCount: Int {
+        var count = 0
+
+        if selectedAgeFilter != .all {
+            count += 1
+        }
+
+        if selectedPriceFilter != .noLimit {
+            count += 1
+        }
+
+        return count
+    }
+
+    private var filteredAndSortedCoaches: [Coach] {
+        let keyword = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        let filtered = coaches.filter { coach in
+            let matchesKeyword =
+                keyword.isEmpty ||
+                coach.name.localizedCaseInsensitiveContains(
+                    keyword
+                ) ||
+                coach.area.localizedCaseInsensitiveContains(
+                    keyword
+                ) ||
+                coach.careers
+                    .joined(separator: " ")
+                    .localizedCaseInsensitiveContains(
+                        keyword
+                    )
+
+            let matchesAge: Bool
+
+            if let requiredAge =
+                selectedAgeFilter.coachAgeGroup {
+                matchesAge =
+                    coach.ageGroup == requiredAge
+            } else {
+                matchesAge = true
+            }
+
+            let matchesPrice: Bool
+
+            if let maximumPrice =
+                selectedPriceFilter.maximumPrice {
+                matchesPrice =
+                    coach.price <= maximumPrice
+            } else {
+                matchesPrice = true
+            }
+
+            return matchesKeyword &&
+                matchesAge &&
+                matchesPrice
+        }
+
+        let context = dailyRecommendationContext()
+
+        return filtered.sorted { lhs, rhs in
+            switch sortOption {
+            case .earliest:
+                let leftDate =
+                    earliestLessonDates[lhs.id]
+                let rightDate =
+                    earliestLessonDates[rhs.id]
+
+                switch (leftDate, rightDate) {
+                case let (left?, right?):
+                    if left != right {
+                        return left < right
+                    }
+
+                case (_?, nil):
+                    return true
+
+                case (nil, _?):
+                    return false
+
+                case (nil, nil):
+                    break
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .recommended:
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .priceLow:
+                if lhs.price != rhs.price {
+                    return lhs.price < rhs.price
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .priceHigh:
+                if lhs.price != rhs.price {
+                    return lhs.price > rhs.price
+                }
+
+                return recommendedComesFirst(
+                    lhs,
+                    rhs,
+                    context: context
+                )
+
+            case .ratingHigh:
+                return ratingComesFirst(
+                    lhs,
+                    rhs,
+                    metadata: sortMetadata,
+                    context: context
+                )
+            }
+        }
+    }
+
+    private var rows: [[Coach]] {
+        stride(
+            from: 0,
+            to: filteredAndSortedCoaches.count,
+            by: 2
+        ).map { startIndex in
+            let endIndex = min(
+                startIndex + 2,
+                filteredAndSortedCoaches.count
+            )
+
+            return Array(
+                filteredAndSortedCoaches[
+                    startIndex..<endIndex
+                ]
+            )
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(
+                            Color.tcTextSecondary
+                        )
+
+                    TextField(
+                        "コーチ名・地域・駅名で検索",
+                        text: $searchText
+                    )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(
+                                systemName:
+                                    "xmark.circle.fill"
+                            )
+                            .foregroundStyle(
+                                Color.tcTextSecondary
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            "検索文字を消去"
+                        )
+                    }
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 50)
+                .background(Color.white)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                    .stroke(
+                        Color.tcBorder,
+                        lineWidth: 1
+                    )
+                }
+
+                HStack(spacing: 10) {
+
+                    Button {
+                        showFilterSheet = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(
+                                systemName:
+                                    "line.3.horizontal.decrease"
+                            )
+                            .font(
+                                .system(
+                                    size: 12,
+                                    weight: .bold
+                                )
+                            )
+
+                            Text("絞り込み")
+                                .font(
+                                    .system(
+                                        size: 13,
+                                        weight: .semibold
+                                    )
+                                )
+
+                            if activeFilterCount > 0 {
+                                Text(
+                                    "\(activeFilterCount)"
+                                )
+                                .font(
+                                    .system(
+                                        size: 10,
+                                        weight: .bold
+                                    )
+                                )
+                                .foregroundStyle(.white)
+                                .frame(
+                                    minWidth: 18,
+                                    minHeight: 18
+                                )
+                                .background(
+                                    Color.tcBrandGreen
+                                )
+                                .clipShape(Circle())
+                            }
+                        }
+                        .foregroundStyle(
+                            activeFilterCount > 0
+                                ? Color.tcBrandGreen
+                                : Color.tcTextSecondary
+                        )
+                        .padding(.horizontal, 11)
+                        .frame(height: 36)
+                        .background(
+                            activeFilterCount > 0
+                                ? Color.tcSoftGreen
+                                : Color.white
+                        )
+                        .clipShape(Capsule())
+                        .overlay {
+                            Capsule()
+                                .stroke(
+                                    activeFilterCount > 0
+                                        ? Color.tcBrandGreen
+                                            .opacity(0.35)
+                                        : Color.tcBorder,
+                                    lineWidth: 1
+                                )
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 4)
+
+                    Menu {
+                        ForEach(
+                            SameDaySortOption.allCases
+                        ) { option in
+                            Button {
+                                sortOption = option
+                            } label: {
+                                HStack {
+                                    Label(
+                                        option.title,
+                                        systemImage:
+                                            option.systemImage
+                                    )
+
+                                    if sortOption == option {
+                                        Image(
+                                            systemName:
+                                                "checkmark"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(
+                                systemName:
+                                    "arrow.up.arrow.down"
+                            )
+                            .font(
+                                .system(
+                                    size: 12,
+                                    weight: .bold
+                                )
+                            )
+
+                            Text(sortOption.shortTitle)
+                                .font(
+                                    .system(
+                                        size: 13,
+                                        weight: .semibold
+                                    )
+                                )
+                        }
+                        .foregroundStyle(
+                            Color.tcBrandGreen
+                        )
+                        .padding(.horizontal, 11)
+                        .frame(height: 36)
+                        .background(Color.tcSoftGreen)
+                        .clipShape(Capsule())
+                    }
+                }
+
+                if activeFilterCount > 0 {
+                    HStack(spacing: 8) {
+
+                        if selectedAgeFilter != .all {
+                            FilterConditionChip(
+                                text:
+                                    selectedAgeFilter.title
+                            ) {
+                                selectedAgeFilter = .all
+                            }
+                        }
+
+                        if selectedPriceFilter != .noLimit {
+                            FilterConditionChip(
+                                text:
+                                    selectedPriceFilter.title
+                            ) {
+                                selectedPriceFilter =
+                                    .noLimit
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Button("すべて解除") {
+                            selectedAgeFilter = .all
+                            selectedPriceFilter = .noLimit
+                        }
+                        .font(
+                            .system(
+                                size: 12,
+                                weight: .semibold
+                            )
+                        )
+                        .foregroundStyle(
+                            Color.tcBrandGreen
+                        )
+                    }
+                }
+
+                HStack {
+                    Text("本日受付中")
+                        .font(.title2)
+                        .bold()
+                        .foregroundStyle(
+                            Color.tcTextPrimary
+                        )
+
+                    Spacer()
+
+                    Text(
+                        "\(filteredAndSortedCoaches.count)人"
+                    )
+                    .font(
+                        .system(
+                            size: 13,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        Color.tcTextSecondary
+                    )
+                }
+
+                if filteredAndSortedCoaches.isEmpty {
+                    VStack(spacing: 12) {
+
+                        ZStack {
+                            Circle()
+                                .fill(Color.tcSoftGreen)
+                                .frame(
+                                    width: 64,
+                                    height: 64
+                                )
+
+                            Image(
+                                systemName: "figure.tennis"
+                            )
+                            .font(.system(size: 28))
+                            .foregroundStyle(
+                                Color.tcBrandGreen
+                            )
+                        }
+
+                        Text("条件に合うコーチが見つかりません")
+                            .font(.headline)
+                            .foregroundStyle(
+                                Color.tcTextPrimary
+                            )
+
+                        Text(
+                            searchText
+                                .trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                )
+                                .isEmpty
+                                ? "年代や料金の条件を変えてお試しください"
+                                : "検索ワードや絞り込み条件を変えてお試しください"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(
+                            Color.tcTextSecondary
+                        )
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 44)
+
+                } else {
+                    LazyVStack(spacing: 16) {
+                        ForEach(
+                            Array(rows.enumerated()),
+                            id: \.offset
+                        ) { _, row in
+                            HStack(
+                                alignment: .top,
+                                spacing: 12
+                            ) {
+                                ForEach(row) { coach in
+                                    NavigationLink {
+                                        CoachDetailView(
+                                            coach: coach
+                                        )
+                                    } label: {
+                                        SameDayCoachCard(
+                                            coach: coach,
+                                            cardWidth: cardWidth,
+                                            metadata:
+                                                sortMetadata[
+                                                    coach.id
+                                                ],
+                                            earliestLessonDate:
+                                                earliestLessonDates[
+                                                    coach.id
+                                                ]
+                                        )
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .frame(
+                                        width: cardWidth,
+                                        alignment: .topLeading
+                                    )
+                                }
+
+                                if row.count == 1 {
+                                    Color.clear
+                                        .frame(
+                                            width: cardWidth
+                                        )
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .leading
+                            )
+                        }
+                    }
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .leading
+                    )
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear {
+                                    gridWidth =
+                                        proxy.size.width
+                                }
+                                .onChange(
+                                    of: proxy.size.width
+                                ) { newWidth in
+                                    gridWidth = newWidth
+                                }
+                        }
+                    }
+                }
+            }
+            .padding()
+        }
+        .background(Color.tcBackground)
+        .navigationTitle("本日レッスン可能")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showFilterSheet) {
+            CoachSearchFilterSheet(
+                selectedAgeFilter:
+                    $selectedAgeFilter,
+                selectedPriceFilter:
+                    $selectedPriceFilter
+            )
+            .presentationDetents(
+                [.medium, .large]
+            )
+            .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+private struct FilterConditionChip: View {
+
+    let text: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(text)
+                .font(
+                    .system(
+                        size: 12,
+                        weight: .semibold
+                    )
+                )
+
+            Button {
+                onRemove()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(
+                        .system(
+                            size: 9,
+                            weight: .bold
+                        )
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(text)を解除")
+        }
+        .foregroundStyle(Color.tcBrandGreen)
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: 30)
+        .background(Color.tcSoftGreen)
+        .clipShape(Capsule())
+    }
+}
+
+private struct CoachSearchFilterSheet: View {
+
+    @Binding var selectedAgeFilter:
+        CoachAgeFilterOption
+    @Binding var selectedPriceFilter:
+        CoachPriceFilterOption
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+
+                    filterSection(
+                        title: "年代",
+                        systemImage: "person",
+                        options:
+                            CoachAgeFilterOption.allCases,
+                        selected: selectedAgeFilter
+                    ) { option in
+                        selectedAgeFilter = option
+                    }
+
+                    filterSection(
+                        title: "料金",
+                        systemImage: "yensign.circle",
+                        options:
+                            CoachPriceFilterOption.allCases,
+                        selected: selectedPriceFilter
+                    ) { option in
+                        selectedPriceFilter = option
+                    }
+
+                    Button {
+                        selectedAgeFilter = .all
+                        selectedPriceFilter = .noLimit
+                    } label: {
+                        Text("条件をすべてクリア")
+                            .font(
+                                .system(
+                                    size: 14,
+                                    weight: .semibold
+                                )
+                            )
+                            .foregroundStyle(Color.tcBrandGreen)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(Color.tcSoftGreen)
+                            .clipShape(
+                                RoundedRectangle(
+                                    cornerRadius: 14,
+                                    style: .continuous
+                                )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding()
+            }
+            .background(Color.tcBackground)
+            .navigationTitle("絞り込み")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(
+                    placement: .topBarTrailing
+                ) {
+                    Button("完了") {
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.tcBrandGreen)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func filterSection<Option>(
+        title: String,
+        systemImage: String,
+        options: [Option],
+        selected: Option,
+        onSelect: @escaping (Option) -> Void
+    ) -> some View
+    where Option: Identifiable & Equatable,
+          Option.ID: Hashable {
+
+        VStack(alignment: .leading, spacing: 12) {
+
+            Label(
+                title,
+                systemImage: systemImage
+            )
+            .font(.headline)
+            .foregroundStyle(Color.tcTextPrimary)
+
+            VStack(spacing: 0) {
+                ForEach(options) { option in
+                    Button {
+                        onSelect(option)
+                    } label: {
+                        HStack {
+                            Text(optionTitle(option))
+                                .foregroundStyle(
+                                    Color.tcTextPrimary
+                                )
+
+                            Spacer()
+
+                            if option == selected {
+                                Image(
+                                    systemName:
+                                        "checkmark.circle.fill"
+                                )
+                                .foregroundStyle(
+                                    Color.tcBrandGreen
+                                )
+                            } else {
+                                Image(
+                                    systemName: "circle"
+                                )
+                                .foregroundStyle(
+                                    Color.tcBorder
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(height: 48)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if option.id != options.last?.id {
+                        Divider()
+                            .padding(.leading, 16)
+                    }
+                }
+            }
+            .background(Color.white)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 16,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 16,
+                    style: .continuous
+                )
+                .stroke(Color.tcBorder, lineWidth: 1)
+            }
+        }
+    }
+
+    private func optionTitle<Option>(
+        _ option: Option
+    ) -> String {
+        if let age =
+            option as? CoachAgeFilterOption {
+            return age.title
+        }
+
+        if let price =
+            option as? CoachPriceFilterOption {
+            return price.title
+        }
+
+        return ""
     }
 }
 

@@ -8,6 +8,11 @@ struct BookingConfirmView: View {
     @State private var isSubmitting = false
     @State private var isSubmitted = false
     @State private var errorMessage = ""
+    @State private var courtName = ""
+    @State private var courtAddress = ""
+
+    private let courtNameMaxLength = 100
+    private let courtAddressMaxLength = 200
 
     let coach: Coach
     let date: Date
@@ -23,6 +28,27 @@ struct BookingConfirmView: View {
         coach.price * times.count
     }
 
+    private var normalizedCourtName: String {
+        normalizedLocationValue(courtName)
+    }
+
+    private var normalizedCourtAddress: String {
+        normalizedLocationValue(courtAddress)
+    }
+
+    private var locationIsValid: Bool {
+        !normalizedCourtName.isEmpty &&
+        !normalizedCourtAddress.isEmpty &&
+        normalizedCourtName.count <= courtNameMaxLength &&
+        normalizedCourtAddress.count <= courtAddressMaxLength
+    }
+
+    private var canSubmit: Bool {
+        !isSubmitting &&
+        !times.isEmpty &&
+        locationIsValid
+    }
+
     var body: some View {
         Group {
             if isSubmitted {
@@ -30,7 +56,9 @@ struct BookingConfirmView: View {
                     coach: coach,
                     date: date,
                     times: sortedTimes,
-                    totalPrice: totalPrice
+                    totalPrice: totalPrice,
+                    courtName: normalizedCourtName,
+                    courtAddress: normalizedCourtAddress
                 )
             } else {
                 confirmationContent
@@ -113,6 +141,120 @@ struct BookingConfirmView: View {
                 .background(Color(.systemGray6))
                 .cornerRadius(18)
 
+                VStack(alignment: .leading, spacing: 14) {
+                    Label(
+                        "レッスン場所",
+                        systemImage: "mappin.and.ellipse"
+                    )
+                    .font(.headline)
+
+                    Text(
+                        "コーチはこの場所を確認してから、予約を承認または却下します。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("テニスコート名")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+
+                        TextField(
+                            "例：有明テニスの森公園",
+                            text: $courtName
+                        )
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: 46)
+                        .background(Color(.systemBackground))
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 12,
+                                style: .continuous
+                            )
+                        )
+                        .overlay {
+                            RoundedRectangle(
+                                cornerRadius: 12,
+                                style: .continuous
+                            )
+                            .stroke(
+                                Color(.separator).opacity(0.22),
+                                lineWidth: 1
+                            )
+                        }
+
+                        Text(
+                            "\(normalizedCourtName.count)/\(courtNameMaxLength)"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(
+                            normalizedCourtName.count > courtNameMaxLength
+                                ? Color.red
+                                : Color.secondary
+                        )
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("所在地")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+
+                        TextField(
+                            "例：東京都江東区有明2-2-22",
+                            text: $courtAddress,
+                            axis: .vertical
+                        )
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .lineLimit(1...3)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .background(Color(.systemBackground))
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: 12,
+                                style: .continuous
+                            )
+                        )
+                        .overlay {
+                            RoundedRectangle(
+                                cornerRadius: 12,
+                                style: .continuous
+                            )
+                            .stroke(
+                                Color(.separator).opacity(0.22),
+                                lineWidth: 1
+                            )
+                        }
+
+                        Text(
+                            "\(normalizedCourtAddress.count)/\(courtAddressMaxLength)"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(
+                            normalizedCourtAddress.count > courtAddressMaxLength
+                                ? Color.red
+                                : Color.secondary
+                        )
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+
+                    if normalizedCourtName.isEmpty ||
+                        normalizedCourtAddress.isEmpty {
+                        Text("※ テニスコート名と所在地はどちらも必須です")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(18)
+
                 Text("申請後、コーチの承認を待ちます。支払いは承認後に行います。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -142,11 +284,11 @@ struct BookingConfirmView: View {
                         Spacer()
                     }
                     .padding()
-                    .background(isSubmitting ? Color.gray : Color.green)
+                    .background(canSubmit ? Color.green : Color.gray)
                     .foregroundColor(.white)
                     .cornerRadius(15)
                 }
-                .disabled(isSubmitting || times.isEmpty)
+                .disabled(!canSubmit)
             }
             .padding()
         }
@@ -163,13 +305,37 @@ struct BookingConfirmView: View {
             return
         }
 
+        guard !normalizedCourtName.isEmpty else {
+            errorMessage = "テニスコート名を入力してください"
+            return
+        }
+
+        guard !normalizedCourtAddress.isEmpty else {
+            errorMessage = "レッスン場所の所在地を入力してください"
+            return
+        }
+
+        guard normalizedCourtName.count <= courtNameMaxLength else {
+            errorMessage =
+                "テニスコート名は\(courtNameMaxLength)文字以内で入力してください"
+            return
+        }
+
+        guard normalizedCourtAddress.count <= courtAddressMaxLength else {
+            errorMessage =
+                "所在地は\(courtAddressMaxLength)文字以内で入力してください"
+            return
+        }
+
         errorMessage = ""
         isSubmitting = true
 
         let requestData: [String: Any] = [
             "coachId": coach.id,
             "date": firestoreDate(date),
-            "times": sortedTimes
+            "times": sortedTimes,
+            "courtName": normalizedCourtName,
+            "courtAddress": normalizedCourtAddress
         ]
 
         functions
@@ -197,7 +363,10 @@ struct BookingConfirmView: View {
         let message = nsError.localizedDescription
 
         if message.contains("予約済み") ||
-            message.contains("空き時間") {
+            message.contains("空き時間") ||
+            message.contains("テニスコート名") ||
+            message.contains("所在地") ||
+            message.contains("レッスン場所") {
             return message
         }
 
@@ -213,6 +382,15 @@ struct BookingConfirmView: View {
             isSubmitting = false
             errorMessage = message
         }
+    }
+
+    private func normalizedLocationValue(
+        _ value: String
+    ) -> String {
+        value
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     private func displayDate(_ date: Date) -> String {
@@ -264,6 +442,8 @@ private struct BookingRequestCompleteView: View {
     let date: Date
     let times: [String]
     let totalPrice: Int
+    let courtName: String
+    let courtAddress: String
 
     var body: some View {
         VStack(spacing: 28) {
@@ -304,6 +484,16 @@ private struct BookingRequestCompleteView: View {
                 detailRow(title: "時間", value: combinedTimeRange(times))
                 Divider()
                 detailRow(title: "料金", value: "¥\(totalPrice)")
+                Divider()
+                multilineDetailRow(
+                    title: "テニスコート",
+                    value: courtName
+                )
+                Divider()
+                multilineDetailRow(
+                    title: "所在地",
+                    value: courtAddress
+                )
             }
             .padding()
             .background(Color(.systemGray6))
@@ -335,6 +525,20 @@ private struct BookingRequestCompleteView: View {
             Spacer()
             Text(value)
                 .bold()
+        }
+    }
+
+    private func multilineDetailRow(
+        title: String,
+        value: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .foregroundStyle(.secondary)
+
+            Text(value)
+                .bold()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
