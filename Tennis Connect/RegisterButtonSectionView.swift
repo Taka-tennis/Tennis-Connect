@@ -1,6 +1,6 @@
 import SwiftUI
-import FirebaseFirestore
 import FirebaseAuth
+import FirebaseFunctions
 
 struct RegisterButtonSectionView: View {
 
@@ -19,14 +19,30 @@ struct RegisterButtonSectionView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var registrationError = ""
+    @State private var isRegistering = false
 
-    private let db = Firestore.firestore()
+    private let functions = Functions.functions(
+        region: "asia-northeast1"
+    )
 
     var body: some View {
         Section {
-            Button("登録する") {
+            Button {
                 registerCoach()
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isRegistering {
+                        ProgressView()
+                    } else {
+                        Text("登録する")
+                    }
+
+                    Spacer()
+                }
             }
+            .disabled(isRegistering)
 
             if !registrationError.isEmpty {
                 Text(registrationError)
@@ -44,86 +60,54 @@ struct RegisterButtonSectionView: View {
     }
 
     private func registerCoach() {
-        guard let uid = Auth.auth().currentUser?.uid else {
+        guard Auth.auth().currentUser?.uid != nil else {
             registrationError = "コーチ登録にはログインが必要です"
             return
         }
 
+        guard !isRegistering else {
+            return
+        }
+
         registrationError = ""
+        isRegistering = true
 
-        let coachRef = db.collection("coaches").document(uid)
-        let batch = db.batch()
+        let payload: [String: Any] = [
+            "name": name,
+            "area": area,
+            "career": career,
+            "price": Int(price) ?? 0,
+            "imageURL": imageURL,
+            "introduction": introduction,
+            "tennisExperience": tennisExperience,
+            "coachingExperience": coachingExperience,
+            "availableTimes": availabilityEntries,
+            "availability": availabilityPayload,
+            "ageGroup": ageGroup
+        ]
 
-        let trimmedCareer =
-            career.trimmingCharacters(in: .whitespacesAndNewlines)
+        functions
+            .httpsCallable("registerCoachProfile")
+            .call(payload) { _, error in
+                DispatchQueue.main.async {
+                    isRegistering = false
 
-        batch.setData(
-            [
-                "coachId": coachRef.documentID,
-                "ownerId": uid,
-                "name": name,
-                "area": area,
-                "career": trimmedCareer,
-                "careers": normalizedCareers(from: career),
-                "tennisExperience":
-                    tennisExperience.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ),
-                "coachingExperience":
-                    coachingExperience.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ),
-                "price": Int(price) ?? 0,
-                "imageURL": imageURL,
-                "introduction": introduction,
-                "rating": 5.0,
-                "reviewCount": 0,
-                "createdAt": FieldValue.serverTimestamp(),
-                "availableTimes": availabilityEntries,
-                "ageGroup": ageGroup
-            ],
-            forDocument: coachRef
-        )
+                    if let error {
+                        print(
+                            "コーチ登録失敗:",
+                            error.localizedDescription
+                        )
 
-        for (date, times) in groupedAvailability {
-            let dateRef = db.collection("coachAvailability")
-                .document(coachRef.documentID)
-                .collection("dates")
-                .document(date)
+                        registrationError =
+                            "登録に失敗しました: " +
+                            error.localizedDescription
+                        return
+                    }
 
-            batch.setData(
-                ["times": times.sorted()],
-                forDocument: dateRef
-            )
-        }
-
-        batch.commit { error in
-            DispatchQueue.main.async {
-                if let error {
-                    print("登録失敗: \(error)")
-                    registrationError =
-                        "登録に失敗しました: \(error.localizedDescription)"
-                    return
+                    print("コーチ登録完了")
+                    registrationError = ""
+                    showSuccessAlert = true
                 }
-
-                print("登録完了: \(coachRef.documentID)")
-                showSuccessAlert = true
-            }
-        }
-    }
-
-    private func normalizedCareers(
-        from value: String
-    ) -> [String] {
-        value
-            .components(separatedBy: .newlines)
-            .map {
-                $0.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-            }
-            .filter {
-                !$0.isEmpty
             }
     }
 
@@ -131,7 +115,11 @@ struct RegisterButtonSectionView: View {
         availableTimes
             .split(separator: ",")
             .map(String.init)
-            .filter { !$0.isEmpty }
+            .filter {
+                !$0.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty
+            }
     }
 
     private var groupedAvailability: [String: [String]] {
@@ -148,15 +136,28 @@ struct RegisterButtonSectionView: View {
             }
 
             let date = String(parts[0])
-                .replacingOccurrences(of: "/", with: "-")
+                .replacingOccurrences(
+                    of: "/",
+                    with: "-"
+                )
 
             let timeRange = String(parts[1])
-                .replacingOccurrences(of: "~", with: "〜")
+                .replacingOccurrences(
+                    of: "~",
+                    with: "〜"
+                )
 
-            guard let startTime = timeRange
-                .components(separatedBy: "〜")
-                .first,
-                  !startTime.isEmpty else {
+            guard
+                let startTime = timeRange
+                    .components(
+                        separatedBy: "〜"
+                    )
+                    .first?
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                !startTime.isEmpty
+            else {
                 continue
             }
 
@@ -166,6 +167,20 @@ struct RegisterButtonSectionView: View {
         }
 
         return grouped
+    }
+
+    private var availabilityPayload: [[String: Any]] {
+        groupedAvailability
+            .keys
+            .sorted()
+            .map { date in
+                [
+                    "date": date,
+                    "times":
+                        (groupedAvailability[date] ?? [])
+                            .sorted()
+                ]
+            }
     }
 }
 

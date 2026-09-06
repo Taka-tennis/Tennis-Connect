@@ -190,18 +190,10 @@ struct CoachScheduleSection: View {
                         continue
                     }
 
+                    // 旧形式データは表示互換のため読み取るだけにする。
+                    // coachAvailability への移行は予約時に
+                    // submitReservationRequest 側で安全に処理する。
                     mergedSchedule[date] = times
-
-                    db.collection("coachAvailability")
-                        .document(coach.id)
-                        .collection("dates")
-                        .document(date)
-                        .setData(["times": times]) { error in
-
-                            if let error = error {
-                                print("空き日程移行エラー: \(error)")
-                            }
-                        }
                 }
 
                 finishLoading(schedule: mergedSchedule)

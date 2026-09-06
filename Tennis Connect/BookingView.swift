@@ -303,16 +303,14 @@ struct BookingView: View {
                 )
             } else {
                 loadLegacyAvailableTimes(
-                    formattedDate: formattedDate,
-                    dateRef: dateRef
+                    formattedDate: formattedDate
                 )
             }
         }
     }
 
     private func loadLegacyAvailableTimes(
-        formattedDate: String,
-        dateRef: DocumentReference
+        formattedDate: String
     ) {
         db.collection("coaches")
             .document(coach.id)
@@ -327,14 +325,9 @@ struct BookingView: View {
                     formattedDate: formattedDate
                 )
 
-                if !times.isEmpty {
-                    dateRef.setData(["times": times]) { error in
-                        if let error = error {
-                            print("空き時間移行エラー: \(error)")
-                        }
-                    }
-                }
-
+                // 旧形式データは表示互換のため読み取るだけにする。
+                // 実際の移行・予約確定は submitReservationRequest 側で
+                // サーバーTransactionとして安全に処理する。
                 finishLoading(
                     times: times,
                     formattedDate: formattedDate

@@ -1875,6 +1875,271 @@ exports.setCoachSameDayAvailability = onCall(
   },
 );
 
+
+/**
+ * ログイン中ユーザーのコーチプロフィールと初期空き日程を登録します。
+ *
+ * プロフィール作成とcoachAvailability作成を同じTransactionで実行し、
+ * 途中失敗による「プロフィールだけ作成」「空き日程だけ作成」を防ぎます。
+ * 既存コーチの上書きには使用しません。
+ */
+exports.registerCoachProfile = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "コーチ登録にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const raw = request.data || {};
+
+    const readString = (key, maxLength) => {
+      if (typeof raw[key] !== "string") {
+        throw new HttpsError(
+          "invalid-argument",
+          `${key}の形式が正しくありません。`,
+        );
+      }
+
+      const value = raw[key];
+
+      if (Array.from(value).length > maxLength) {
+        throw new HttpsError(
+          "invalid-argument",
+          `${key}が長すぎます。`,
+        );
+      }
+
+      return value;
+    };
+
+    const name = readString("name", 80);
+    const area = readString("area", 120);
+    const career = readString("career", 3000)
+      .trim();
+    const imageURL = readString("imageURL", 2500);
+    const introduction = readString(
+      "introduction",
+      5000,
+    );
+    const tennisExperience = readString(
+      "tennisExperience",
+      120,
+    ).trim();
+    const coachingExperience = readString(
+      "coachingExperience",
+      120,
+    ).trim();
+    const ageGroup = readString("ageGroup", 20);
+
+    const allowedAgeGroups = new Set([
+      "20代",
+      "30代",
+      "40代",
+      "50代",
+      "60代以上",
+    ]);
+
+    if (!allowedAgeGroups.has(ageGroup)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "年代の設定が正しくありません。",
+      );
+    }
+
+    const price = raw.price;
+
+    if (
+      typeof price !== "number" ||
+      !Number.isInteger(price) ||
+      price < 0 ||
+      price > 1000000
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "料金の設定が正しくありません。",
+      );
+    }
+
+    const rawAvailableTimes = raw.availableTimes;
+
+    if (!Array.isArray(rawAvailableTimes)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "空き時間の形式が正しくありません。",
+      );
+    }
+
+    if (rawAvailableTimes.length > 4000) {
+      throw new HttpsError(
+        "invalid-argument",
+        "空き時間の登録数が多すぎます。",
+      );
+    }
+
+    const availableTimes = rawAvailableTimes
+      .map((value) => String(value || "").trim())
+      .filter((value) => value !== "");
+
+    const rawAvailability = raw.availability;
+
+    if (!Array.isArray(rawAvailability)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "初期空き日程の形式が正しくありません。",
+      );
+    }
+
+    if (rawAvailability.length > 400) {
+      throw new HttpsError(
+        "invalid-argument",
+        "一度に登録できる日数を超えています。",
+      );
+    }
+
+    const allowedTimes = new Set(
+      Array.from(
+        {length: 13},
+        (_, index) =>
+          `${String(index + 9).padStart(2, "0")}:00`,
+      ),
+    );
+    const today = tokyoDateKey();
+    const seenDates = new Set();
+    const availability = [];
+
+    for (const rawDay of rawAvailability) {
+      const date = String(rawDay?.date || "")
+        .trim()
+        .replaceAll("/", "-");
+      const rawTimes = Array.isArray(rawDay?.times) ?
+        rawDay.times : [];
+      const times = [
+        ...new Set(
+          rawTimes
+            .map((value) => String(value || "").trim())
+            .filter((value) => value !== ""),
+        ),
+      ].sort();
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new HttpsError(
+          "invalid-argument",
+          "空き日程の日付形式が正しくありません。",
+        );
+      }
+
+      if (date < today) {
+        throw new HttpsError(
+          "failed-precondition",
+          "過去の日付は登録できません。",
+        );
+      }
+
+      if (seenDates.has(date)) {
+        throw new HttpsError(
+          "invalid-argument",
+          "同じ日付が重複しています。",
+        );
+      }
+
+      if (times.some((time) => !allowedTimes.has(time))) {
+        throw new HttpsError(
+          "invalid-argument",
+          "空き時間の形式が正しくありません。",
+        );
+      }
+
+      seenDates.add(date);
+      availability.push({date, times});
+    }
+
+    const careers = career
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter((value) => value !== "");
+
+    const db = getFirestore();
+    const coachRef = db
+      .collection("coaches")
+      .doc(uid);
+    const dateRefs = availability.map(({date}) =>
+      db
+        .collection("coachAvailability")
+        .doc(uid)
+        .collection("dates")
+        .doc(date),
+    );
+
+    await db.runTransaction(
+      async (transaction) => {
+        const coachSnap =
+          await transaction.get(coachRef);
+
+        if (coachSnap.exists) {
+          throw new HttpsError(
+            "already-exists",
+            "このアカウントはすでにコーチ登録されています。",
+          );
+        }
+
+        transaction.set(
+          coachRef,
+          {
+            coachId: uid,
+            ownerId: uid,
+            name,
+            area,
+            career,
+            careers,
+            tennisExperience,
+            coachingExperience,
+            price,
+            imageURL,
+            introduction,
+            rating: 5.0,
+            reviewCount: 0,
+            createdAt: FieldValue.serverTimestamp(),
+            availableTimes,
+            ageGroup,
+          },
+        );
+
+        availability.forEach(
+          ({times}, index) => {
+            transaction.set(
+              dateRefs[index],
+              {
+                times,
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          },
+        );
+      },
+    );
+
+    logger.info(
+      "コーチプロフィールを登録しました。",
+      {
+        coachId: uid,
+        initialAvailabilityDateCount:
+          availability.length,
+      },
+    );
+
+    return {
+      coachId: uid,
+      availabilityDateCount: availability.length,
+    };
+  },
+);
+
+
 /**
  * コーチ本人が予約申請を却下します。
  *
@@ -2344,13 +2609,6 @@ exports.submitReservationRequest = onCall(
           );
         }
 
-        if (!availabilitySnap.exists) {
-          throw new HttpsError(
-            "failed-precondition",
-            "選択した日の空き時間が見つかりません。",
-          );
-        }
-
         const coach = coachSnap.data();
         const student = studentSnap.exists ?
           studentSnap.data() :
@@ -2359,12 +2617,90 @@ exports.submitReservationRequest = onCall(
           student?.displayName || "生徒",
         ).trim() || "生徒";
 
-        const availableTimes = Array.isArray(
-          availabilitySnap.get("times"),
-        ) ?
-          availabilitySnap.get("times")
-            .map((time) => String(time)) :
-          [];
+        // 現行の coachAvailability を唯一の予約原本として扱います。
+        // ただし、旧バージョンで coaches.availableTimes のみを持つ
+        // コーチが残っている場合は、最初の予約時だけサーバー側で
+        // 旧データを読み取り、安全に coachAvailability へ移行します。
+        // クライアントから他コーチの空き枠を書き換える必要はありません。
+        let availableTimes = [];
+
+        if (availabilitySnap.exists) {
+          availableTimes = Array.isArray(
+            availabilitySnap.get("times"),
+          ) ?
+            availabilitySnap.get("times")
+              .map((time) => String(time).trim())
+              .filter((time) => time !== "") :
+            [];
+        } else {
+          const legacyEntries = Array.isArray(
+            coach.availableTimes,
+          ) ?
+            coach.availableTimes :
+            [];
+          const displayDate = date.replaceAll("-", "/");
+          const allowedLegacyTimes = new Set(
+            Array.from(
+              {length: 13},
+              (_, index) =>
+                `${String(index + 9).padStart(2, "0")}:00`,
+            ),
+          );
+
+          const migratedTimes = [];
+
+          for (const rawEntry of legacyEntries) {
+            const entry = String(rawEntry || "").trim();
+            const normalizedEntry = entry.replaceAll("~", "〜");
+
+            const prefixes = [
+              `${displayDate} `,
+              `${date} `,
+            ];
+            const matchedPrefix = prefixes.find(
+              (prefix) => normalizedEntry.startsWith(prefix),
+            );
+
+            if (!matchedPrefix) {
+              continue;
+            }
+
+            const range = normalizedEntry
+              .slice(matchedPrefix.length)
+              .trim();
+            const startTime = String(
+              range.split("〜")[0] || "",
+            ).trim();
+
+            if (!allowedLegacyTimes.has(startTime)) {
+              continue;
+            }
+
+            const legacySlotDate = new Date(
+              `${date}T${startTime}:00+09:00`,
+            );
+
+            if (
+              Number.isNaN(legacySlotDate.getTime()) ||
+              legacySlotDate.getTime() <= Date.now()
+            ) {
+              continue;
+            }
+
+            migratedTimes.push(startTime);
+          }
+
+          availableTimes = [
+            ...new Set(migratedTimes),
+          ].sort();
+
+          if (availableTimes.length === 0) {
+            throw new HttpsError(
+              "failed-precondition",
+              "選択した日の空き時間が見つかりません。",
+            );
+          }
+        }
 
         const unavailableTimes = selectedTimes.filter(
           (time) => !availableTimes.includes(time),
