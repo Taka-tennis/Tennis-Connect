@@ -36,138 +36,372 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        List {
-            Section("アカウント") {
-                HStack {
-                    Label(
-                        "メールアドレス",
-                        systemImage: "envelope"
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(
+                    alignment: .leading,
+                    spacing: 22
+                ) {
+                    headerSection
+
+                    settingsSection(
+                        title: "アカウント"
+                    ) {
+                        settingsInfoRow(
+                            title: "メールアドレス",
+                            value: loginEmail,
+                            systemImage: "envelope.fill",
+                            tint: .green
+                        )
+                    }
+
+                    settingsSection(
+                        title: "通知"
+                    ) {
+                        NavigationLink {
+                            SettingsInfoView(
+                                title: "通知設定",
+                                message:
+                                    "アプリ内通知は利用できます。" +
+                                    "プッシュ通知の細かな設定は、" +
+                                    "正式リリースに向けて追加予定です。"
+                            )
+                        } label: {
+                            settingsNavigationRow(
+                                title: "通知設定",
+                                subtitle:
+                                    "通知に関する設定を確認します",
+                                systemImage: "bell.fill",
+                                tint: .green
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    settingsSection(
+                        title: "サポート・ポリシー"
+                    ) {
+                        NavigationLink {
+                            TermsOfServiceView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "利用規約",
+                                systemImage: "doc.text.fill",
+                                tint: .green
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        NavigationLink {
+                            PrivacyPolicyView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "プライバシーポリシー",
+                                systemImage: "hand.raised.fill",
+                                tint: .green
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        NavigationLink {
+                            CancellationPolicyView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "キャンセル・返金ポリシー",
+                                systemImage:
+                                    "arrow.uturn.backward.circle.fill",
+                                tint: .orange
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        NavigationLink {
+                            CoachPayoutPolicyView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "コーチの売上・出金について",
+                                systemImage: "banknote.fill",
+                                tint: .green
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        NavigationLink {
+                            CommercialTransactionView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "特定商取引法に基づく表記",
+                                systemImage: "building.columns.fill",
+                                tint: .green
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        NavigationLink {
+                            InquiryView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "お問い合わせ",
+                                subtitle:
+                                    "予約・支払いなどについて運営へ連絡",
+                                systemImage:
+                                    "questionmark.circle.fill",
+                                tint: .green
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    settingsSection(
+                        title: "アカウント管理"
+                    ) {
+                        NavigationLink {
+                            BlockedUsersView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "ブロックしたユーザー",
+                                systemImage:
+                                    "person.crop.circle.badge.xmark",
+                                tint: .secondary
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        rowDivider
+
+                        NavigationLink {
+                            AccountDeletionCheckView()
+                        } label: {
+                            settingsNavigationRow(
+                                title: "アカウントを削除",
+                                subtitle:
+                                    "未処理の予約・返金を確認して削除します",
+                                systemImage:
+                                    "person.crop.circle.badge.minus",
+                                tint: .red,
+                                titleColor: .red
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    settingsSection(
+                        title: "アプリ情報"
+                    ) {
+                        settingsInfoRow(
+                            title: "バージョン",
+                            value: appVersion,
+                            systemImage: "info.circle.fill",
+                            tint: .green
+                        )
+                    }
+
+                    Text(
+                        "Tennis Connect"
                     )
-
-                    Spacer()
-
-                    Text(loginEmail)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .center
+                    )
+                    .padding(.top, 2)
                 }
-            }
-
-            Section("通知") {
-                NavigationLink {
-                    SettingsInfoView(
-                        title: "通知設定",
-                        message:
-                            "アプリ内通知は利用できます。" +
-                            "プッシュ通知の細かな設定は、" +
-                            "正式リリースに向けて追加予定です。"
-                    )
-                } label: {
-                    Label(
-                        "通知設定",
-                        systemImage: "bell"
-                    )
-                }
-            }
-
-            Section("サポート・ポリシー") {
-                NavigationLink {
-                    TermsOfServiceView()
-                } label: {
-                    Label(
-                        "利用規約",
-                        systemImage: "doc.text"
-                    )
-                }
-
-                NavigationLink {
-                    PrivacyPolicyView()
-                } label: {
-                    Label(
-                        "プライバシーポリシー",
-                        systemImage: "hand.raised"
-                    )
-                }
-
-                NavigationLink {
-                    CancellationPolicyView()
-                } label: {
-                    Label(
-                        "キャンセル・返金ポリシー",
-                        systemImage:
-                            "arrow.uturn.backward.circle"
-                    )
-                }
-
-                NavigationLink {
-                    CoachPayoutPolicyView()
-                } label: {
-                    Label(
-                        "コーチの売上・出金について",
-                        systemImage: "banknote"
-                    )
-                }
-
-                NavigationLink {
-                    CommercialTransactionView()
-                } label: {
-                    Label(
-                        "特定商取引法に基づく表記",
-                        systemImage: "building.columns"
-                    )
-                }
-
-                NavigationLink {
-                    InquiryView()
-                } label: {
-                    Label(
-                        "お問い合わせ",
-                        systemImage: "questionmark.circle"
-                    )
-                }
-            }
-
-            Section("アカウント管理") {
-                NavigationLink {
-                    BlockedUsersView()
-                } label: {
-                    Label(
-                        "ブロックしたユーザー",
-                        systemImage:
-                            "person.crop.circle.badge.xmark"
-                    )
-                }
-
-                NavigationLink {
-                    AccountDeletionCheckView()
-                } label: {
-                    Label(
-                        "アカウントを削除",
-                        systemImage:
-                            "person.crop.circle.badge.minus"
-                    )
-                    .foregroundStyle(.red)
-                }
-            }
-
-            Section("アプリ情報") {
-                HStack {
-                    Label(
-                        "バージョン",
-                        systemImage: "info.circle"
-                    )
-
-                    Spacer()
-
-                    Text(appVersion)
-                        .foregroundStyle(.secondary)
-                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 30)
             }
         }
-        .navigationTitle("設定")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
     }
-}
 
+    private var headerSection: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 6
+        ) {
+            Text("設定")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+
+            Text(
+                "アカウントやアプリの各種設定を確認できます"
+            )
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
+    }
+
+    @ViewBuilder
+    private func settingsSection<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(
+            alignment: .leading,
+            spacing: 10
+        ) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+
+            VStack(spacing: 0) {
+                content()
+            }
+            .background(
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
+                .fill(
+                    Color(
+                        .secondarySystemGroupedBackground
+                    )
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
+                .stroke(
+                    Color.primary.opacity(0.06),
+                    lineWidth: 1
+                )
+            }
+        }
+    }
+
+    private func settingsNavigationRow(
+        title: String,
+        subtitle: String? = nil,
+        systemImage: String,
+        tint: Color,
+        titleColor: Color = .primary
+    ) -> some View {
+        HStack(spacing: 14) {
+            settingsIcon(
+                systemImage: systemImage,
+                tint: tint
+            )
+
+            VStack(
+                alignment: .leading,
+                spacing: 3
+            ) {
+                Text(title)
+                    .font(.body)
+                    .fontWeight(.medium)
+                    .foregroundStyle(titleColor)
+
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            Image(systemName: "chevron.right")
+                .font(
+                    .system(
+                        size: 13,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private func settingsInfoRow(
+        title: String,
+        value: String,
+        systemImage: String,
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 14) {
+            settingsIcon(
+                systemImage: systemImage,
+                tint: tint
+            )
+
+            VStack(
+                alignment: .leading,
+                spacing: 3
+            ) {
+                Text(title)
+                    .font(.body)
+                    .fontWeight(.medium)
+
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private func settingsIcon(
+        systemImage: String,
+        tint: Color
+    ) -> some View {
+        ZStack {
+            RoundedRectangle(
+                cornerRadius: 10,
+                style: .continuous
+            )
+            .fill(tint.opacity(0.12))
+            .frame(
+                width: 38,
+                height: 38
+            )
+
+            Image(systemName: systemImage)
+                .font(
+                    .system(
+                        size: 16,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(tint)
+        }
+    }
+
+    private var rowDivider: some View {
+        Divider()
+            .padding(.leading, 68)
+    }
+}
 
 private struct InquiryView: View {
 

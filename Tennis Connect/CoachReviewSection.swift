@@ -1,9 +1,12 @@
 import SwiftUI
+import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 
 struct CoachReviewSection: View {
 
     let coachId: String
+    let coachName: String
 
     @State private var recentReviews: [CoachReviewItem] = []
     @State private var ratingAverage = 0.0
@@ -11,7 +14,41 @@ struct CoachReviewSection: View {
     @State private var isLoading = false
     @State private var errorMessage = ""
 
+    @State private var canCreateReview = false
+    @State private var canEditReview = false
+    @State private var eligibleReservationId = ""
+    @State private var existingReviewId = ""
+    @State private var existingRating = 0
+    @State private var existingComment = ""
+    @State private var isCheckingReviewAction = false
+    @State private var reviewActionError = ""
+
     private let db = Firestore.firestore()
+    private let functions = Functions.functions(
+        region: "asia-northeast1"
+    )
+
+    init(
+        coachId: String,
+        coachName: String = "コーチ"
+    ) {
+        self.coachId = coachId
+        self.coachName = coachName
+    }
+
+    private var currentUserId: String? {
+        Auth.auth().currentUser?.uid
+    }
+
+    private var shouldCheckReviewAction: Bool {
+        guard let currentUserId,
+              !currentUserId.isEmpty,
+              currentUserId != coachId else {
+            return false
+        }
+
+        return true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -49,6 +86,10 @@ struct CoachReviewSection: View {
                 }
             }
 
+            if shouldCheckReviewAction {
+                reviewActionContent
+            }
+
             Divider()
 
             reviewContent
@@ -74,6 +115,128 @@ struct CoachReviewSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .onAppear {
             loadReviews()
+            loadReviewActionStatus()
+        }
+    }
+
+    @ViewBuilder
+    private var reviewActionContent: some View {
+        if isCheckingReviewAction {
+            HStack(spacing: 9) {
+                ProgressView()
+                    .tint(.green)
+
+                Text("レビュー投稿状況を確認中…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+
+        } else if !reviewActionError.isEmpty {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(.secondary)
+
+                Text("レビュー投稿状況を確認できませんでした")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button("再確認") {
+                    loadReviewActionStatus()
+                }
+                .font(.caption)
+                .fontWeight(.semibold)
+                .buttonStyle(.plain)
+                .foregroundStyle(.green)
+            }
+            .padding(.vertical, 4)
+
+        } else if canEditReview,
+                  !existingReviewId.isEmpty,
+                  (1...5).contains(existingRating),
+                  !existingComment.isEmpty {
+            NavigationLink {
+                ReviewSubmissionView(
+                    reviewId: existingReviewId,
+                    coachName: coachName,
+                    existingRating: existingRating,
+                    existingComment: existingComment
+                ) {
+                    refreshAfterReviewChange()
+                }
+            } label: {
+                reviewActionButtonLabel(
+                    title: "あなたのレビューを編集",
+                    subtitle: "星の数やコメントを変更できます",
+                    systemImage: "square.and.pencil"
+                )
+            }
+            .buttonStyle(.plain)
+
+        } else if canCreateReview,
+                  !eligibleReservationId.isEmpty {
+            NavigationLink {
+                ReviewSubmissionView(
+                    reservationId: eligibleReservationId,
+                    coachName: coachName
+                ) {
+                    refreshAfterReviewChange()
+                }
+            } label: {
+                reviewActionButtonLabel(
+                    title: "このコーチのレビューを書く",
+                    subtitle: "受講したレッスンについて感想を投稿できます",
+                    systemImage: "star.bubble"
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func reviewActionButtonLabel(
+        title: String,
+        subtitle: String,
+        systemImage: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.green.opacity(0.12))
+                    .frame(width: 42, height: 42)
+
+                Image(systemName: systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.green)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.green.opacity(0.18), lineWidth: 1)
         }
     }
 
@@ -129,6 +292,123 @@ struct CoachReviewSection: View {
                 }
             }
         }
+    }
+
+    private func refreshAfterReviewChange() {
+        loadReviews()
+        loadReviewActionStatus()
+    }
+
+    private func loadReviewActionStatus() {
+        resetReviewActionState()
+
+        guard shouldCheckReviewAction else {
+            return
+        }
+
+        guard !coachId.isEmpty else {
+            reviewActionError = "コーチ情報を確認できませんでした"
+            return
+        }
+
+        isCheckingReviewAction = true
+        reviewActionError = ""
+
+        functions
+            .httpsCallable("getCoachReviewStatus")
+            .call(["coachId": coachId]) { result, error in
+                DispatchQueue.main.async {
+                    isCheckingReviewAction = false
+
+                    if let error {
+                        reviewActionError = error.localizedDescription
+                        return
+                    }
+
+                    guard let data = result?.data as? [String: Any] else {
+                        reviewActionError = "レビュー状況の確認結果を読み取れませんでした"
+                        return
+                    }
+
+                    let fetchedCanCreate =
+                        boolValue(data["canCreate"])
+                    let fetchedCanEdit =
+                        boolValue(data["canEdit"])
+                    let fetchedReservationId =
+                        stringValue(data["eligibleReservationId"])
+                    let fetchedReviewId =
+                        stringValue(data["existingReviewId"])
+                    let fetchedRating =
+                        intValue(data["existingRating"])
+                    let fetchedComment =
+                        stringValue(data["existingComment"])
+
+                    if fetchedCanEdit {
+                        guard !fetchedReviewId.isEmpty,
+                              (1...5).contains(fetchedRating),
+                              !fetchedComment.isEmpty else {
+                            reviewActionError =
+                                "レビュー情報を確認できませんでした"
+                            return
+                        }
+                    }
+
+                    if fetchedCanCreate &&
+                        fetchedReservationId.isEmpty {
+                        reviewActionError =
+                            "受講済みレッスンを確認できませんでした"
+                        return
+                    }
+
+                    canCreateReview = fetchedCanCreate
+                    canEditReview = fetchedCanEdit
+                    eligibleReservationId = fetchedReservationId
+                    existingReviewId = fetchedReviewId
+                    existingRating = fetchedRating
+                    existingComment = fetchedComment
+                    reviewActionError = ""
+                }
+            }
+    }
+
+    private func resetReviewActionState() {
+        canCreateReview = false
+        canEditReview = false
+        eligibleReservationId = ""
+        existingReviewId = ""
+        existingRating = 0
+        existingComment = ""
+        isCheckingReviewAction = false
+        reviewActionError = ""
+    }
+
+    private func boolValue(_ value: Any?) -> Bool {
+        if let value = value as? Bool {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.boolValue
+        }
+
+        return false
+    }
+
+    private func intValue(_ value: Any?) -> Int {
+        if let value = value as? Int {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+
+        return 0
+    }
+
+    private func stringValue(_ value: Any?) -> String {
+        (value as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func loadReviews() {

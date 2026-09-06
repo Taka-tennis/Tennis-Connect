@@ -3,14 +3,20 @@ import FirebaseFunctions
 
 struct ReviewSubmissionView: View {
 
+    private enum ReviewMode {
+        case create
+        case edit
+    }
+
     let reservationId: String
+    let reviewId: String?
     let coachName: String
     let onSubmitted: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var rating = 0
-    @State private var comment = ""
+    @State private var rating: Int
+    @State private var comment: String
     @State private var isSubmitting = false
     @State private var errorMessage = ""
     @State private var showSuccessAlert = false
@@ -25,8 +31,34 @@ struct ReviewSubmissionView: View {
         onSubmitted: (() -> Void)? = nil
     ) {
         self.reservationId = reservationId
+        self.reviewId = nil
         self.coachName = coachName
         self.onSubmitted = onSubmitted
+        _rating = State(initialValue: 0)
+        _comment = State(initialValue: "")
+    }
+
+    init(
+        reviewId: String,
+        coachName: String,
+        existingRating: Int,
+        existingComment: String,
+        onSubmitted: (() -> Void)? = nil
+    ) {
+        self.reservationId = ""
+        self.reviewId = reviewId
+        self.coachName = coachName
+        self.onSubmitted = onSubmitted
+        _rating = State(initialValue: existingRating)
+        _comment = State(initialValue: existingComment)
+    }
+
+    private var mode: ReviewMode {
+        reviewId == nil ? .create : .edit
+    }
+
+    private var isEditing: Bool {
+        mode == .edit
     }
 
     var body: some View {
@@ -34,13 +66,21 @@ struct ReviewSubmissionView: View {
             VStack(alignment: .leading, spacing: 24) {
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("レッスンはいかがでしたか？")
-                        .font(.title2)
-                        .fontWeight(.bold)
+                    Text(
+                        isEditing
+                            ? "レビューを編集"
+                            : "レッスンはいかがでしたか？"
+                    )
+                    .font(.title2)
+                    .fontWeight(.bold)
 
-                    Text("\(coachName)へのレビュー")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        isEditing
+                            ? "\(coachName)へのレビュー内容を変更できます"
+                            : "\(coachName)へのレビュー"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
 
                 ratingSection
@@ -51,11 +91,14 @@ struct ReviewSubmissionView: View {
                     Text(errorMessage)
                         .font(.caption)
                         .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .leading
+                        )
                 }
 
                 Button {
-                    submitReview()
+                    submit()
                 } label: {
                     HStack {
                         Spacer()
@@ -65,8 +108,13 @@ struct ReviewSubmissionView: View {
                                 .tint(.white)
                         } else {
                             Label(
-                                "レビューを投稿する",
-                                systemImage: "paperplane.fill"
+                                isEditing
+                                    ? "レビューを更新する"
+                                    : "レビューを投稿する",
+                                systemImage:
+                                    isEditing
+                                    ? "square.and.pencil"
+                                    : "paperplane.fill"
                             )
                             .fontWeight(.semibold)
                         }
@@ -84,20 +132,32 @@ struct ReviewSubmissionView: View {
                         RoundedRectangle(cornerRadius: 14)
                     )
                 }
+                .buttonStyle(.plain)
                 .disabled(!canSubmit || isSubmitting)
             }
             .padding()
         }
-        .navigationTitle("レビュー投稿")
+        .navigationTitle(
+            isEditing ? "レビュー編集" : "レビュー投稿"
+        )
         .navigationBarTitleDisplayMode(.inline)
         .interactiveDismissDisabled(isSubmitting)
-        .alert("レビューを投稿しました", isPresented: $showSuccessAlert) {
+        .alert(
+            isEditing
+                ? "レビューを更新しました"
+                : "レビューを投稿しました",
+            isPresented: $showSuccessAlert
+        ) {
             Button("OK") {
                 onSubmitted?()
                 dismiss()
             }
         } message: {
-            Text("ご協力ありがとうございます。")
+            Text(
+                isEditing
+                    ? "変更内容を反映しました。"
+                    : "ご協力ありがとうございます。"
+            )
         }
     }
 
@@ -173,9 +233,13 @@ struct ReviewSubmissionView: View {
                     }
                 }
 
-            Text("レッスン内容やコーチの教え方についてご記入ください。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(
+                isEditing
+                    ? "星の数とコメントは何度でも更新できます。"
+                    : "レッスン内容やコーチの教え方についてご記入ください。"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding()
         .background(Color(.systemGray6))
@@ -194,24 +258,23 @@ struct ReviewSubmissionView: View {
         trimmedComment.count <= 500
     }
 
-    private func submitReview() {
+    private func submit() {
+        switch mode {
+        case .create:
+            submitNewReview()
+
+        case .edit:
+            updateExistingReview()
+        }
+    }
+
+    private func submitNewReview() {
         guard !reservationId.isEmpty else {
             errorMessage = "予約情報を確認できませんでした"
             return
         }
 
-        guard (1...5).contains(rating) else {
-            errorMessage = "評価を1〜5で選択してください"
-            return
-        }
-
-        guard !trimmedComment.isEmpty else {
-            errorMessage = "レビュー本文を入力してください"
-            return
-        }
-
-        guard trimmedComment.count <= 500 else {
-            errorMessage = "レビュー本文は500文字以内で入力してください"
+        guard validateInput() else {
             return
         }
 
@@ -227,23 +290,91 @@ struct ReviewSubmissionView: View {
                     "comment": trimmedComment
                 ]
             ) { _, error in
-                isSubmitting = false
+                DispatchQueue.main.async {
+                    isSubmitting = false
 
-                if let error = error {
-                    errorMessage = error.localizedDescription
-                    return
+                    if let error = error {
+                        errorMessage = error.localizedDescription
+                        return
+                    }
+
+                    showSuccessAlert = true
                 }
-
-                showSuccessAlert = true
             }
+    }
+
+    private func updateExistingReview() {
+        guard let reviewId,
+              !reviewId.isEmpty else {
+            errorMessage = "レビュー情報を確認できませんでした"
+            return
+        }
+
+        guard validateInput() else {
+            return
+        }
+
+        isSubmitting = true
+        errorMessage = ""
+
+        functions
+            .httpsCallable("updateReview")
+            .call(
+                [
+                    "reviewId": reviewId,
+                    "rating": rating,
+                    "comment": trimmedComment
+                ]
+            ) { _, error in
+                DispatchQueue.main.async {
+                    isSubmitting = false
+
+                    if let error = error {
+                        errorMessage = error.localizedDescription
+                        return
+                    }
+
+                    showSuccessAlert = true
+                }
+            }
+    }
+
+    private func validateInput() -> Bool {
+        guard (1...5).contains(rating) else {
+            errorMessage = "評価を1〜5で選択してください"
+            return false
+        }
+
+        guard !trimmedComment.isEmpty else {
+            errorMessage = "レビュー本文を入力してください"
+            return false
+        }
+
+        guard trimmedComment.count <= 500 else {
+            errorMessage = "レビュー本文は500文字以内で入力してください"
+            return false
+        }
+
+        return true
     }
 }
 
-#Preview {
+#Preview("新規投稿") {
     NavigationStack {
         ReviewSubmissionView(
             reservationId: "sampleReservation",
             coachName: "山田コーチ"
+        )
+    }
+}
+
+#Preview("編集") {
+    NavigationStack {
+        ReviewSubmissionView(
+            reviewId: "sampleReview",
+            coachName: "山田コーチ",
+            existingRating: 4,
+            existingComment: "とても分かりやすいレッスンでした。"
         )
     }
 }

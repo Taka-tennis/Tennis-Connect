@@ -7516,3 +7516,499 @@ exports.submitReview = onCall(
     return result;
   },
 );
+
+
+/**
+ * コーチ詳細画面などから、ログイン中の生徒が
+ * そのコーチへレビューを新規投稿・編集できる状態か確認します。
+ *
+ * 既存のsubmitReviewと同じ条件で受講済み予約を判定し、
+ * 同じ生徒×同じコーチのレビューは1件だけ返します。
+ */
+exports.getCoachReviewStatus = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "レビュー状況の確認にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const coachId = String(
+      request.data?.coachId || "",
+    ).trim();
+
+    if (!coachId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "コーチ情報がありません。",
+      );
+    }
+
+    if (coachId === uid) {
+      return {
+        canCreate: false,
+        canEdit: false,
+        hasEligibleLesson: false,
+        eligibleReservationId: "",
+        existingReviewId: "",
+        existingRating: 0,
+        existingComment: "",
+        state: "own_profile",
+      };
+    }
+
+    const db = getFirestore();
+    const studentRef = db
+      .collection("students")
+      .doc(uid);
+    const reviewUniquenessRef = studentRef
+      .collection("reviewedCoaches")
+      .doc(coachId);
+
+    const [
+      reservationSnapshot,
+      studentReviewSnapshot,
+      reviewUniquenessSnap,
+    ] = await Promise.all([
+      db.collection("reservations")
+        .where("studentId", "==", uid)
+        .get(),
+      db.collection("reviews")
+        .where("studentId", "==", uid)
+        .get(),
+      reviewUniquenessRef.get(),
+    ]);
+
+    let existingReviewSnap = null;
+
+    const matchingReviewDocument =
+      studentReviewSnapshot.docs.find(
+        (document) => {
+          return String(
+            document.get("coachId") || "",
+          ) === coachId;
+        },
+      );
+
+    if (matchingReviewDocument) {
+      existingReviewSnap = matchingReviewDocument;
+    } else if (reviewUniquenessSnap.exists) {
+      const savedReviewId = String(
+        reviewUniquenessSnap.data()?.reviewId || "",
+      ).trim();
+
+      if (savedReviewId) {
+        const referencedReviewSnap = await db
+          .collection("reviews")
+          .doc(savedReviewId)
+          .get();
+
+        if (referencedReviewSnap.exists) {
+          const referencedReview =
+            referencedReviewSnap.data() || {};
+
+          if (
+            referencedReview.studentId === uid &&
+            String(
+              referencedReview.coachId || "",
+            ) === coachId
+          ) {
+            existingReviewSnap =
+              referencedReviewSnap;
+          }
+        }
+      }
+    }
+
+    if (existingReviewSnap) {
+      const existingReview =
+        existingReviewSnap.data() || {};
+      const existingRating =
+        Number(existingReview.rating);
+      const existingComment = String(
+        existingReview.comment || "",
+      ).trim();
+
+      if (
+        !Number.isInteger(existingRating) ||
+        existingRating < 1 ||
+        existingRating > 5 ||
+        !existingComment
+      ) {
+        return {
+          canCreate: false,
+          canEdit: false,
+          hasEligibleLesson: true,
+          eligibleReservationId: "",
+          existingReviewId:
+            existingReviewSnap.id,
+          existingRating: 0,
+          existingComment: "",
+          state: "invalid_existing_review",
+        };
+      }
+
+      return {
+        canCreate: false,
+        canEdit: true,
+        hasEligibleLesson: true,
+        eligibleReservationId: "",
+        existingReviewId:
+          existingReviewSnap.id,
+        existingRating,
+        existingComment,
+        state: "reviewed",
+      };
+    }
+
+    if (reviewUniquenessSnap.exists) {
+      return {
+        canCreate: false,
+        canEdit: false,
+        hasEligibleLesson: false,
+        eligibleReservationId: "",
+        existingReviewId: "",
+        existingRating: 0,
+        existingComment: "",
+        state: "review_reference_missing",
+      };
+    }
+
+    const now = new Date();
+    const eligibleReservations = [];
+
+    for (const document of reservationSnapshot.docs) {
+      const reservation = document.data();
+      const reservationCoachId = String(
+        reservation.coachId || "",
+      );
+
+      if (reservationCoachId !== coachId) {
+        continue;
+      }
+
+      if (
+        reservation.paymentStatus !== "paid" ||
+        !["paid", "completed"].includes(
+          String(reservation.status || ""),
+        )
+      ) {
+        continue;
+      }
+
+      if (
+        reservation.refundStatus === "succeeded" ||
+        reservation.paymentStatus === "refunded" ||
+        reservation.status === "coach_cancelled" ||
+        reservation.status === "cancelled" ||
+        reservation.status === "canceled"
+      ) {
+        continue;
+      }
+
+      const lessonEndDate =
+        lessonEndDateFromReservation(
+          reservation,
+        );
+
+      if (
+        !lessonEndDate ||
+        lessonEndDate > now
+      ) {
+        continue;
+      }
+
+      eligibleReservations.push({
+        reservationId: document.id,
+        lessonEndDate,
+      });
+    }
+
+    eligibleReservations.sort(
+      (left, right) => {
+        return (
+          right.lessonEndDate.getTime() -
+          left.lessonEndDate.getTime()
+        );
+      },
+    );
+
+    const eligibleReservationId =
+      eligibleReservations[0]
+        ?.reservationId || "";
+
+    return {
+      canCreate:
+        Boolean(eligibleReservationId),
+      canEdit: false,
+      hasEligibleLesson:
+        Boolean(eligibleReservationId),
+      eligibleReservationId,
+      existingReviewId: "",
+      existingRating: 0,
+      existingComment: "",
+      state: eligibleReservationId ?
+        "eligible" :
+        "not_eligible",
+    };
+  },
+);
+
+
+/**
+ * 投稿済みレビューを本人だけが編集します。
+ *
+ * レビュー件数は変えず、星評価が変わった場合は
+ * coach側のratingSum / ratingAverageもTransactionで同期します。
+ */
+exports.updateReview = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "レビュー編集にはログインが必要です。",
+      );
+    }
+
+    const reviewId = String(
+      request.data?.reviewId || "",
+    ).trim();
+    const rating = Number(
+      request.data?.rating,
+    );
+    const comment = String(
+      request.data?.comment || "",
+    ).trim();
+
+    if (!reviewId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "レビュー情報がありません。",
+      );
+    }
+
+    if (
+      !Number.isInteger(rating) ||
+      rating < 1 ||
+      rating > 5
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "評価は1〜5で選択してください。",
+      );
+    }
+
+    if (
+      comment.length < 1 ||
+      comment.length > 500
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "レビュー本文は1〜500文字で入力してください。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reviewRef = db
+      .collection("reviews")
+      .doc(reviewId);
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const reviewSnap =
+          await transaction.get(
+            reviewRef,
+          );
+
+        if (!reviewSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "レビューが見つかりません。",
+          );
+        }
+
+        const review =
+          reviewSnap.data() || {};
+
+        if (review.studentId !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "このレビューは編集できません。",
+          );
+        }
+
+        const coachId = String(
+          review.coachId || "",
+        ).trim();
+
+        if (!coachId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "コーチ情報を確認できませんでした。",
+          );
+        }
+
+        const previousRating = Number(
+          review.rating,
+        );
+
+        if (
+          !Number.isInteger(previousRating) ||
+          previousRating < 1 ||
+          previousRating > 5
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "現在のレビュー評価を確認できませんでした。",
+          );
+        }
+
+        const coachRef = db
+          .collection("coaches")
+          .doc(coachId);
+        const coachSnap =
+          await transaction.get(
+            coachRef,
+          );
+
+        if (!coachSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "コーチ情報が見つかりません。",
+          );
+        }
+
+        const coach =
+          coachSnap.data() || {};
+        const storedRatingCount = Number(
+          coach.ratingCount ??
+          coach.reviewCount ??
+          0,
+        );
+
+        if (
+          !Number.isInteger(
+            storedRatingCount,
+          ) ||
+          storedRatingCount <= 0
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "コーチの評価集計を確認できませんでした。",
+          );
+        }
+
+        const storedRatingSum = Number(
+          coach.ratingSum,
+        );
+        const fallbackAverage = Number(
+          coach.ratingAverage ??
+          coach.rating ??
+          0,
+        );
+
+        let currentRatingSum;
+
+        if (
+          Number.isFinite(
+            storedRatingSum,
+          ) &&
+          storedRatingSum >= 0
+        ) {
+          currentRatingSum =
+            storedRatingSum;
+        } else if (
+          Number.isFinite(
+            fallbackAverage,
+          ) &&
+          fallbackAverage >= 0
+        ) {
+          currentRatingSum =
+            Math.round(
+              fallbackAverage *
+              storedRatingCount,
+            );
+        } else {
+          throw new HttpsError(
+            "failed-precondition",
+            "コーチの評価集計を確認できませんでした。",
+          );
+        }
+
+        const nextRatingSum =
+          currentRatingSum -
+          previousRating +
+          rating;
+
+        if (nextRatingSum < 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "コーチの評価集計を更新できませんでした。",
+          );
+        }
+
+        const nextRatingAverage =
+          Math.round(
+            (
+              nextRatingSum /
+              storedRatingCount
+            ) *
+            100,
+          ) / 100;
+
+        transaction.set(
+          reviewRef,
+          {
+            rating,
+            comment,
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        transaction.set(
+          coachRef,
+          {
+            ratingSum:
+              nextRatingSum,
+            ratingAverage:
+              nextRatingAverage,
+            ratingCount:
+              storedRatingCount,
+            rating:
+              nextRatingAverage,
+            reviewCount:
+              storedRatingCount,
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          reviewId,
+          coachId,
+          ratingAverage:
+            nextRatingAverage,
+          ratingCount:
+            storedRatingCount,
+        };
+      },
+    );
+
+    logger.info(
+      "レビューを編集しました。",
+      {
+        reviewId,
+        studentId: uid,
+        coachId: result.coachId,
+      },
+    );
+
+    return result;
+  },
+);

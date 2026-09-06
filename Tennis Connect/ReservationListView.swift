@@ -1485,6 +1485,9 @@ private struct StudentReservationDetailView: View {
 
     @State private var reviewSubmitted: Bool
     @State private var hasReviewedCoach = false
+    @State private var existingReviewId: String
+    @State private var existingReviewRating = 0
+    @State private var existingReviewComment = ""
     @State private var isCheckingCoachReview = true
     @State private var reviewEligibilityError = ""
 
@@ -1529,6 +1532,9 @@ private struct StudentReservationDetailView: View {
         self.onCancellationCompleted = onCancellationCompleted
         _reviewSubmitted = State(
             initialValue: !reservation.reviewId.isEmpty
+        )
+        _existingReviewId = State(
+            initialValue: reservation.reviewId
         )
         _weatherCancellationStatus = State(
             initialValue: reservation.weatherCancellationStatus
@@ -2217,89 +2223,72 @@ private struct StudentReservationDetailView: View {
 
     @ViewBuilder
     private var reviewSection: some View {
-        if reviewSubmitted {
-            Label(
-                "レビュー投稿済み",
-                systemImage:
-                    "checkmark.seal.fill"
+        if isCheckingCoachReview {
+            ProgressView(
+                "レビュー状況を確認中…"
             )
-            .fontWeight(.semibold)
+            .font(.caption)
             .foregroundStyle(
-                StudentReservationUI.brandGreen
+                StudentReservationUI.textSecondary
             )
-            .frame(
-                maxWidth: .infinity
-            )
-            .padding(16)
-            .background(Color.white)
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: 18,
-                    style: .continuous
-                )
-            )
-            .overlay {
-                RoundedRectangle(
-                    cornerRadius: 18,
-                    style: .continuous
-                )
-                .stroke(
-                    StudentReservationUI.border,
-                    lineWidth: 1
-                )
-            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
 
-        } else if canWriteReview {
-            if isCheckingCoachReview {
-                ProgressView(
-                    "レビュー状況を確認中…"
+        } else if !reviewEligibilityError.isEmpty {
+            VStack(spacing: 10) {
+                Text(
+                    "レビュー状況を確認できませんでした"
                 )
                 .font(.caption)
                 .foregroundStyle(
                     StudentReservationUI.textSecondary
                 )
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
 
-            } else if
-                !reviewEligibilityError.isEmpty {
-                VStack(spacing: 10) {
-                    Text(
-                        "レビュー状況を確認できませんでした"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(
-                        StudentReservationUI.textSecondary
-                    )
-
-                    Button("再確認") {
-                        checkExistingCoachReview()
-                    }
-                    .buttonStyle(.bordered)
+                Button("再確認") {
+                    checkExistingCoachReview()
                 }
-                .frame(
-                    maxWidth: .infinity
-                )
-
-            } else if !hasReviewedCoach {
-                NavigationLink {
-                    ReviewSubmissionView(
-                        reservationId:
-                            reservation.id,
-                        coachName:
-                            reservation.coachName
-                    ) {
-                        reviewSubmitted = true
-                        hasReviewedCoach = true
-                    }
-                } label: {
-                    actionButtonLabel(
-                        title: "レビューを書く",
-                        icon: "star.fill"
-                    )
-                }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
             }
+            .frame(maxWidth: .infinity)
+
+        } else if hasReviewedCoach &&
+                    !existingReviewId.isEmpty &&
+                    (1...5).contains(existingReviewRating) &&
+                    !existingReviewComment.isEmpty {
+            NavigationLink {
+                ReviewSubmissionView(
+                    reviewId: existingReviewId,
+                    coachName: reservation.coachName,
+                    existingRating: existingReviewRating,
+                    existingComment: existingReviewComment
+                ) {
+                    reviewSubmitted = true
+                    checkExistingCoachReview()
+                }
+            } label: {
+                actionButtonLabel(
+                    title: "レビューを編集",
+                    icon: "square.and.pencil"
+                )
+            }
+            .buttonStyle(.plain)
+
+        } else if canWriteReview {
+            NavigationLink {
+                ReviewSubmissionView(
+                    reservationId: reservation.id,
+                    coachName: reservation.coachName
+                ) {
+                    reviewSubmitted = true
+                    checkExistingCoachReview()
+                }
+            } label: {
+                actionButtonLabel(
+                    title: "レビューを書く",
+                    icon: "star.fill"
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -2657,15 +2646,11 @@ private struct StudentReservationDetailView: View {
     }
 
     private func checkExistingCoachReview() {
-        if reviewSubmitted {
-            hasReviewedCoach = true
-            isCheckingCoachReview = false
-            reviewEligibilityError = ""
-            return
-        }
-
-        guard canWriteReview else {
+        guard canWriteReview || reviewSubmitted else {
             hasReviewedCoach = false
+            existingReviewId = ""
+            existingReviewRating = 0
+            existingReviewComment = ""
             isCheckingCoachReview = false
             reviewEligibilityError = ""
             return
@@ -2674,8 +2659,12 @@ private struct StudentReservationDetailView: View {
         guard let uid = Auth.auth().currentUser?.uid,
               !reservation.coachId.isEmpty else {
             hasReviewedCoach = false
+            existingReviewId = ""
+            existingReviewRating = 0
+            existingReviewComment = ""
             isCheckingCoachReview = false
-            reviewEligibilityError = "レビュー状況を確認できませんでした"
+            reviewEligibilityError =
+                "レビュー状況を確認できませんでした"
             return
         }
 
@@ -2696,8 +2685,43 @@ private struct StudentReservationDetailView: View {
                         return
                     }
 
-                    hasReviewedCoach =
-                        !(snapshot?.documents.isEmpty ?? true)
+                    guard let document =
+                            snapshot?.documents.first else {
+                        hasReviewedCoach = false
+                        existingReviewId = ""
+                        existingReviewRating = 0
+                        existingReviewComment = ""
+                        reviewEligibilityError = ""
+                        return
+                    }
+
+                    let data = document.data()
+                    let rating =
+                        (data["rating"] as? NSNumber)?.intValue
+                        ?? data["rating"] as? Int
+                        ?? 0
+                    let comment =
+                        (data["comment"] as? String ?? "")
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            )
+
+                    guard (1...5).contains(rating),
+                          !comment.isEmpty else {
+                        hasReviewedCoach = false
+                        existingReviewId = ""
+                        existingReviewRating = 0
+                        existingReviewComment = ""
+                        reviewEligibilityError =
+                            "レビュー内容を読み取れませんでした"
+                        return
+                    }
+
+                    hasReviewedCoach = true
+                    reviewSubmitted = true
+                    existingReviewId = document.documentID
+                    existingReviewRating = rating
+                    existingReviewComment = comment
                     reviewEligibilityError = ""
                 }
             }
