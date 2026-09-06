@@ -59,45 +59,35 @@ service cloud.firestore {
 
     // コーチプロフィール：閲覧は公開、編集は本人だけ
     // 削除は正式な退会処理（Cloud Functions）からのみ行う
+    // コーチプロフィール
+    // 新規登録はregisterCoachProfile（Cloud Functions / Admin SDK）からのみ行う。
+    // クライアント更新は、本人のプロフィール表示項目とプロフィール動画情報だけを許可する。
     match /coaches/{coachId} {
       allow read: if true;
 
-      allow create:
-        if signedIn()
-        && request.auth.uid == coachId
-        && request.resource.data.keys().hasAll([
-          'coachId',
-          'ownerId',
-          'rating',
-          'reviewCount',
-          'createdAt'
-        ])
-        && request.resource.data.coachId == request.auth.uid
-        && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.rating == 5.0
-        && request.resource.data.reviewCount == 0
-        && request.resource.data.createdAt == request.time
-        && !request.resource.data.keys().hasAny([
-          'ratingAverage',
-          'ratingCount',
-          'ratingSum'
-        ]);
+      allow create: if false;
 
       allow update:
         if signedIn()
         && request.auth.uid == coachId
-        && !request.resource.data
+        && request.resource.data
           .diff(resource.data)
           .affectedKeys()
-          .hasAny([
-            'coachId',
-            'ownerId',
-            'rating',
-            'ratingAverage',
-            'ratingCount',
-            'ratingSum',
-            'reviewCount',
-            'createdAt'
+          .hasOnly([
+            'name',
+            'area',
+            'career',
+            'careers',
+            'tennisExperience',
+            'coachingExperience',
+            'price',
+            'imageURL',
+            'introduction',
+            'ageGroup',
+            'specialty',
+            'profileVideoURL',
+            'profileVideoPath',
+            'profileVideoUpdatedAt'
           ]);
 
       allow delete: if false;
@@ -240,26 +230,12 @@ service cloud.firestore {
     }
 
     // アプリ内通知
+    // 通知の作成はCloud Functions（Admin SDK）からのみ行う。
+    // クライアントは自分宛ての通知を読み、
+    // 未読→既読へ変更することだけ許可する。
     match /notifications/{notificationId} {
 
-      // コーチ→生徒：予約承認・却下通知
-      allow create:
-        if signedIn()
-        && ('type' in request.resource.data)
-        && ('recipientId' in request.resource.data)
-        && ('reservationId' in request.resource.data)
-        && ('coachId' in request.resource.data)
-        && request.resource.data.type in [
-          'reservationApproved',
-          'reservationRejected'
-        ]
-        && request.resource.data.coachId == request.auth.uid
-        && get(
-          /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
-        ).data.coachId == request.auth.uid
-        && get(
-          /databases/$(database)/documents/reservations/$(request.resource.data.reservationId)
-        ).data.studentId == request.resource.data.recipientId;
+      allow create: if false;
 
       allow read:
         if signedIn()
