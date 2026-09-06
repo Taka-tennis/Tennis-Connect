@@ -16,8 +16,6 @@ struct RegisterButtonSectionView: View {
     @Binding var ageGroup: String
     @Binding var showSuccessAlert: Bool
 
-    @Environment(\.dismiss) private var dismiss
-
     @State private var registrationError = ""
     @State private var isRegistering = false
 
@@ -52,7 +50,10 @@ struct RegisterButtonSectionView: View {
         }
         .alert("登録完了", isPresented: $showSuccessAlert) {
             Button("OK") {
-                dismiss()
+                NotificationCenter.default.post(
+                    name: .coachRegistrationCompleted,
+                    object: nil
+                )
             }
         } message: {
             Text("コーチを登録しました！")

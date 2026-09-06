@@ -52,6 +52,10 @@ struct CoachAvailabilityView: View {
     // 日付を移動してもここに保持し、最後にまとめて保存する。
     @State private var draftTimesByDate: [String: Set<String>] = [:]
 
+    // Firestore / Cloud Functions から取得した「最後に保存済み」の基準値。
+    // 下書きがこの値と同じ状態へ戻った場合は、未保存変更として扱わない。
+    @State private var savedTimesByDate: [String: Set<String>] = [:]
+
     // 実際にユーザーが変更した日だけを保存対象にする。
     @State private var dirtyDateKeys: Set<String> = []
 
@@ -746,7 +750,18 @@ struct CoachAvailabilityView: View {
         // 日付を移動しても選択内容が消えないよう、
         // 変更のたびにその日の下書きを更新する。
         draftTimesByDate[dateKey] = selectedTimes
-        dirtyDateKeys.insert(dateKey)
+
+        // 最後に保存済みの状態と比較する。
+        // 一度変更したあと元の状態へ戻した場合は、
+        // 実質的な変更がないため未保存扱いを解除する。
+        let savedTimes =
+            savedTimesByDate[dateKey] ?? []
+
+        if selectedTimes == savedTimes {
+            dirtyDateKeys.remove(dateKey)
+        } else {
+            dirtyDateKeys.insert(dateKey)
+        }
     }
 
     private func loadAvailability() {
@@ -826,6 +841,11 @@ struct CoachAvailabilityView: View {
                             Set(savedTimes)
                                 .subtracting(reservedTimes)
 
+                        // この時点のサーバー状態を「最後に保存済み」の
+                        // 比較基準として保持する。
+                        savedTimesByDate[requestedDateKey] =
+                            safeSavedTimes
+
                         // ユーザーがまだこの日を変更していなければ、
                         // Firestoreの最新値を下書きの初期値にする。
                         // 変更済みなら下書きを絶対に上書きしない。
@@ -846,6 +866,15 @@ struct CoachAvailabilityView: View {
                         draftTimesByDate[requestedDateKey] =
                             safeDraftTimes
                         selectedTimes = safeDraftTimes
+
+                        // 予約状況の更新などで下書きと保存済み状態が
+                        // 再び一致した場合も、未保存扱いを解除する。
+                        if safeDraftTimes == safeSavedTimes {
+                            dirtyDateKeys.remove(requestedDateKey)
+                        } else {
+                            dirtyDateKeys.insert(requestedDateKey)
+                        }
+
                         errorMessage = ""
                     }
                 }
@@ -1119,6 +1148,7 @@ struct CoachAvailabilityView: View {
                     // Cloud Functions側で除外された値だけを採用する。
                     for (dateKey, safeTimes) in sanitizedDrafts {
                         draftTimesByDate[dateKey] = safeTimes
+                        savedTimesByDate[dateKey] = safeTimes
                     }
 
                     dirtyDateKeys.subtract(

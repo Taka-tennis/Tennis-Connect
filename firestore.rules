@@ -104,12 +104,11 @@ service cloud.firestore {
     }
 
     // 空き日程
+    // 読み取りは公開。書き込みはCloud Functions（Admin SDK）からのみ行う。
+    // クライアントからの直接create/update/deleteはすべて禁止する。
     match /coachAvailability/{coachId}/dates/{dateId} {
       allow read: if true;
-
-      allow write:
-        if signedIn()
-        && request.auth.uid == coachId;
+      allow write: if false;
     }
 
     // 予約

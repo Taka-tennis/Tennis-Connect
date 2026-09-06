@@ -46,7 +46,6 @@
 		139711DB301A3AA30031C537 /* BookingCompleteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DA301A3AA30031C537 /* BookingCompleteView.swift */; };
 		139711DD301A3C780031C537 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DC301A3C780031C537 /* ChatView.swift */; };
 		139711DF301A42E00031C537 /* ReservationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711DE301A42E00031C537 /* ReservationListView.swift */; };
-		139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E0301A44890031C537 /* ReservationDetailView.swift */; };
 		139711E3301EFEBB0031C537 /* BasicInfoSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E2301EFEBB0031C537 /* BasicInfoSectionView.swift */; };
 		139711E5301EFED00031C537 /* ProfileSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E4301EFED00031C537 /* ProfileSectionView.swift */; };
 		139711E7301EFEEB0031C537 /* AvailableTimeSectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711E6301EFEEB0031C537 /* AvailableTimeSectionView.swift */; };
@@ -106,7 +105,6 @@
 		139711DA301A3AA30031C537 /* BookingCompleteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingCompleteView.swift; sourceTree = "<group>"; };
 		139711DC301A3C780031C537 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		139711DE301A42E00031C537 /* ReservationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationListView.swift; sourceTree = "<group>"; };
-		139711E0301A44890031C537 /* ReservationDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReservationDetailView.swift; sourceTree = "<group>"; };
 		139711E2301EFEBB0031C537 /* BasicInfoSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BasicInfoSectionView.swift; sourceTree = "<group>"; };
 		139711E4301EFED00031C537 /* ProfileSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileSectionView.swift; sourceTree = "<group>"; };
 		139711E6301EFEEB0031C537 /* AvailableTimeSectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvailableTimeSectionView.swift; sourceTree = "<group>"; };
@@ -178,7 +176,6 @@
 				139711D6301A365F0031C537 /* BookingConfirmView.swift */,
 				139712073031CB1B0031C537 /* SettingsView.swift */,
 				1397120330304ECF0031C537 /* ReviewSubmissionView.swift */,
-				139711E0301A44890031C537 /* ReservationDetailView.swift */,
 				139711BA3018E3D00031C537 /* CoachHomeView.swift */,
 				13971209303813FC0031C537 /* CoachVideoUploadSection.swift */,
 				07134EEB301341A600A87536 /* ProfileDetailView.swift */,
@@ -322,7 +319,6 @@
 				07134EDE3011F33900A87536 /* HomeView.swift in Sources */,
 				139712083031CB1B0031C537 /* SettingsView.swift in Sources */,
 				139711BD3018E9760031C537 /* MainTabView.swift in Sources */,
-				139711E1301A44890031C537 /* ReservationDetailView.swift in Sources */,
 				139711C53018EBF30031C537 /* CoachDetailView.swift in Sources */,
 				07EDD484300F67AC0097B050 /* ContentView.swift in Sources */,
 				139711B53017424D0031C537 /* CoachRegisterView.swift in Sources */,

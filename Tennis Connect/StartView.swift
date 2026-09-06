@@ -3,6 +3,11 @@ import FirebaseAuth
 import FirebaseFirestore
 import Combine
 
+extension Notification.Name {
+    static let coachRegistrationCompleted =
+        Notification.Name("coachRegistrationCompleted")
+}
+
 struct StartView: View {
 
     @State private var showCoachLogin = false
@@ -167,6 +172,23 @@ struct StartView: View {
                 print("スタート画面へ戻ります")
                 studentHomeId = UUID()
                 showStudentHome = false
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: .coachRegistrationCompleted
+                )
+            ) { _ in
+                print("コーチ登録完了通知を受信しました")
+
+                coachErrorMessage = ""
+                showCoachRegister = false
+
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + 0.15
+                ) {
+                    showCoachHome = true
+                    print("コーチホームへ移動しました")
+                }
             }
         }
     }

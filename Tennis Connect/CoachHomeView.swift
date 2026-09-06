@@ -920,18 +920,39 @@ private struct CoachTabDashboardView: View {
                         .subtracting(reservedTimes)
                         .filter { isFutureTimeSlot($0, dateKey: dateKey) }
 
-                if savedSameDayAvailable && actualAvailableTimes.isEmpty {
-                    try? await todayRef.setData(
-                        ["sameDayAvailable": false],
-                        merge: true
-                    )
+                if savedSameDayAvailable &&
+                    actualAvailableTimes.isEmpty {
+                    do {
+                        let functions =
+                            Functions.functions(
+                                region: "asia-northeast1"
+                            )
+
+                        _ = try await functions
+                            .httpsCallable(
+                                "setCoachSameDayAvailability"
+                            )
+                            .call(
+                                [
+                                    "enabled": false
+                                ]
+                            )
+                    } catch {
+                        print(
+                            "本日の受付自動OFF更新失敗:",
+                            error.localizedDescription
+                        )
+                    }
                 }
 
                 await MainActor.run {
-                    todayAvailableTimeCount = actualAvailableTimes.count
+                    todayAvailableTimeCount =
+                        actualAvailableTimes.count
+
                     isSameDayAvailable =
                         savedSameDayAvailable &&
                         !actualAvailableTimes.isEmpty
+
                     isLoadingSameDayStatus = false
                     sameDayErrorMessage = ""
                 }
@@ -950,103 +971,56 @@ private struct CoachTabDashboardView: View {
     }
 
     private func toggleSameDayAvailability() {
-        guard let uid = Auth.auth().currentUser?.uid else {
-            sameDayErrorMessage = "本日の受付設定にはログインが必要です"
+        guard Auth.auth().currentUser?.uid != nil else {
+            sameDayErrorMessage =
+                "本日の受付設定にはログインが必要です"
             return
         }
+
+        let nextValue = !isSameDayAvailable
 
         isUpdatingSameDayStatus = true
         sameDayErrorMessage = ""
 
-        let dateKey = firestoreDate(Date())
-        let todayRef = db
-            .collection("coachAvailability")
-            .document(uid)
-            .collection("dates")
-            .document(dateKey)
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
 
-        if isSameDayAvailable {
-            todayRef.setData(
-                ["sameDayAvailable": false],
-                merge: true
-            ) { error in
+        functions
+            .httpsCallable(
+                "setCoachSameDayAvailability"
+            )
+            .call(
+                [
+                    "enabled": nextValue
+                ]
+            ) { _, error in
                 DispatchQueue.main.async {
                     isUpdatingSameDayStatus = false
 
                     if let error {
                         sameDayErrorMessage =
-                            "本日の受付を終了できませんでした: " +
-                            error.localizedDescription
+                            nextValue
+                                ? "本日の受付を開始できませんでした: " +
+                                    error.localizedDescription
+                                : "本日の受付を終了できませんでした: " +
+                                    error.localizedDescription
                         return
                     }
 
-                    isSameDayAvailable = false
-                    sameDayAlertMessage =
-                        "「本日レッスン可能コーチ」への掲載を終了しました。"
-                    showSameDayAlert = true
-                }
-            }
-
-            return
-        }
-
-        Task {
-            do {
-                let todaySnapshot = try await todayRef.getDocument()
-
-                let savedTimes =
-                    todaySnapshot.data()?["times"] as? [String] ?? []
-
-                let reservationSnapshot = try await db
-                    .collection("reservations")
-                    .whereField("coachId", isEqualTo: uid)
-                    .getDocuments()
-
-                let reservedTimes = blockedTimes(
-                    for: dateKey,
-                    documents: reservationSnapshot.documents
-                )
-
-                let actualAvailableTimes =
-                    Set(savedTimes)
-                        .subtracting(reservedTimes)
-                        .filter { isFutureTimeSlot($0, dateKey: dateKey) }
-
-                guard !actualAvailableTimes.isEmpty else {
-                    await MainActor.run {
-                        todayAvailableTimeCount = 0
-                        isSameDayAvailable = false
-                        isUpdatingSameDayStatus = false
-                        sameDayErrorMessage =
-                            "本日の予約可能な空き枠がありません。空き日程から本日の時間を登録してください。"
-                    }
-                    return
-                }
-
-                try await todayRef.setData(
-                    ["sameDayAvailable": true],
-                    merge: true
-                )
-
-                await MainActor.run {
-                    todayAvailableTimeCount = actualAvailableTimes.count
-                    isSameDayAvailable = true
-                    isUpdatingSameDayStatus = false
+                    isSameDayAvailable = nextValue
                     sameDayErrorMessage = ""
-                    sameDayAlertMessage =
-                        "本日の受付をONにしました。「本日レッスン可能コーチ」への掲載対象になります。"
-                    showSameDayAlert = true
-                }
 
-            } catch {
-                await MainActor.run {
-                    isUpdatingSameDayStatus = false
-                    sameDayErrorMessage =
-                        "本日の受付設定を更新できませんでした: " +
-                        error.localizedDescription
+                    sameDayAlertMessage =
+                        nextValue
+                            ? "本日の受付をONにしました。「本日レッスン可能コーチ」への掲載対象になります。"
+                            : "「本日レッスン可能コーチ」への掲載を終了しました。"
+
+                    showSameDayAlert = true
+
+                    loadSameDayAvailabilityState()
                 }
             }
-        }
     }
 
     private func blockedTimes(
