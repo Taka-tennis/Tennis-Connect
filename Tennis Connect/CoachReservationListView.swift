@@ -1241,7 +1241,7 @@ struct CoachReservationListView: View {
     }
 
     private func rejectReservation(_ reservation: Reservation) {
-        guard let coachId = Auth.auth().currentUser?.uid else {
+        guard Auth.auth().currentUser?.uid != nil else {
             errorMessage = "予約の却下にはログインが必要です"
             return
         }
@@ -1249,70 +1249,33 @@ struct CoachReservationListView: View {
         updatingReservationId = reservation.id
         errorMessage = ""
 
-        let reservationRef = db.collection("reservations")
-            .document(reservation.id)
+        let functions = Functions.functions(
+            region: "asia-northeast1"
+        )
 
-        let availabilityRef = db.collection("coachAvailability")
-            .document(coachId)
-            .collection("dates")
-            .document(reservation.date)
-
-        availabilityRef.getDocument { snapshot, error in
-            if let error = error {
-                DispatchQueue.main.async {
-                    updatingReservationId = nil
-                    errorMessage =
-                        "空き枠を確認できませんでした: \(error.localizedDescription)"
-                }
-                return
-            }
-
-            var availableTimes = snapshot?.data()?["times"] as? [String] ?? []
-
-            for time in reservation.times where !availableTimes.contains(time) {
-                availableTimes.append(time)
-            }
-            availableTimes.sort()
-
-            let batch = db.batch()
-
-            batch.setData(
-                ["times": availableTimes],
-                forDocument: availabilityRef,
-                merge: true
+        functions
+            .httpsCallable(
+                "rejectReservationRequest"
             )
-
-            batch.updateData(
+            .call(
                 [
-                    "status": "rejected",
-                    "updatedAt": Timestamp()
-                ],
-                forDocument: reservationRef
-            )
-
-            addNotification(
-                to: batch,
-                reservation: reservation,
-                coachId: coachId,
-                type: "reservationRejected",
-                title: "予約が却下されました",
-                message: "\(displayDate(reservation.date)) \(combinedTimeRange(reservation.times))の予約は却下されました。別の日時を選択してください。"
-            )
-
-            batch.commit { error in
+                    "reservationId":
+                        reservation.id
+                ]
+            ) { _, error in
                 DispatchQueue.main.async {
                     updatingReservationId = nil
 
-                    if let error = error {
+                    if let error {
                         errorMessage =
-                            "予約を却下できませんでした: \(error.localizedDescription)"
+                            "予約を却下できませんでした: " +
+                            error.localizedDescription
                         return
                     }
 
                     loadReservations()
                 }
             }
-        }
     }
 
     @ViewBuilder

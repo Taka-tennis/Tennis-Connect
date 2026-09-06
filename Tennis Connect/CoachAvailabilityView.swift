@@ -1,6 +1,7 @@
 import SwiftUI
 import FirebaseFirestore
 import FirebaseAuth
+import FirebaseFunctions
 
 private enum CoachAvailabilityUI {
     static let brandGreen = Color(
@@ -63,6 +64,9 @@ struct CoachAvailabilityView: View {
     @State private var sameDayAlertMessage = ""
 
     private let db = Firestore.firestore()
+    private let functions = Functions.functions(
+        region: "asia-northeast1"
+    )
 
     private let timeSlots = [
         "09:00", "10:00", "11:00",
@@ -75,6 +79,7 @@ struct CoachAvailabilityView: View {
     private let blockingReservationStatuses: Set<String> = [
         "pending",
         "confirmed",
+        "approved",
         "paid",
         "reserved"
     ]
@@ -891,13 +896,6 @@ struct CoachAvailabilityView: View {
                         .subtracting(reservedTimes)
                         .filter { isFutureTimeSlot($0, dateKey: dateKey) }
 
-                if savedSameDayAvailable && actualAvailableTimes.isEmpty {
-                    try? await todayRef.setData(
-                        ["sameDayAvailable": false],
-                        merge: true
-                    )
-                }
-
                 await MainActor.run {
                     todayAvailableTimeCount = actualAvailableTimes.count
                     isSameDayAvailable =
@@ -905,6 +903,25 @@ struct CoachAvailabilityView: View {
                         !actualAvailableTimes.isEmpty
                     isLoadingSameDayStatus = false
                     sameDayErrorMessage = ""
+                }
+
+                // Firestore上でONのままでも、予約や時刻経過によって
+                // 実際の空き枠が0件になっていた場合は、Cloud Functions経由で
+                // サーバー側の状態もOFFへ同期する。
+                if savedSameDayAvailable && actualAvailableTimes.isEmpty {
+                    functions
+                        .httpsCallable("setCoachSameDayAvailability")
+                        .call(["enabled": false]) { _, error in
+                            guard let error else {
+                                return
+                            }
+
+                            DispatchQueue.main.async {
+                                sameDayErrorMessage =
+                                    "本日の受付状態を同期できませんでした: " +
+                                    error.localizedDescription
+                            }
+                        }
                 }
 
             } catch {
@@ -921,103 +938,62 @@ struct CoachAvailabilityView: View {
     }
 
     private func toggleSameDayAvailability() {
-        guard let uid = Auth.auth().currentUser?.uid else {
+        guard Auth.auth().currentUser != nil else {
             sameDayErrorMessage = "本日の受付設定にはログインが必要です"
             return
         }
 
+        guard !isUpdatingSameDayStatus else {
+            return
+        }
+
+        let nextEnabled = !isSameDayAvailable
+
         isUpdatingSameDayStatus = true
         sameDayErrorMessage = ""
 
-        let dateKey = todayKey
-        let todayRef = db
-            .collection("coachAvailability")
-            .document(uid)
-            .collection("dates")
-            .document(dateKey)
-
-        if isSameDayAvailable {
-            todayRef.setData(
-                ["sameDayAvailable": false],
-                merge: true
-            ) { error in
+        functions
+            .httpsCallable("setCoachSameDayAvailability")
+            .call(["enabled": nextEnabled]) { result, error in
                 DispatchQueue.main.async {
                     isUpdatingSameDayStatus = false
 
                     if let error {
                         sameDayErrorMessage =
-                            "本日の受付を終了できませんでした: " +
-                            error.localizedDescription
+                            nextEnabled
+                            ? "本日の受付を開始できませんでした: " +
+                                error.localizedDescription
+                            : "本日の受付を終了できませんでした: " +
+                                error.localizedDescription
                         return
                     }
 
-                    isSameDayAvailable = false
-                    sameDayAlertMessage =
-                        "「本日レッスン可能コーチ」への掲載を終了しました。"
-                    showSameDayAlert = true
-                }
-            }
-
-            return
-        }
-
-        Task {
-            do {
-                let todaySnapshot = try await todayRef.getDocument()
-
-                let savedTimes =
-                    todaySnapshot.data()?["times"] as? [String] ?? []
-
-                let reservationSnapshot = try await db
-                    .collection("reservations")
-                    .whereField("coachId", isEqualTo: uid)
-                    .getDocuments()
-
-                let reservedTimes = blockedTimes(
-                    for: dateKey,
-                    documents: reservationSnapshot.documents
-                )
-
-                let actualAvailableTimes =
-                    Set(savedTimes)
-                        .subtracting(reservedTimes)
-                        .filter { isFutureTimeSlot($0, dateKey: dateKey) }
-
-                guard !actualAvailableTimes.isEmpty else {
-                    await MainActor.run {
-                        todayAvailableTimeCount = 0
-                        isSameDayAvailable = false
-                        isUpdatingSameDayStatus = false
+                    guard
+                        let data = result?.data as? [String: Any],
+                        let serverEnabled = data["enabled"] as? Bool
+                    else {
                         sameDayErrorMessage =
-                            "本日の予約可能な空き枠がありません。空き時間を登録してからONにしてください。"
+                            "本日の受付設定の結果を確認できませんでした。"
+                        return
                     }
-                    return
-                }
 
-                try await todayRef.setData(
-                    ["sameDayAvailable": true],
-                    merge: true
-                )
-
-                await MainActor.run {
-                    todayAvailableTimeCount = actualAvailableTimes.count
-                    isSameDayAvailable = true
-                    isUpdatingSameDayStatus = false
+                    isSameDayAvailable = serverEnabled
                     sameDayErrorMessage = ""
-                    sameDayAlertMessage =
-                        "本日の受付をONにしました。「本日レッスン可能コーチ」への掲載対象になります。"
+
+                    if serverEnabled {
+                        todayAvailableTimeCount = integerValue(
+                            data["availableTimeCount"]
+                        )
+                        sameDayAlertMessage =
+                            "本日の受付をONにしました。「本日レッスン可能コーチ」への掲載対象になります。"
+                    } else {
+                        sameDayAlertMessage =
+                            "「本日レッスン可能コーチ」への掲載を終了しました。"
+                    }
+
                     showSameDayAlert = true
                 }
-
-            } catch {
-                await MainActor.run {
-                    isUpdatingSameDayStatus = false
-                    sameDayErrorMessage =
-                        "本日の受付設定を更新できませんでした: " +
-                        error.localizedDescription
-                }
             }
-        }
     }
 
     private func blockedTimes(
@@ -1062,7 +1038,7 @@ struct CoachAvailabilityView: View {
     }
 
     private func saveAvailability() {
-        guard let uid = Auth.auth().currentUser?.uid else {
+        guard Auth.auth().currentUser != nil else {
             errorMessage = "空き日程の保存にはログインが必要です"
             return
         }
@@ -1074,107 +1050,88 @@ struct CoachAvailabilityView: View {
             return
         }
 
-        // Firestoreの1バッチ上限に十分余裕を持たせる。
-        // 通常利用では到達しないが、本番運用の安全策として制限する。
+        // Cloud Functions側でも同じ上限を検証する。
         guard dateKeysToSave.count <= 400 else {
             errorMessage =
                 "一度に保存できる変更日数を超えています。400日以下に分けて保存してください。"
             return
         }
 
+        let changes: [[String: Any]] = dateKeysToSave.map { dateKey in
+            [
+                "date": dateKey,
+                "times": (draftTimesByDate[dateKey] ?? []).sorted()
+            ]
+        }
+
         errorMessage = ""
         isSaving = true
 
-        Task {
-            do {
-                // 保存直前にも予約状況を再取得する。
-                // 編集中に予約が入った場合でも予約枠を空き枠へ戻さない。
-                let reservationSnapshot = try await db
-                    .collection("reservations")
-                    .whereField("coachId", isEqualTo: uid)
-                    .getDocuments()
-
-                let reservationDocuments =
-                    reservationSnapshot.documents
-
-                let batch = db.batch()
-
-                var sanitizedDrafts:
-                    [String: Set<String>] = [:]
-
-                for dateKey in dateKeysToSave {
-                    let latestBlockedTimes = blockedTimes(
-                        for: dateKey,
-                        documents: reservationDocuments
-                    )
-
-                    let draftTimes =
-                        draftTimesByDate[dateKey] ?? []
-
-                    let safeSelectedTimes =
-                        draftTimes.subtracting(
-                            latestBlockedTimes
-                        )
-
-                    sanitizedDrafts[dateKey] =
-                        safeSelectedTimes
-
-                    var updateData: [String: Any] = [
-                        "times": safeSelectedTimes.sorted()
-                    ]
-
-                    // 今日の空き枠を0件にした場合だけ、
-                    // 既存仕様どおり本日受付も自動OFFにする。
-                    if dateKey == todayKey &&
-                        safeSelectedTimes.isEmpty {
-                        updateData["sameDayAvailable"] = false
+        functions
+            .httpsCallable("saveCoachAvailability")
+            .call(["changes": changes]) { result, error in
+                DispatchQueue.main.async {
+                    if let error {
+                        isSaving = false
+                        errorMessage =
+                            "保存できませんでした: " +
+                            error.localizedDescription
+                        return
                     }
 
-                    let dateRef = db
-                        .collection("coachAvailability")
-                        .document(uid)
-                        .collection("dates")
-                        .document(dateKey)
+                    guard
+                        let data = result?.data as? [String: Any],
+                        let savedDictionary = dictionaryValue(
+                            data["saved"]
+                        )
+                    else {
+                        isSaving = false
+                        errorMessage =
+                            "保存結果を確認できませんでした。もう一度画面を開き直して確認してください。"
+                        return
+                    }
 
-                    batch.setData(
-                        updateData,
-                        forDocument: dateRef,
-                        merge: true
-                    )
-                }
+                    let blockedDictionary =
+                        dictionaryValue(data["blocked"]) ?? [:]
 
-                // 変更した複数日を1回のバッチでまとめて保存する。
-                try await batch.commit()
+                    var sanitizedDrafts:
+                        [String: Set<String>] = [:]
+                    var serverBlockedTimes:
+                        [String: Set<String>] = [:]
 
-                await MainActor.run {
-                    for (dateKey, safeTimes)
-                        in sanitizedDrafts {
-                        draftTimesByDate[dateKey] =
-                            safeTimes
+                    for dateKey in dateKeysToSave {
+                        guard savedDictionary.keys.contains(dateKey) else {
+                            isSaving = false
+                            errorMessage =
+                                "保存結果の一部を確認できませんでした。もう一度画面を開き直して確認してください。"
+                            return
+                        }
+
+                        sanitizedDrafts[dateKey] =
+                            stringSet(savedDictionary[dateKey])
+
+                        serverBlockedTimes[dateKey] =
+                            stringSet(blockedDictionary[dateKey])
+                    }
+
+                    // サーバー側で最新予約を確認した結果を、そのまま画面へ反映する。
+                    // 予約済み枠がクライアントの古い下書きに含まれていても、
+                    // Cloud Functions側で除外された値だけを採用する。
+                    for (dateKey, safeTimes) in sanitizedDrafts {
+                        draftTimesByDate[dateKey] = safeTimes
                     }
 
                     dirtyDateKeys.subtract(
                         Set(dateKeysToSave)
                     )
 
-                    // 現在表示中の日も、保存直前の予約状況を反映する。
                     if let currentSavedTimes =
                         sanitizedDrafts[formattedDate] {
                         let currentBlockedTimes =
-                            blockedTimes(
-                                for: formattedDate,
-                                documents:
-                                    reservationDocuments
-                            )
+                            serverBlockedTimes[formattedDate] ?? []
 
-                        blockedTimes =
-                            currentBlockedTimes
-
-                        selectedTimes =
-                            currentSavedTimes
-                                .subtracting(
-                                    currentBlockedTimes
-                                )
+                        blockedTimes = currentBlockedTimes
+                        selectedTimes = currentSavedTimes
                     }
 
                     isSaving = false
@@ -1195,16 +1152,61 @@ struct CoachAvailabilityView: View {
                         loadSameDayAvailabilityState()
                     }
                 }
-
-            } catch {
-                await MainActor.run {
-                    isSaving = false
-                    errorMessage =
-                        "保存できませんでした: " +
-                        error.localizedDescription
-                }
             }
+    }
+
+    private func dictionaryValue(
+        _ value: Any?
+    ) -> [String: Any]? {
+        if let dictionary = value as? [String: Any] {
+            return dictionary
         }
+
+        if let dictionary = value as? NSDictionary {
+            var result: [String: Any] = [:]
+
+            for (key, item) in dictionary {
+                guard let key = key as? String else {
+                    continue
+                }
+
+                result[key] = item
+            }
+
+            return result
+        }
+
+        return nil
+    }
+
+    private func stringSet(
+        _ value: Any?
+    ) -> Set<String> {
+        if let values = value as? [String] {
+            return Set(values)
+        }
+
+        if let values = value as? [Any] {
+            return Set(
+                values.compactMap { $0 as? String }
+            )
+        }
+
+        return []
+    }
+
+    private func integerValue(
+        _ value: Any?
+    ) -> Int {
+        if let value = value as? Int {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+
+        return 0
     }
 
     private func displayDateString(

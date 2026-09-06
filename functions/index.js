@@ -1479,6 +1479,643 @@ exports.getCoachReservationStudentNames = onCall(
 
 
 /**
+ * 日本時間のYYYY-MM-DDを返します。
+ *
+ * @param {Date} date 対象日時
+ * @return {string} YYYY-MM-DD
+ */
+function tokyoDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat(
+    "en-US",
+    {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    },
+  ).formatToParts(date);
+
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+/**
+ * 予約データ内の開始時刻をHH:mmへ正規化します。
+ *
+ * @param {unknown} value 保存済み時刻
+ * @return {string} 開始時刻。取得できない場合は空文字
+ */
+function normalizedReservationStartTime(value) {
+  const raw = String(value || "").trim();
+
+  if (!raw) {
+    return "";
+  }
+
+  return raw
+    .replaceAll("~", "〜")
+    .split("〜")[0]
+    .trim();
+}
+
+/**
+ * 予約済みとして空き枠から除外すべき時刻を日付ごとに整理します。
+ *
+ * @param {Array<FirebaseFirestore.QueryDocumentSnapshot>} documents 予約一覧
+ * @return {Map<string, Set<string>>} 日付 -> 予約済み開始時刻
+ */
+function blockingReservationTimesByDate(documents) {
+  const blockingStatuses = new Set([
+    "pending",
+    "confirmed",
+    "approved",
+    "paid",
+    "reserved",
+  ]);
+  const result = new Map();
+
+  for (const document of documents) {
+    const data = document.data() || {};
+    const status = String(data.status || "");
+
+    if (!blockingStatuses.has(status)) {
+      continue;
+    }
+
+    const date = String(data.date || "")
+      .trim()
+      .replaceAll("/", "-");
+
+    if (!date) {
+      continue;
+    }
+
+    const rawTimes = Array.isArray(data.times) ?
+      data.times :
+      data.time ? [data.time] : [];
+
+    if (!result.has(date)) {
+      result.set(date, new Set());
+    }
+
+    const dateTimes = result.get(date);
+
+    for (const value of rawTimes) {
+      const startTime = normalizedReservationStartTime(value);
+
+      if (startTime) {
+        dateTimes.add(startTime);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * コーチ本人が空き日程を保存します。
+ *
+ * クライアントから送られた時刻をそのまま保存せず、
+ * サーバー側で最新の予約を確認して予約済み枠を必ず除外します。
+ * 予約申請側も同じcoachAvailability日付ドキュメントを
+ * Transaction内で更新するため、同時実行時は競合検知により再試行されます。
+ */
+exports.saveCoachAvailability = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "空き日程の保存にはログインが必要です。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const rawChanges = request.data?.changes;
+
+    if (!Array.isArray(rawChanges) || rawChanges.length === 0) {
+      throw new HttpsError(
+        "invalid-argument",
+        "保存する空き日程がありません。",
+      );
+    }
+
+    if (rawChanges.length > 400) {
+      throw new HttpsError(
+        "invalid-argument",
+        "一度に保存できる変更日数を超えています。",
+      );
+    }
+
+    const allowedTimes = new Set(
+      Array.from(
+        {length: 13},
+        (_, index) => `${String(index + 9).padStart(2, "0")}:00`,
+      ),
+    );
+    const today = tokyoDateKey();
+    const seenDates = new Set();
+    const changes = [];
+
+    for (const rawChange of rawChanges) {
+      const date = String(rawChange?.date || "")
+        .trim()
+        .replaceAll("/", "-");
+      const rawTimes = Array.isArray(rawChange?.times) ?
+        rawChange.times : [];
+      const times = [
+        ...new Set(
+          rawTimes
+            .map((value) => String(value || "").trim())
+            .filter((value) => value !== ""),
+        ),
+      ].sort();
+
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new HttpsError(
+          "invalid-argument",
+          "空き日程の日付形式が正しくありません。",
+        );
+      }
+
+      if (date < today) {
+        throw new HttpsError(
+          "failed-precondition",
+          "過去の日付は変更できません。",
+        );
+      }
+
+      if (seenDates.has(date)) {
+        throw new HttpsError(
+          "invalid-argument",
+          "同じ日付が重複しています。",
+        );
+      }
+
+      if (times.some((time) => !allowedTimes.has(time))) {
+        throw new HttpsError(
+          "invalid-argument",
+          "空き時間の形式が正しくありません。",
+        );
+      }
+
+      seenDates.add(date);
+      changes.push({date, times});
+    }
+
+    const db = getFirestore();
+    const coachRef = db.collection("coaches").doc(uid);
+    const reservationQuery = db
+      .collection("reservations")
+      .where("coachId", "==", uid);
+    const dateRefs = changes.map(({date}) =>
+      db
+        .collection("coachAvailability")
+        .doc(uid)
+        .collection("dates")
+        .doc(date),
+    );
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const coachSnap = await transaction.get(coachRef);
+
+        if (!coachSnap.exists) {
+          throw new HttpsError(
+            "failed-precondition",
+            "先にコーチプロフィールを登録してください。",
+          );
+        }
+
+        const reservationSnapshot = await transaction.get(
+          reservationQuery,
+        );
+        await transaction.getAll(...dateRefs);
+
+        const blockedByDate = blockingReservationTimesByDate(
+          reservationSnapshot.docs,
+        );
+        const saved = {};
+        const blocked = {};
+
+        for (let index = 0; index < changes.length; index += 1) {
+          const {date, times} = changes[index];
+          const blockedTimes = blockedByDate.get(date) || new Set();
+          const safeTimes = times.filter(
+            (time) => !blockedTimes.has(time),
+          );
+          const update = {
+            times: safeTimes,
+            updatedAt: FieldValue.serverTimestamp(),
+          };
+
+          if (date === today && safeTimes.length === 0) {
+            update.sameDayAvailable = false;
+          }
+
+          transaction.set(
+            dateRefs[index],
+            update,
+            {merge: true},
+          );
+
+          saved[date] = safeTimes;
+          blocked[date] = [...blockedTimes].sort();
+        }
+
+        return {
+          saved,
+          blocked,
+        };
+      },
+    );
+
+    logger.info("コーチの空き日程を保存しました。", {
+      coachId: uid,
+      changedDateCount: changes.length,
+    });
+
+    return result;
+  },
+);
+
+/**
+ * コーチ本人が「本日レッスン可能」のON/OFFを更新します。
+ * ONにする場合は、最新の予約と現在時刻をサーバー側で確認します。
+ */
+exports.setCoachSameDayAvailability = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "本日の受付設定にはログインが必要です。",
+      );
+    }
+
+    if (typeof request.data?.enabled !== "boolean") {
+      throw new HttpsError(
+        "invalid-argument",
+        "本日の受付設定が正しくありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const enabled = request.data.enabled;
+    const date = tokyoDateKey();
+    const db = getFirestore();
+    const coachRef = db.collection("coaches").doc(uid);
+    const availabilityRef = db
+      .collection("coachAvailability")
+      .doc(uid)
+      .collection("dates")
+      .doc(date);
+    const reservationQuery = db
+      .collection("reservations")
+      .where("coachId", "==", uid);
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const coachSnap = await transaction.get(coachRef);
+
+        if (!coachSnap.exists) {
+          throw new HttpsError(
+            "failed-precondition",
+            "先にコーチプロフィールを登録してください。",
+          );
+        }
+
+        const availabilitySnap = await transaction.get(
+          availabilityRef,
+        );
+
+        if (!enabled) {
+          transaction.set(
+            availabilityRef,
+            {
+              sameDayAvailable: false,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          return {
+            enabled: false,
+            availableTimeCount: 0,
+          };
+        }
+
+        const reservationSnapshot = await transaction.get(
+          reservationQuery,
+        );
+        const blockedByDate = blockingReservationTimesByDate(
+          reservationSnapshot.docs,
+        );
+        const blockedTimes = blockedByDate.get(date) || new Set();
+        const savedTimes = Array.isArray(
+          availabilitySnap.data()?.times,
+        ) ?
+          availabilitySnap.data().times
+            .map((value) => String(value || "").trim())
+            .filter((value) => value !== "") :
+          [];
+        const safeTimes = [
+          ...new Set(
+            savedTimes.filter(
+              (time) => !blockedTimes.has(time),
+            ),
+          ),
+        ].sort();
+        const futureTimes = safeTimes.filter((time) => {
+          const lessonDate = new Date(
+            `${date}T${time}:00+09:00`,
+          );
+
+          return (
+            !Number.isNaN(lessonDate.getTime()) &&
+            lessonDate.getTime() > Date.now()
+          );
+        });
+
+        if (futureTimes.length === 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "本日の予約可能な空き枠がありません。" +
+            "空き時間を登録してからONにしてください。",
+          );
+        }
+
+        transaction.set(
+          availabilityRef,
+          {
+            times: safeTimes,
+            sameDayAvailable: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          enabled: true,
+          availableTimeCount: futureTimes.length,
+        };
+      },
+    );
+
+    logger.info("本日の受付設定を更新しました。", {
+      coachId: uid,
+      enabled: result.enabled,
+      availableTimeCount: result.availableTimeCount,
+    });
+
+    return result;
+  },
+);
+
+/**
+ * コーチ本人が予約申請を却下します。
+ *
+ * 予約状態の更新・空き枠の復活・生徒通知を
+ * 1つのFirestore Transactionで処理します。
+ * 空き枠を戻す直前に他の有効予約を再確認し、
+ * 同じ日時に別の有効予約が存在する枠や、
+ * すでに過ぎた枠は再公開しません。
+ */
+exports.rejectReservationRequest = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "予約の却下にはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+    const coachReservationsQuery = db
+      .collection("reservations")
+      .where("coachId", "==", uid);
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const reservationSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!reservationSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const reservation = reservationSnap.data() || {};
+
+        if (reservation.coachId !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "この予約は却下できません。",
+          );
+        }
+
+        const currentStatus = String(
+          reservation.status || "",
+        );
+
+        if (currentStatus === "rejected") {
+          return {
+            reservationId,
+            status: "rejected",
+            restoredTimes: [],
+            alreadyRejected: true,
+          };
+        }
+
+        if (currentStatus !== "pending") {
+          throw new HttpsError(
+            "failed-precondition",
+            "承認待ちの予約だけ却下できます。",
+          );
+        }
+
+        const dateId = String(
+          reservation.date || "",
+        )
+          .trim()
+          .replaceAll("/", "-");
+        const rawTimes = Array.isArray(reservation.times) ?
+          reservation.times :
+          reservation.time ? [reservation.time] : [];
+        const requestedTimes = [
+          ...new Set(
+            rawTimes
+              .map((value) =>
+                normalizedReservationStartTime(value),
+              )
+              .filter((value) => value !== ""),
+          ),
+        ].sort();
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateId)) {
+          throw new HttpsError(
+            "failed-precondition",
+            "予約日を確認できませんでした。",
+          );
+        }
+
+        if (requestedTimes.length === 0) {
+          throw new HttpsError(
+            "failed-precondition",
+            "予約時間を確認できませんでした。",
+          );
+        }
+
+        const availabilityRef = db
+          .collection("coachAvailability")
+          .doc(uid)
+          .collection("dates")
+          .doc(dateId);
+        const notificationRef = db
+          .collection("notifications")
+          .doc(`reservation_rejected_${reservationId}`);
+
+        const coachReservationsSnapshot =
+          await transaction.get(coachReservationsQuery);
+        const availabilitySnap = await transaction.get(
+          availabilityRef,
+        );
+
+        const otherReservationDocs =
+          coachReservationsSnapshot.docs.filter(
+            (document) => document.id !== reservationId,
+          );
+        const blockedByDate = blockingReservationTimesByDate(
+          otherReservationDocs,
+        );
+        const blockedTimes =
+          blockedByDate.get(dateId) || new Set();
+        const today = tokyoDateKey();
+
+        const restorableTimes = requestedTimes.filter((time) => {
+          if (blockedTimes.has(time)) {
+            return false;
+          }
+
+          if (dateId < today) {
+            return false;
+          }
+
+          if (dateId > today) {
+            return true;
+          }
+
+          const slotDate = new Date(
+            `${dateId}T${time}:00+09:00`,
+          );
+
+          return (
+            !Number.isNaN(slotDate.getTime()) &&
+            slotDate.getTime() > Date.now()
+          );
+        });
+
+        const savedTimes = Array.isArray(
+          availabilitySnap.data()?.times,
+        ) ?
+          availabilitySnap.data().times
+            .map((value) => String(value || "").trim())
+            .filter((value) => value !== "") :
+          [];
+        const nextTimes = [
+          ...new Set([
+            ...savedTimes,
+            ...restorableTimes,
+          ]),
+        ].sort();
+
+        transaction.set(
+          reservationRef,
+          {
+            status: "rejected",
+            rejectedBy: uid,
+            rejectedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        transaction.set(
+          availabilityRef,
+          {
+            times: nextTimes,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        if (reservation.studentId) {
+          const displayDate = dateId.replaceAll("-", "/");
+          const displayTimes = requestedTimes.join(", ");
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: reservation.studentId,
+              coachId: uid,
+              reservationId,
+              type: "reservationRejected",
+              title: "予約が却下されました",
+              message:
+                `${displayDate} ${displayTimes}の予約は` +
+                "却下されました。別の日時を選択してください。",
+              date: reservation.date || dateId,
+              times: requestedTimes,
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          reservationId,
+          status: "rejected",
+          restoredTimes: restorableTimes,
+          alreadyRejected: false,
+        };
+      },
+    );
+
+    logger.info("予約申請を却下しました。", {
+      reservationId,
+      coachId: uid,
+      restoredTimeCount: result.restoredTimes.length,
+      alreadyRejected: result.alreadyRejected,
+    });
+
+    return result;
+  },
+);
+
+
+/**
  * 生徒の予約申請をサーバー側で確定します。
  * 空き枠確認・予約作成・空き枠除去・通知作成を
  * 1つのFirestore Transactionで処理します。
