@@ -112,6 +112,8 @@ service cloud.firestore {
     }
 
     // 予約
+    // 作成・更新・削除はCloud Functions（Admin SDK）からのみ行う。
+    // クライアントは当事者本人の予約を読み取ることだけ許可する。
     match /reservations/{reservationId} {
 
       allow create: if false;
@@ -119,17 +121,7 @@ service cloud.firestore {
       allow read:
         if reservationStudent() || reservationCoach();
 
-      // クライアントからの更新は担当コーチの承認・却下のみ
-      allow update:
-        if reservationCoach()
-        && resource.data.status == 'pending'
-        && request.resource.data.studentId == resource.data.studentId
-        && request.resource.data.coachId == resource.data.coachId
-        && request.resource.data
-          .diff(resource.data)
-          .affectedKeys()
-          .hasOnly(['status', 'updatedAt'])
-        && request.resource.data.status in ['confirmed', 'rejected'];
+      allow update: if false;
 
       allow delete: if false;
     }

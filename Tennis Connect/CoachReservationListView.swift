@@ -1196,7 +1196,7 @@ struct CoachReservationListView: View {
     }
 
     private func approveReservation(_ reservation: Reservation) {
-        guard let coachId = Auth.auth().currentUser?.uid else {
+        guard Auth.auth().currentUser?.uid != nil else {
             errorMessage = "予約の承認にはログインが必要です"
             return
         }
@@ -1204,40 +1204,33 @@ struct CoachReservationListView: View {
         updatingReservationId = reservation.id
         errorMessage = ""
 
-        let reservationRef = db.collection("reservations")
-            .document(reservation.id)
-        let batch = db.batch()
-
-        batch.updateData(
-            [
-                "status": "confirmed",
-                "updatedAt": Timestamp()
-            ],
-            forDocument: reservationRef
+        let functions = Functions.functions(
+            region: "asia-northeast1"
         )
 
-        addNotification(
-            to: batch,
-            reservation: reservation,
-            coachId: coachId,
-            type: "reservationApproved",
-            title: "予約が承認されました",
-            message: "\(displayDate(reservation.date)) \(combinedTimeRange(reservation.times))の予約が承認されました。支払い手続きへ進めます。"
-        )
+        functions
+            .httpsCallable(
+                "approveReservationRequest"
+            )
+            .call(
+                [
+                    "reservationId":
+                        reservation.id
+                ]
+            ) { _, error in
+                DispatchQueue.main.async {
+                    updatingReservationId = nil
 
-        batch.commit { error in
-            DispatchQueue.main.async {
-                updatingReservationId = nil
+                    if let error {
+                        errorMessage =
+                            "予約を承認できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
 
-                if let error = error {
-                    errorMessage =
-                        "予約を承認できませんでした: \(error.localizedDescription)"
-                    return
+                    loadReservations()
                 }
-
-                loadReservations()
             }
-        }
     }
 
     private func rejectReservation(_ reservation: Reservation) {
@@ -1557,37 +1550,6 @@ struct CoachReservationListView: View {
                     loadReservations()
                 }
             }
-    }
-
-    private func addNotification(
-        to batch: WriteBatch,
-        reservation: Reservation,
-        coachId: String,
-        type: String,
-        title: String,
-        message: String
-    ) {
-        guard !reservation.studentId.isEmpty else {
-            return
-        }
-
-        let notificationRef = db.collection("notifications").document()
-
-        batch.setData(
-            [
-                "recipientId": reservation.studentId,
-                "coachId": coachId,
-                "reservationId": reservation.id,
-                "type": type,
-                "title": title,
-                "message": message,
-                "date": reservation.date,
-                "times": reservation.times,
-                "isRead": false,
-                "createdAt": Timestamp()
-            ],
-            forDocument: notificationRef
-        )
     }
 
     private func canRequestRefund(_ reservation: Reservation) -> Bool {

@@ -2381,6 +2381,171 @@ exports.rejectReservationRequest = onCall(
 
 
 /**
+ * コーチ本人が予約申請を承認します。
+ *
+ * 予約状態の更新と生徒への承認通知を
+ * 1つのFirestore Transactionで処理します。
+ * クライアントからreservations / notificationsを
+ * 直接書き換える必要をなくします。
+ */
+exports.approveReservationRequest = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "予約の承認にはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+    const notificationRef = db
+      .collection("notifications")
+      .doc(`reservation_approved_${reservationId}`);
+
+    const result = await db.runTransaction(
+      async (transaction) => {
+        const reservationSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!reservationSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const reservation = reservationSnap.data() || {};
+
+        if (reservation.coachId !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "この予約は承認できません。",
+          );
+        }
+
+        const currentStatus = String(
+          reservation.status || "",
+        );
+
+        if (currentStatus === "confirmed") {
+          return {
+            reservationId,
+            status: "confirmed",
+            alreadyApproved: true,
+          };
+        }
+
+        if (currentStatus !== "pending") {
+          throw new HttpsError(
+            "failed-precondition",
+            "承認待ちの予約だけ承認できます。",
+          );
+        }
+
+        const rawTimes = Array.isArray(reservation.times) ?
+          reservation.times :
+          reservation.time ? [reservation.time] : [];
+        const startTimes = [
+          ...new Set(
+            rawTimes
+              .map((value) =>
+                normalizedReservationStartTime(value),
+              )
+              .filter((value) => value !== ""),
+          ),
+        ].sort();
+
+        transaction.set(
+          reservationRef,
+          {
+            status: "confirmed",
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        if (reservation.studentId) {
+          const dateId = String(
+            reservation.date || "",
+          )
+            .trim()
+            .replaceAll("/", "-");
+          const displayDate =
+            dateId.replaceAll("-", "/");
+
+          let displayTime = "時間未設定";
+
+          if (startTimes.length > 0) {
+            const firstTime = startTimes[0];
+            const lastTime =
+              startTimes[startTimes.length - 1];
+            const [lastHour, lastMinute] =
+              lastTime.split(":").map(Number);
+            const endHour = (lastHour + 1) % 24;
+            const endTime =
+              `${String(endHour).padStart(2, "0")}:` +
+              `${String(lastMinute).padStart(2, "0")}`;
+
+            displayTime =
+              `${firstTime}〜${endTime}`;
+          }
+
+          transaction.set(
+            notificationRef,
+            {
+              recipientId: reservation.studentId,
+              coachId: uid,
+              reservationId,
+              type: "reservationApproved",
+              title: "予約が承認されました",
+              message:
+                `${displayDate} ${displayTime}の予約が承認されました。` +
+                "支払い手続きへ進めます。",
+              date: reservation.date || dateId,
+              times: startTimes,
+              isRead: false,
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          reservationId,
+          status: "confirmed",
+          alreadyApproved: false,
+        };
+      },
+    );
+
+    logger.info("予約申請を承認しました。", {
+      reservationId,
+      coachId: uid,
+      alreadyApproved: result.alreadyApproved,
+    });
+
+    return result;
+  },
+);
+
+
+/**
  * 生徒の予約申請をサーバー側で確定します。
  * 空き枠確認・予約作成・空き枠除去・通知作成を
  * 1つのFirestore Transactionで処理します。
