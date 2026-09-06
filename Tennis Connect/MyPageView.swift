@@ -5,6 +5,40 @@ import FirebaseStorage
 import PhotosUI
 import UIKit
 
+private enum StudentMyPageUI {
+    static let brandGreen = Color(
+        red: 42 / 255,
+        green: 174 / 255,
+        blue: 102 / 255
+    )
+
+    static let softGreen = Color(
+        red: 232 / 255,
+        green: 245 / 255,
+        blue: 236 / 255
+    )
+
+    static let background = Color(
+        red: 248 / 255,
+        green: 250 / 255,
+        blue: 249 / 255
+    )
+
+    static let textPrimary = Color(
+        red: 34 / 255,
+        green: 34 / 255,
+        blue: 34 / 255
+    )
+
+    static let textSecondary = Color(
+        red: 102 / 255,
+        green: 110 / 255,
+        blue: 105 / 255
+    )
+
+    static let border = Color.black.opacity(0.08)
+}
+
 struct MyPageView: View {
 
     @State private var displayName = ""
@@ -34,159 +68,42 @@ struct MyPageView: View {
         NavigationStack {
             Group {
                 if isLoggedIn {
-                    List {
-                        Section {
-                            VStack(spacing: 16) {
-                                studentProfileImage
+                    ZStack {
+                        StudentMyPageUI.background
+                            .ignoresSafeArea()
 
-                                if isLoadingProfile {
-                                    ProgressView()
-                                } else {
-                                    Text(
-                                        displayName.isEmpty
-                                            ? "表示名未設定"
-                                            : displayName
-                                    )
-                                    .font(.title)
-                                    .fontWeight(.bold)
-                                }
-
-                                Text(displayedProfileComment)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                                    .fixedSize(
-                                        horizontal: false,
-                                        vertical: true
-                                    )
-
-                                HStack(spacing: 24) {
-                                    VStack {
-                                        if isLoadingReservationCount {
-                                            ProgressView()
-                                                .frame(height: 28)
-                                        } else {
-                                            Text("\(reservationCount)")
-                                                .font(.title2)
-                                                .bold()
-                                        }
-
-                                        Text("予約")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    VStack {
-                                        if isLoadingReviewCount {
-                                            ProgressView()
-                                                .frame(height: 28)
-                                        } else {
-                                            Text("\(reviewCount)")
-                                                .font(.title2)
-                                                .bold()
-                                        }
-
-                                        Text("レビュー")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    VStack {
-                                        if isLoadingFavoriteCount {
-                                            ProgressView()
-                                                .frame(height: 28)
-                                        } else {
-                                            Text("\(favoriteCount)")
-                                                .font(.title2)
-                                                .bold()
-                                        }
-
-                                        Text("お気に入り")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
+                        ScrollView {
+                            VStack(
+                                alignment: .leading,
+                                spacing: 18
+                            ) {
+                                headerSection
+                                profileCard
+                                statsSection
+                                menuSection
+                                accountSection
 
                                 if !profileError.isEmpty {
-                                    Text(profileError)
-                                        .font(.caption)
-                                        .foregroundStyle(.red)
-                                        .multilineTextAlignment(.center)
+                                    errorCard
                                 }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 24)
-                            .background(Color(.systemGray6))
-                            .clipShape(
-                                RoundedRectangle(cornerRadius: 20)
-                            )
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical)
-                        }
 
-                        Section("メニュー") {
-                            Button {
-                                showProfileEditor = true
-                            } label: {
-                                Label(
-                                    "プロフィールを編集",
-                                    systemImage: "person.crop.circle.badge.pencil"
-                                )
+                                logoutButton
                             }
-                            .foregroundStyle(.primary)
-
-                            NavigationLink {
-                                ReservationListView()
-                            } label: {
-                                Label(
-                                    "予約一覧",
-                                    systemImage: "calendar"
-                                )
-                            }
-
-                            NavigationLink {
-                                FavoriteView()
-                            } label: {
-                                Label(
-                                    "お気に入り",
-                                    systemImage: "heart"
-                                )
-                            }
-
-                            NavigationLink {
-                                NotificationView()
-                            } label: {
-                                Label(
-                                    "通知",
-                                    systemImage: "bell"
-                                )
-                            }
-
-                            NavigationLink {
-                                SettingsView()
-                            } label: {
-                                Label(
-                                    "設定",
-                                    systemImage: "gear"
-                                )
-                            }
-                        }
-
-                        Section {
-                            Button(role: .destructive) {
-                                showLogoutAlert = true
-                            } label: {
-                                Text("ログアウト")
-                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 10)
+                            .padding(.bottom, 30)
                         }
                     }
                 } else {
                     loggedOutView
                 }
             }
+            .tint(StudentMyPageUI.brandGreen)
             .navigationTitle("マイページ")
+            .navigationBarTitleDisplayMode(.inline)
             .onAppear {
-                isLoggedIn = Auth.auth().currentUser != nil
+                isLoggedIn =
+                    Auth.auth().currentUser != nil
 
                 if isLoggedIn {
                     loadMyPageData()
@@ -194,7 +111,9 @@ struct MyPageView: View {
                     resetMyPageState()
                 }
             }
-            .sheet(isPresented: $showProfileEditor) {
+            .sheet(
+                isPresented: $showProfileEditor
+            ) {
                 StudentProfileEditView(
                     initialDisplayName: displayName,
                     initialProfileComment: profileComment,
@@ -229,15 +148,510 @@ struct MyPageView: View {
                 "ログアウトしますか？",
                 isPresented: $showLogoutAlert
             ) {
-                Button("キャンセル", role: .cancel) { }
+                Button(
+                    "キャンセル",
+                    role: .cancel
+                ) { }
 
-                Button("ログアウト", role: .destructive) {
+                Button(
+                    "ログアウト",
+                    role: .destructive
+                ) {
                     logout()
                 }
             } message: {
-                Text("再度利用するにはログインが必要です。")
+                Text(
+                    "再度利用するにはログインが必要です。"
+                )
             }
         }
+    }
+
+    private var headerSection: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 5
+        ) {
+            Text("マイページ")
+                .font(.title2)
+                .fontWeight(.bold)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+
+            Text(
+                "プロフィールや予約、お気に入りを管理できます"
+            )
+            .font(.subheadline)
+            .foregroundStyle(
+                StudentMyPageUI.textSecondary
+            )
+        }
+    }
+
+    private var profileCard: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 14) {
+                studentProfileImage
+
+                VStack(
+                    alignment: .leading,
+                    spacing: 6
+                ) {
+                    if isLoadingProfile {
+                        ProgressView()
+                            .tint(
+                                StudentMyPageUI.brandGreen
+                            )
+                    } else {
+                        Text(
+                            displayName.isEmpty
+                                ? "表示名未設定"
+                                : displayName
+                        )
+                        .font(.title3)
+                        .fontWeight(.bold)
+                        .foregroundStyle(
+                            StudentMyPageUI.textPrimary
+                        )
+                    }
+
+                    Text(displayedProfileComment)
+                        .font(.subheadline)
+                        .foregroundStyle(
+                            StudentMyPageUI.textSecondary
+                        )
+                        .lineLimit(2)
+                        .fixedSize(
+                            horizontal: false,
+                            vertical: true
+                        )
+
+                    profileMetadata
+                }
+
+                Spacer()
+            }
+
+            Button {
+                showProfileEditor = true
+            } label: {
+                Label(
+                    "プロフィールを編集",
+                    systemImage:
+                        "person.crop.circle.badge.pencil"
+                )
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .foregroundStyle(
+                    StudentMyPageUI.brandGreen
+                )
+                .background(
+                    StudentMyPageUI.softGreen
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 20,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 20,
+                style: .continuous
+            )
+            .stroke(
+                StudentMyPageUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var profileMetadata: some View {
+        let values = [
+            ageGroup,
+            tennisExperience
+        ]
+        .filter {
+            !$0.isEmpty &&
+            $0 != "未設定"
+        }
+
+        if !values.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(values, id: \.self) {
+                    value in
+
+                    Text(value)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(
+                            StudentMyPageUI.brandGreen
+                        )
+                        .padding(.horizontal, 9)
+                        .frame(height: 25)
+                        .background(
+                            StudentMyPageUI.softGreen
+                        )
+                        .clipShape(Capsule())
+                }
+            }
+        }
+    }
+
+    private var statsSection: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 10
+        ) {
+            Text("利用状況")
+                .font(.headline)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+
+            HStack(spacing: 10) {
+                statCard(
+                    title: "予約",
+                    value: reservationCount,
+                    isLoading:
+                        isLoadingReservationCount,
+                    icon: "calendar"
+                )
+
+                statCard(
+                    title: "レビュー",
+                    value: reviewCount,
+                    isLoading:
+                        isLoadingReviewCount,
+                    icon: "star"
+                )
+
+                statCard(
+                    title: "お気に入り",
+                    value: favoriteCount,
+                    isLoading:
+                        isLoadingFavoriteCount,
+                    icon: "heart"
+                )
+            }
+        }
+    }
+
+    private func statCard(
+        title: String,
+        value: Int,
+        isLoading: Bool,
+        icon: String
+    ) -> some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(
+                        StudentMyPageUI.softGreen
+                    )
+                    .frame(width: 34, height: 34)
+
+                Image(systemName: icon)
+                    .font(
+                        .system(
+                            size: 14,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        StudentMyPageUI.brandGreen
+                    )
+            }
+
+            if isLoading {
+                ProgressView()
+                    .frame(height: 26)
+                    .tint(
+                        StudentMyPageUI.brandGreen
+                    )
+            } else {
+                Text("\(value)")
+                    .font(.title3)
+                    .fontWeight(.bold)
+                    .foregroundStyle(
+                        StudentMyPageUI.textPrimary
+                    )
+                    .frame(height: 26)
+            }
+
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(
+                    StudentMyPageUI.textSecondary
+                )
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 16,
+                style: .continuous
+            )
+            .stroke(
+                StudentMyPageUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var menuSection: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 10
+        ) {
+            Text("メニュー")
+                .font(.headline)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+
+            VStack(spacing: 0) {
+                NavigationLink {
+                    ReservationListView()
+                } label: {
+                    menuRow(
+                        title: "予約一覧",
+                        subtitle:
+                            "今後の予定や履歴を確認",
+                        icon: "calendar"
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Divider()
+                    .padding(.leading, 56)
+
+                NavigationLink {
+                    FavoriteView()
+                } label: {
+                    menuRow(
+                        title: "お気に入り",
+                        subtitle:
+                            "保存したコーチを確認",
+                        icon: "heart"
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Divider()
+                    .padding(.leading, 56)
+
+                NavigationLink {
+                    NotificationView()
+                } label: {
+                    menuRow(
+                        title: "通知",
+                        subtitle:
+                            "予約やキャンセルのお知らせ",
+                        icon: "bell"
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            .background(Color.white)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 18,
+                    style: .continuous
+                )
+                .stroke(
+                    StudentMyPageUI.border,
+                    lineWidth: 1
+                )
+            }
+        }
+    }
+
+    private var accountSection: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 10
+        ) {
+            Text("アカウント")
+                .font(.headline)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+
+            NavigationLink {
+                SettingsView()
+            } label: {
+                menuRow(
+                    title: "設定",
+                    subtitle:
+                        "アカウントや各種設定",
+                    icon: "gearshape"
+                )
+                .background(Color.white)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 18,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 18,
+                        style: .continuous
+                    )
+                    .stroke(
+                        StudentMyPageUI.border,
+                        lineWidth: 1
+                    )
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func menuRow(
+        title: String,
+        subtitle: String,
+        icon: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(
+                    cornerRadius: 11,
+                    style: .continuous
+                )
+                .fill(StudentMyPageUI.softGreen)
+                .frame(width: 40, height: 40)
+
+                Image(systemName: icon)
+                    .font(
+                        .system(
+                            size: 16,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        StudentMyPageUI.brandGreen
+                    )
+            }
+
+            VStack(
+                alignment: .leading,
+                spacing: 3
+            ) {
+                Text(title)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(
+                        StudentMyPageUI.textPrimary
+                    )
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(
+                        StudentMyPageUI.textSecondary
+                    )
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(
+                    .system(
+                        size: 11,
+                        weight: .bold
+                    )
+                )
+                .foregroundStyle(
+                    StudentMyPageUI.textSecondary
+                )
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 66)
+        .contentShape(Rectangle())
+    }
+
+    private var errorCard: some View {
+        Label(
+            profileError,
+            systemImage:
+                "exclamationmark.triangle.fill"
+        )
+        .font(.caption)
+        .foregroundStyle(.red)
+        .padding(14)
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
+        .background(
+            Color.red.opacity(0.06)
+        )
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 14,
+                style: .continuous
+            )
+        )
+    }
+
+    private var logoutButton: some View {
+        Button(role: .destructive) {
+            showLogoutAlert = true
+        } label: {
+            Label(
+                "ログアウト",
+                systemImage:
+                    "rectangle.portrait.and.arrow.right"
+            )
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(Color.white)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 15,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 15,
+                    style: .continuous
+                )
+                .stroke(
+                    Color.red.opacity(0.16),
+                    lineWidth: 1
+                )
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -258,17 +672,29 @@ struct MyPageView: View {
                 case .empty:
                     ZStack {
                         Circle()
-                            .fill(Color.gray.opacity(0.12))
+                            .fill(
+                                StudentMyPageUI.softGreen
+                            )
 
                         ProgressView()
+                            .tint(
+                                StudentMyPageUI.brandGreen
+                            )
                     }
 
                 @unknown default:
                     defaultProfileImage
                 }
             }
-            .frame(width: 90, height: 90)
+            .frame(width: 82, height: 82)
             .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(
+                        StudentMyPageUI.border,
+                        lineWidth: 1
+                    )
+            }
 
         } else {
             defaultProfileImage
@@ -276,11 +702,17 @@ struct MyPageView: View {
     }
 
     private var defaultProfileImage: some View {
-        Image(systemName: "person.crop.circle.fill")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 90, height: 90)
-            .foregroundStyle(.green)
+        ZStack {
+            Circle()
+                .fill(StudentMyPageUI.softGreen)
+                .frame(width: 82, height: 82)
+
+            Image(systemName: "person.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(
+                    StudentMyPageUI.brandGreen
+                )
+        }
     }
 
     private var displayedProfileComment: String {
@@ -295,46 +727,78 @@ struct MyPageView: View {
     }
 
     private var loggedOutView: some View {
-        VStack(spacing: 18) {
-            Spacer()
+        ZStack {
+            StudentMyPageUI.background
+                .ignoresSafeArea()
 
-            Image(systemName: "person.crop.circle")
-                .font(.system(size: 64))
-                .foregroundStyle(.secondary)
+            VStack(spacing: 18) {
+                Spacer()
 
-            Text("マイページを利用するにはログインが必要です")
+                ZStack {
+                    Circle()
+                        .fill(
+                            StudentMyPageUI.softGreen
+                        )
+                        .frame(width: 92, height: 92)
+
+                    Image(
+                        systemName:
+                            "person.crop.circle"
+                    )
+                    .font(.system(size: 42))
+                    .foregroundStyle(
+                        StudentMyPageUI.brandGreen
+                    )
+                }
+
+                Text(
+                    "マイページを利用するにはログインが必要です"
+                )
                 .font(.title3)
-                .fontWeight(.semibold)
+                .fontWeight(.bold)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
                 .multilineTextAlignment(.center)
 
-            Text(
-                "ログインすると、予約・レビュー・お気に入り・設定を確認できます。"
-            )
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
+                Text(
+                    "ログインすると、予約・レビュー・お気に入り・設定を確認できます。"
+                )
+                .font(.subheadline)
+                .foregroundStyle(
+                    StudentMyPageUI.textSecondary
+                )
+                .multilineTextAlignment(.center)
 
-            Button {
-                showLogin = true
-            } label: {
-                Label(
-                    "ログイン・新規会員登録",
-                    systemImage: "person.crop.circle.badge.plus"
-                )
-                .fontWeight(.semibold)
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.green)
-                .foregroundStyle(.white)
-                .clipShape(
-                    RoundedRectangle(cornerRadius: 14)
-                )
+                Button {
+                    showLogin = true
+                } label: {
+                    Label(
+                        "ログイン・新規会員登録",
+                        systemImage:
+                            "person.crop.circle.badge.plus"
+                    )
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(
+                        StudentMyPageUI.brandGreen
+                    )
+                    .foregroundStyle(.white)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: 15,
+                            style: .continuous
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
+
+                Spacer()
             }
-            .padding(.top, 6)
-
-            Spacer()
+            .padding(.horizontal, 28)
         }
-        .padding(.horizontal, 28)
     }
 
     private func loadMyPageData() {
@@ -646,142 +1110,53 @@ private struct StudentProfileEditView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("プロフィール画像") {
-                    HStack {
-                        Spacer()
+            ZStack {
+                StudentMyPageUI.background
+                    .ignoresSafeArea()
 
-                        PhotosPicker(
-                            selection: $selectedItem,
-                            matching: .images
-                        ) {
-                            editableProfileImage
-                        }
-
-                        Spacer()
-                    }
-
-                    Text("画像をタップすると変更できます。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("表示名") {
-                    TextField(
-                        "例：たかひろ",
-                        text: $displayName
-                    )
-                    .textInputAutocapitalization(.never)
-
-                    Text(
-                        "レビューにはこの表示名が表示されます。"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
-                Section("ひとこと") {
-                    ZStack(alignment: .topLeading) {
-                        if profileComment.isEmpty {
-                            Text("例：週末に楽しくテニスしています！")
-                                .foregroundStyle(.tertiary)
-                                .padding(.top, 8)
-                                .padding(.leading, 5)
-                                .allowsHitTesting(false)
-                        }
-
-                        TextEditor(text: $profileComment)
-                            .frame(minHeight: 90)
-                            .scrollContentBackground(.hidden)
-                    }
-
-                    Text(
-                        "未入力の場合は「テニスを楽しもう！」と表示されます。"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
-                Section("レッスンプロフィール") {
-                    Picker(
-                        "性別",
-                        selection: $gender
+                ScrollView {
+                    VStack(
+                        alignment: .leading,
+                        spacing: 18
                     ) {
-                        ForEach(
-                            genderOptions,
-                            id: \.self
-                        ) { option in
-                            Text(option)
-                                .tag(option)
-                        }
-                    }
+                        editorHeader
 
-                    Picker(
-                        "年代",
-                        selection: $ageGroup
-                    ) {
-                        ForEach(
-                            ageGroupOptions,
-                            id: \.self
-                        ) { option in
-                            Text(option)
-                                .tag(option)
-                        }
-                    }
+                        profileImageCard
 
-                    Picker(
-                        "テニス歴",
-                        selection: $tennisExperience
-                    ) {
-                        ForEach(
-                            tennisExperienceOptions,
-                            id: \.self
-                        ) { option in
-                            Text(option)
-                                .tag(option)
-                        }
-                    }
+                        basicProfileCard
 
-                    Text(
-                        "レッスン前にコーチが確認できる簡易プロフィールです。性別は「回答しない」を選択できます。"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                        lessonProfileCard
+
+                        if !errorMessage.isEmpty {
+                            editorErrorCard
+                        }
+
+                        Color.clear
+                            .frame(height: 92)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
                 }
-
-                if !errorMessage.isEmpty {
-                    Section {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-
-                Section {
-                    Button {
-                        saveProfile()
-                    } label: {
-                        HStack {
-                            Spacer()
-
-                            if isSaving {
-                                ProgressView()
-                            } else {
-                                Text("保存する")
-                                    .fontWeight(.semibold)
-                            }
-
-                            Spacer()
-                        }
-                    }
-                    .disabled(isSaving)
-                }
+                .scrollDismissesKeyboard(
+                    .interactively
+                )
             }
-            .navigationTitle("プロフィールを編集")
-            .navigationBarTitleDisplayMode(.inline)
+            .tint(
+                StudentMyPageUI.brandGreen
+            )
+            .navigationTitle(
+                "プロフィールを編集"
+            )
+            .navigationBarTitleDisplayMode(
+                .inline
+            )
+            .safeAreaInset(edge: .bottom) {
+                saveArea
+            }
             .toolbar {
                 ToolbarItem(
-                    placement: .cancellationAction
+                    placement:
+                        .cancellationAction
                 ) {
                     Button("閉じる") {
                         dismiss()
@@ -789,10 +1164,557 @@ private struct StudentProfileEditView: View {
                     .disabled(isSaving)
                 }
             }
-            .onChange(of: selectedItem) { _ in
+            .onChange(
+                of: selectedItem
+            ) { _ in
                 loadSelectedImage()
             }
         }
+    }
+
+    private var editorHeader: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 5
+        ) {
+            Text("プロフィールを編集")
+                .font(.title2)
+                .fontWeight(.bold)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+
+            Text(
+                "コーチがレッスン前に確認する情報を設定できます"
+            )
+            .font(.subheadline)
+            .foregroundStyle(
+                StudentMyPageUI.textSecondary
+            )
+        }
+    }
+
+    private var profileImageCard: some View {
+        VStack(spacing: 14) {
+            HStack {
+                sectionHeader(
+                    "プロフィール画像",
+                    icon: "person.crop.circle"
+                )
+
+                Spacer()
+            }
+
+            PhotosPicker(
+                selection: $selectedItem,
+                matching: .images
+            ) {
+                VStack(spacing: 10) {
+                    editableProfileImage
+
+                    Label(
+                        "画像を変更",
+                        systemImage: "camera.fill"
+                    )
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(
+                        StudentMyPageUI.brandGreen
+                    )
+                }
+                .frame(
+                    maxWidth: .infinity
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isSaving)
+
+            Text(
+                "画像をタップすると写真を選択できます。"
+            )
+            .font(.caption)
+            .foregroundStyle(
+                StudentMyPageUI.textSecondary
+            )
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                StudentMyPageUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var basicProfileCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 18
+        ) {
+            sectionHeader(
+                "基本プロフィール",
+                icon: "person.text.rectangle"
+            )
+
+            VStack(
+                alignment: .leading,
+                spacing: 7
+            ) {
+                HStack {
+                    Text("表示名")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(
+                            StudentMyPageUI.textSecondary
+                        )
+
+                    Spacer()
+
+                    Text(
+                        "\(trimmedDisplayNameCount)/20"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(
+                        trimmedDisplayNameCount > 20
+                            ? Color.red
+                            : StudentMyPageUI.textSecondary
+                    )
+                }
+
+                TextField(
+                    "例：たかひろ",
+                    text: $displayName
+                )
+                .textInputAutocapitalization(
+                    .never
+                )
+                .padding(.horizontal, 13)
+                .frame(height: 48)
+                .background(
+                    StudentMyPageUI.background
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 13,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 13,
+                        style: .continuous
+                    )
+                    .stroke(
+                        trimmedDisplayNameCount > 20
+                            ? Color.red.opacity(0.5)
+                            : StudentMyPageUI.border,
+                        lineWidth: 1
+                    )
+                }
+
+                Text(
+                    "レビューにはこの表示名が表示されます。"
+                )
+                .font(.caption)
+                .foregroundStyle(
+                    StudentMyPageUI.textSecondary
+                )
+            }
+
+            Divider()
+
+            VStack(
+                alignment: .leading,
+                spacing: 7
+            ) {
+                HStack {
+                    Text("ひとこと")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(
+                            StudentMyPageUI.textSecondary
+                        )
+
+                    Spacer()
+
+                    Text(
+                        "\(trimmedCommentCount)/50"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(
+                        trimmedCommentCount > 50
+                            ? Color.red
+                            : StudentMyPageUI.textSecondary
+                    )
+                }
+
+                ZStack(
+                    alignment: .topLeading
+                ) {
+                    if profileComment.isEmpty {
+                        Text(
+                            "例：週末に楽しくテニスしています！"
+                        )
+                        .foregroundStyle(
+                            StudentMyPageUI.textSecondary.opacity(0.65)
+                        )
+                        .padding(.top, 13)
+                        .padding(.leading, 13)
+                        .allowsHitTesting(false)
+                    }
+
+                    TextEditor(
+                        text: $profileComment
+                    )
+                    .frame(minHeight: 100)
+                    .padding(7)
+                    .scrollContentBackground(
+                        .hidden
+                    )
+                    .background(Color.clear)
+                }
+                .background(
+                    StudentMyPageUI.background
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 13,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 13,
+                        style: .continuous
+                    )
+                    .stroke(
+                        trimmedCommentCount > 50
+                            ? Color.red.opacity(0.5)
+                            : StudentMyPageUI.border,
+                        lineWidth: 1
+                    )
+                }
+
+                Text(
+                    "未入力の場合は「テニスを楽しもう！」と表示されます。"
+                )
+                .font(.caption)
+                .foregroundStyle(
+                    StudentMyPageUI.textSecondary
+                )
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                StudentMyPageUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var lessonProfileCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 16
+        ) {
+            sectionHeader(
+                "レッスンプロフィール",
+                icon: "figure.tennis"
+            )
+
+            profilePickerRow(
+                title: "性別",
+                icon: "person.2",
+                selection: $gender,
+                options: genderOptions
+            )
+
+            Divider()
+
+            profilePickerRow(
+                title: "年代",
+                icon: "calendar.badge.clock",
+                selection: $ageGroup,
+                options: ageGroupOptions
+            )
+
+            Divider()
+
+            profilePickerRow(
+                title: "テニス歴",
+                icon: "figure.tennis",
+                selection:
+                    $tennisExperience,
+                options:
+                    tennisExperienceOptions
+            )
+
+            HStack(
+                alignment: .top,
+                spacing: 8
+            ) {
+                Image(
+                    systemName: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(
+                    StudentMyPageUI.brandGreen
+                )
+
+                Text(
+                    "レッスン前にコーチが確認できる簡易プロフィールです。性別は「回答しない」を選択できます。"
+                )
+                .font(.caption)
+                .foregroundStyle(
+                    StudentMyPageUI.textSecondary
+                )
+                .fixedSize(
+                    horizontal: false,
+                    vertical: true
+                )
+            }
+            .padding(12)
+            .background(
+                StudentMyPageUI.softGreen.opacity(0.50)
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 12,
+                    style: .continuous
+                )
+            )
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                StudentMyPageUI.border,
+                lineWidth: 1
+            )
+        }
+    }
+
+    private func profilePickerRow(
+        title: String,
+        icon: String,
+        selection: Binding<String>,
+        options: [String]
+    ) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(
+                    cornerRadius: 10,
+                    style: .continuous
+                )
+                .fill(
+                    StudentMyPageUI.softGreen
+                )
+                .frame(width: 38, height: 38)
+
+                Image(systemName: icon)
+                    .font(
+                        .system(
+                            size: 15,
+                            weight: .semibold
+                        )
+                    )
+                    .foregroundStyle(
+                        StudentMyPageUI.brandGreen
+                    )
+            }
+
+            Text(title)
+                .fontWeight(.semibold)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+
+            Spacer()
+
+            Picker(
+                title,
+                selection: selection
+            ) {
+                ForEach(
+                    options,
+                    id: \.self
+                ) { option in
+                    Text(option)
+                        .tag(option)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .tint(
+                StudentMyPageUI.brandGreen
+            )
+        }
+    }
+
+    private var editorErrorCard: some View {
+        HStack(
+            alignment: .top,
+            spacing: 8
+        ) {
+            Image(
+                systemName:
+                    "exclamationmark.triangle.fill"
+            )
+
+            Text(errorMessage)
+                .fixedSize(
+                    horizontal: false,
+                    vertical: true
+                )
+        }
+        .font(.caption)
+        .foregroundStyle(.red)
+        .padding(14)
+        .frame(
+            maxWidth: .infinity,
+            alignment: .leading
+        )
+        .background(
+            Color.red.opacity(0.06)
+        )
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 14,
+                style: .continuous
+            )
+        )
+    }
+
+    private var saveArea: some View {
+        VStack(spacing: 7) {
+            Button {
+                saveProfile()
+            } label: {
+                HStack(spacing: 8) {
+                    Spacer()
+
+                    if isSaving {
+                        ProgressView()
+                            .tint(.white)
+
+                        Text("保存中…")
+                            .fontWeight(.semibold)
+                    } else {
+                        Image(
+                            systemName:
+                                "checkmark.circle.fill"
+                        )
+
+                        Text("変更を保存")
+                            .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+                .frame(height: 50)
+                .foregroundStyle(.white)
+                .background(
+                    isSaving
+                        ? Color.gray
+                        : StudentMyPageUI.brandGreen
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: 15,
+                        style: .continuous
+                    )
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isSaving)
+
+            Text(
+                "保存した内容はマイページに反映されます"
+            )
+            .font(.caption2)
+            .foregroundStyle(
+                StudentMyPageUI.textSecondary
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private func sectionHeader(
+        _ title: String,
+        icon: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(
+                    .system(
+                        size: 15,
+                        weight: .semibold
+                    )
+                )
+                .foregroundStyle(
+                    StudentMyPageUI.brandGreen
+                )
+
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(
+                    StudentMyPageUI.textPrimary
+                )
+        }
+    }
+
+    private var trimmedDisplayNameCount: Int {
+        displayName
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            .count
+    }
+
+    private var trimmedCommentCount: Int {
+        profileComment
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            .count
     }
 
     @ViewBuilder
@@ -801,13 +1723,26 @@ private struct StudentProfileEditView: View {
             selectedImage
                 .resizable()
                 .scaledToFill()
-                .frame(width: 120, height: 120)
+                .frame(
+                    width: 120,
+                    height: 120
+                )
                 .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(
+                            StudentMyPageUI.brandGreen.opacity(0.22),
+                            lineWidth: 2
+                        )
+                }
 
         } else if !imageURL.isEmpty,
-                  let url = URL(string: imageURL) {
+                  let url =
+                    URL(string: imageURL) {
 
-            AsyncImage(url: url) { phase in
+            AsyncImage(url: url) {
+                phase in
+
                 switch phase {
                 case .success(let image):
                     image
@@ -821,18 +1756,31 @@ private struct StudentProfileEditView: View {
                     ZStack {
                         Circle()
                             .fill(
-                                Color.gray.opacity(0.12)
+                                StudentMyPageUI.softGreen
                             )
 
                         ProgressView()
+                            .tint(
+                                StudentMyPageUI.brandGreen
+                            )
                     }
 
                 @unknown default:
                     editPlaceholderImage
                 }
             }
-            .frame(width: 120, height: 120)
+            .frame(
+                width: 120,
+                height: 120
+            )
             .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(
+                        StudentMyPageUI.brandGreen.opacity(0.22),
+                        lineWidth: 2
+                    )
+            }
 
         } else {
             editPlaceholderImage
@@ -841,19 +1789,39 @@ private struct StudentProfileEditView: View {
 
     private var editPlaceholderImage: some View {
         ZStack {
-            Image(
-                systemName: "person.crop.circle.fill"
-            )
-            .resizable()
-            .scaledToFit()
-            .frame(width: 120, height: 120)
-            .foregroundStyle(.green)
+            Circle()
+                .fill(
+                    StudentMyPageUI.softGreen
+                )
+                .frame(
+                    width: 120,
+                    height: 120
+                )
 
             Image(
-                systemName: "camera.circle.fill"
+                systemName: "person.fill"
             )
-            .font(.title)
-            .foregroundStyle(.white, .green)
+            .font(.system(size: 46))
+            .foregroundStyle(
+                StudentMyPageUI.brandGreen
+            )
+
+            ZStack {
+                Circle()
+                    .fill(
+                        StudentMyPageUI.brandGreen
+                    )
+                    .frame(
+                        width: 34,
+                        height: 34
+                    )
+
+                Image(
+                    systemName: "camera.fill"
+                )
+                .font(.system(size: 14))
+                .foregroundStyle(.white)
+            }
             .offset(x: 42, y: 42)
         }
     }
