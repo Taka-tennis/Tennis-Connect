@@ -168,12 +168,27 @@ struct CoachRegisterView: View {
             return
         }
 
+        guard let uiImage = UIImage(data: data),
+              let jpegData = uiImage.jpegData(
+                compressionQuality: 0.85
+              ) else {
+            print("画像アップロード失敗: JPEG変換に失敗しました")
+            completion(nil)
+            return
+        }
+
         let ref = storage.reference()
             .child("coachImages/\(uid).jpg")
 
         let previousImageURL = imageURL
 
-        ref.putData(data, metadata: nil) { _, error in
+        let metadata = StorageMetadata()
+        metadata.contentType = "image/jpeg"
+
+        ref.putData(
+            jpegData,
+            metadata: metadata
+        ) { _, error in
             if let error {
                 print("アップロード失敗: \(error)")
                 completion(nil)

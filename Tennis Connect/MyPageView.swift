@@ -1935,12 +1935,27 @@ private struct StudentProfileEditView: View {
         uid: String,
         completion: @escaping (String?) -> Void
     ) {
+        guard let uiImage = UIImage(data: data),
+              let jpegData = uiImage.jpegData(
+                compressionQuality: 0.85
+              ) else {
+            DispatchQueue.main.async {
+                errorMessage =
+                    "プロフィール画像をJPEG形式に変換できませんでした"
+            }
+            completion(nil)
+            return
+        }
+
         let ref = storage.reference()
             .child("studentImages/\(uid).jpg")
 
+        let metadata = StorageMetadata()
+        metadata.contentType = "image/jpeg"
+
         ref.putData(
-            data,
-            metadata: nil
+            jpegData,
+            metadata: metadata
         ) { _, error in
             if let error {
                 DispatchQueue.main.async {

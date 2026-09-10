@@ -26,7 +26,8 @@ service firebase.storage {
       allow create, update:
         if signedIn()
         && fileName == request.auth.uid + '.jpg'
-        && within20MB();
+        && within20MB()
+        && request.resource.contentType == 'image/jpeg';
 
       allow delete:
         if signedIn()
@@ -46,7 +47,8 @@ service firebase.storage {
       allow create, update:
         if signedIn()
         && fileName == request.auth.uid + '.jpg'
-        && within20MB();
+        && within20MB()
+        && request.resource.contentType == 'image/jpeg';
 
       allow delete:
         if signedIn()
