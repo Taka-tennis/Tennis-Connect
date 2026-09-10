@@ -495,7 +495,7 @@ struct CoachDetailView: View {
                 [
                     "studentId": studentId,
                     "coachId": coach.id,
-                    "createdAt": Timestamp()
+                    "createdAt": FieldValue.serverTimestamp()
                 ]
             ) { error in
                 DispatchQueue.main.async {

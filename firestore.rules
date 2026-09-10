@@ -331,6 +331,9 @@ service cloud.firestore {
     }
 
     // お気に入り：本人のデータだけ
+    // お気に入り
+    // 本人だけが、自分のUIDとコーチIDから決まるDocument IDで作成できる。
+    // 作成時刻はサーバー時刻に固定し、実在するコーチだけ登録可能とする。
     match /favorites/{favoriteId} {
       allow create:
         if signedIn()
@@ -344,7 +347,16 @@ service cloud.firestore {
           'coachId',
           'createdAt'
         ])
-        && request.resource.data.studentId == request.auth.uid;
+        && request.resource.data.studentId is string
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.coachId is string
+        && request.resource.data.coachId.size() > 0
+        && favoriteId ==
+          request.auth.uid + '__' + request.resource.data.coachId
+        && exists(
+          /databases/$(database)/documents/coaches/$(request.resource.data.coachId)
+        )
+        && request.resource.data.createdAt == request.time;
 
       allow read, delete:
         if signedIn()
@@ -404,7 +416,11 @@ service cloud.firestore {
         ])
         && request.resource.data.reporterId == request.auth.uid
         && request.resource.data.reportedUserId is string
+        && request.resource.data.reportedUserId.size() > 0
         && request.resource.data.reportedUserId != request.auth.uid
+        && exists(
+          /databases/$(database)/documents/coaches/$(request.resource.data.reportedUserId)
+        )
         && request.resource.data.reportedRole == 'coach'
         && request.resource.data.reason in [
           '不適切なプロフィール・投稿',
@@ -451,7 +467,10 @@ service cloud.firestore {
           'createdAt'
         ])
         && request.resource.data.userId == request.auth.uid
+        && request.auth.token.email != null
         && request.resource.data.email is string
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.email.size() <= 254
         && request.resource.data.category in [
           '予約について',
           '支払い・返金について',
@@ -464,6 +483,8 @@ service cloud.firestore {
         && request.resource.data.message.size() <= 1000
         && request.resource.data.status == 'open'
         && request.resource.data.appVersion is string
+        && request.resource.data.appVersion.size() > 0
+        && request.resource.data.appVersion.size() <= 50
         && request.resource.data.createdAt == request.time;
 
       // 利用者側からの閲覧・変更・削除は許可しない
