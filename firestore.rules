@@ -45,15 +45,83 @@ service cloud.firestore {
 
     // 生徒プロフィール：本人だけ
     // 削除は正式な退会処理（Cloud Functions）からのみ行う
+    // 生徒プロフィール
+    // 新規登録は本人だけ。登録時に保存できる項目を限定し、
+    // emailはFirebase Authenticationのemailと一致させる。
+    // 既存プロフィールの更新も、画面から編集する項目だけ許可する。
     match /students/{studentId} {
-      allow create, read, update:
+      allow create:
+        if signedIn()
+        && request.auth.uid == studentId
+        && request.auth.token.email != null
+        && request.resource.data.keys().hasAll([
+          'displayName',
+          'email',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'displayName',
+          'email',
+          'createdAt'
+        ])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 20
+        && request.resource.data.email is string
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.createdAt == request.time;
+
+      allow read:
         if signedIn() && request.auth.uid == studentId;
+
+      allow update:
+        if signedIn()
+        && request.auth.uid == studentId
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'displayName',
+            'profileComment',
+            'imageURL',
+            'gender',
+            'ageGroup',
+            'tennisExperience',
+            'updatedAt'
+          ])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 20
+        && (
+          !('profileComment' in request.resource.data)
+          || (
+            request.resource.data.profileComment is string
+            && request.resource.data.profileComment.size() <= 50
+          )
+        )
+        && (
+          !('imageURL' in request.resource.data)
+          || request.resource.data.imageURL is string
+        )
+        && (
+          !('gender' in request.resource.data)
+          || request.resource.data.gender is string
+        )
+        && (
+          !('ageGroup' in request.resource.data)
+          || request.resource.data.ageGroup is string
+        )
+        && (
+          !('tennisExperience' in request.resource.data)
+          || request.resource.data.tennisExperience is string
+        )
+        && request.resource.data.updatedAt == request.time;
 
       allow delete: if false;
 
+      // reviewedCoaches 等の内部管理データはCloud Functionsからのみ操作する。
       match /{subcollection}/{document=**} {
-        allow read, write:
-          if signedIn() && request.auth.uid == studentId;
+        allow read, write: if false;
       }
     }
 
@@ -167,7 +235,7 @@ service cloud.firestore {
         && request.resource.data.text is string
         && request.resource.data.sender is string
         && request.resource.data.senderId is string
-        && request.resource.data.createdAt is timestamp
+        && request.resource.data.createdAt == request.time
         && request.resource.data.isRead == false
         && request.resource.data.text.size() > 0
         && request.resource.data.text.size() <= 2000

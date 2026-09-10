@@ -430,7 +430,8 @@ struct ChatView: View {
                 )
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 9)
+            .padding(.top, 4)
+            .padding(.bottom, 0)
         }
         .background(
             Color(.systemBackground)
@@ -627,7 +628,7 @@ struct ChatView: View {
             "senderId":
                 uid,
             "createdAt":
-                Timestamp(date: Date()),
+                FieldValue.serverTimestamp(),
             "isRead":
                 false
         ]

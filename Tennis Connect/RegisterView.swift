@@ -38,6 +38,7 @@ struct RegisterView: View {
                     .textFieldStyle(.roundedBorder)
                     .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
 
                 SecureField("パスワード", text: $password)
                     .textFieldStyle(.roundedBorder)
@@ -52,6 +53,11 @@ struct RegisterView: View {
                             in: .whitespacesAndNewlines
                         )
 
+                    let trimmedEmail =
+                        email.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+
                     guard !trimmedDisplayName.isEmpty else {
                         message = "表示名を入力してください"
                         return
@@ -62,7 +68,7 @@ struct RegisterView: View {
                         return
                     }
 
-                    guard !email.isEmpty,
+                    guard !trimmedEmail.isEmpty,
                           !password.isEmpty else {
                         message =
                             "メールアドレスとパスワードを入力してください"
@@ -84,51 +90,56 @@ struct RegisterView: View {
                     message = ""
 
                     Auth.auth().createUser(
-                        withEmail: email,
+                        withEmail: trimmedEmail,
                         password: password
                     ) { result, error in
 
                         if let error = error {
                             isRegistering = false
                             message = error.localizedDescription
-                        } else {
-
-                            print("登録成功")
-                            print("UID: \(result?.user.uid ?? "")")
-
-                            guard let uid = result?.user.uid else {
-                                isRegistering = false
-                                message = "会員情報を取得できませんでした"
-                                return
-                            }
-
-                            Firestore.firestore()
-                                .collection("students")
-                                .document(uid)
-                                .setData([
-                                    "displayName": trimmedDisplayName,
-                                    "email": email,
-                                    "createdAt": Timestamp()
-                                ]) { error in
-
-                                    if let error = error {
-                                        print(
-                                            "Firestore保存失敗: \(error.localizedDescription)"
-                                        )
-                                        message =
-                                            "会員情報の保存に失敗しました"
-                                    } else {
-                                        print("Firestore保存成功")
-                                    }
-
-                                    isRegistering = false
-
-                                    if error == nil {
-                                        onAuthenticationSuccess?()
-                                    }
-                                }
+                            return
                         }
 
+                        print("登録成功")
+                        print("UID: \(result?.user.uid ?? "")")
+
+                        guard let user = result?.user else {
+                            isRegistering = false
+                            message = "会員情報を取得できませんでした"
+                            return
+                        }
+
+                        let authenticatedEmail =
+                            user.email?
+                                .trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                )
+                            ?? trimmedEmail
+
+                        Firestore.firestore()
+                            .collection("students")
+                            .document(user.uid)
+                            .setData([
+                                "displayName": trimmedDisplayName,
+                                "email": authenticatedEmail,
+                                "createdAt":
+                                    FieldValue.serverTimestamp()
+                            ]) { error in
+
+                                if let error = error {
+                                    print(
+                                        "Firestore保存失敗: \(error.localizedDescription)"
+                                    )
+                                    message =
+                                        "会員情報の保存に失敗しました"
+                                    isRegistering = false
+                                    return
+                                }
+
+                                print("Firestore保存成功")
+                                isRegistering = false
+                                onAuthenticationSuccess?()
+                            }
                     }
 
                 }
@@ -149,7 +160,5 @@ struct RegisterView: View {
             }
             .padding()
         }
-
     }
-
 }
