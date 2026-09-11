@@ -965,12 +965,64 @@ function reservationIdFromRefund(refund) {
  * @param {string} eventId Stripe Event ID
  * @return {Promise<void>}
  */
-async function markReservationRefund(refund, eventId) {
-  const reservationId = reservationIdFromRefund(refund);
+async function markReservationRefund(
+  refund,
+  eventId,
+  options = {},
+) {
+  const shouldRefreshFromStripe =
+    options.refreshFromStripe === true;
+
+  let effectiveRefund = refund;
+
+  if (shouldRefreshFromStripe) {
+    const refundId = String(refund?.id || "").trim();
+
+    if (!refundId) {
+      throw new Error(
+        "Stripe Refund IDを確認できません。",
+      );
+    }
+
+    const stripe = new Stripe(
+      stripeSecretKey.value(),
+      {
+        maxNetworkRetries: 1,
+        timeout: 15000,
+      },
+    );
+
+    try {
+      effectiveRefund =
+        await stripe.refunds.retrieve(refundId);
+    } catch (error) {
+      logger.error(
+        "Stripe Refundの最新状態を取得できませんでした。",
+        {
+          refundId,
+          eventId,
+          stripeErrorMessage:
+            error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+          stripeErrorType: error?.type || "",
+        },
+      );
+
+      // Webhookで受け取った古い状態をそのまま反映すると、
+      // succeeded → pending などへ巻き戻す可能性があります。
+      // 最新状態が確認できない場合は500を返し、
+      // Stripeの再送で安全に再試行します。
+      throw error;
+    }
+  }
+
+  const reservationId =
+    reservationIdFromRefund(effectiveRefund) ||
+    reservationIdFromRefund(refund);
 
   if (!reservationId) {
     logger.warn("予約IDのないRefundを受信しました。", {
-      refundId: refund.id,
+      refundId: effectiveRefund?.id || refund?.id || "",
       eventId,
     });
     return;
@@ -981,373 +1033,562 @@ async function markReservationRefund(refund, eventId) {
     .collection("reservations")
     .doc(reservationId);
 
-  await db.runTransaction(async (transaction) => {
-    const reservationSnap = await transaction.get(
-      reservationRef,
-    );
-
-    if (!reservationSnap.exists) {
-      throw new Error(
-        `返金対象の予約が見つかりません: ${reservationId}`,
+  const transactionResult = await db.runTransaction(
+    async (transaction) => {
+      const reservationSnap = await transaction.get(
+        reservationRef,
       );
-    }
 
-    const reservation = reservationSnap.data();
+      if (!reservationSnap.exists) {
+        throw new Error(
+          `返金対象の予約が見つかりません: ${reservationId}`,
+        );
+      }
 
-    if (
-      reservation.stripeRefundId &&
-      reservation.stripeRefundId !== refund.id
-    ) {
-      throw new Error(
-        "予約に保存されたRefund IDと一致しません。",
+      const reservation = reservationSnap.data();
+      const refundId = String(
+        effectiveRefund.id || "",
+      ).trim();
+
+      if (
+        reservation.stripeRefundId &&
+        reservation.stripeRefundId !== refundId
+      ) {
+        throw new Error(
+          "予約に保存されたRefund IDと一致しません。",
+        );
+      }
+
+      const metadataSource = String(
+        effectiveRefund.metadata
+          ?.cancellationSource || "",
       );
-    }
+      const storedSource = String(
+        reservation.cancellationSource || "",
+      );
+      let cancellationSource = "coach";
 
-    const metadataSource = String(
-      refund.metadata?.cancellationSource || "",
-    );
-    const storedSource = String(
-      reservation.cancellationSource || "",
-    );
-    let cancellationSource = "coach";
+      if (
+        metadataSource === "late_payment" ||
+        storedSource === "late_payment"
+      ) {
+        cancellationSource = "late_payment";
+      } else if (
+        metadataSource === "weather" ||
+        storedSource === "weather" ||
+        reservation.status === "weather_cancelled"
+      ) {
+        cancellationSource = "weather";
+      } else if (
+        metadataSource === "student" ||
+        storedSource === "student" ||
+        reservation.status === "student_cancelled"
+      ) {
+        cancellationSource = "student";
+      }
 
-    if (
-      metadataSource === "late_payment" ||
-      storedSource === "late_payment"
-    ) {
-      cancellationSource = "late_payment";
-    } else if (
-      metadataSource === "weather" ||
-      storedSource === "weather" ||
-      reservation.status === "weather_cancelled"
-    ) {
-      cancellationSource = "weather";
-    } else if (
-      metadataSource === "student" ||
-      storedSource === "student" ||
-      reservation.status === "student_cancelled"
-    ) {
-      cancellationSource = "student";
-    }
+      const cancellationStatus =
+        cancellationSource === "late_payment" ?
+          "cancelled" :
+          cancellationSource === "student" ?
+            "student_cancelled" :
+            cancellationSource === "weather" ?
+              "weather_cancelled" :
+              "coach_cancelled";
 
-    const cancellationStatus =
-      cancellationSource === "late_payment" ?
-        "cancelled" :
-        cancellationSource === "student" ?
-          "student_cancelled" :
-          cancellationSource === "weather" ?
-            "weather_cancelled" :
-            "coach_cancelled";
-    const refundStatus = String(refund.status || "pending");
-    const refundAmount = Number(refund.amount || 0);
-    const amountPaid = Number(
-      reservation.amountPaid ||
-      reservation.totalPrice ||
-      0,
-    );
-    const isPartialRefund =
-      cancellationSource === "student" &&
-      amountPaid > 0 &&
-      refundAmount > 0 &&
-      refundAmount < amountPaid;
+      const refundStatus = String(
+        effectiveRefund.status || "pending",
+      );
+      const refundAmount = Number(
+        effectiveRefund.amount || 0,
+      );
+      const amountPaid = Number(
+        reservation.amountPaid ||
+        reservation.totalPrice ||
+        0,
+      );
+      const isPartialRefund =
+        cancellationSource === "student" &&
+        amountPaid > 0 &&
+        refundAmount > 0 &&
+        refundAmount < amountPaid;
 
-    const update = {
-      status: cancellationStatus,
-      cancellationSource,
-      refundStatus,
-      stripeRefundId: refund.id,
-      stripeRefundEventId: eventId,
-      refundAmount,
-      updatedAt: FieldValue.serverTimestamp(),
-    };
+      let targetPaymentStatus =
+        "refund_processing";
 
-    if (refundStatus === "succeeded") {
-      update.paymentStatus = isPartialRefund ?
-        "partially_refunded" :
-        "refunded";
-      update.refundedAt = FieldValue.serverTimestamp();
-    } else if (
-      refundStatus === "failed" ||
-      refundStatus === "canceled"
-    ) {
-      update.paymentStatus = "refund_failed";
-      update.refundFailureReason =
-        refund.failure_reason || "unknown";
-    } else {
-      update.paymentStatus = "refund_processing";
-    }
-
-    if (cancellationSource === "weather") {
       if (refundStatus === "succeeded") {
-        update.weatherCancellationStatus = "completed";
+        targetPaymentStatus = isPartialRefund ?
+          "partially_refunded" :
+          "refunded";
       } else if (
         refundStatus === "failed" ||
         refundStatus === "canceled"
       ) {
-        update.weatherCancellationStatus = "refund_failed";
-      } else {
-        update.weatherCancellationStatus = "refund_processing";
+        targetPaymentStatus = "refund_failed";
       }
-    }
 
-    transaction.set(reservationRef, update, {merge: true});
+      let targetWeatherCancellationStatus = "";
 
-    if (cancellationSource === "late_payment") {
-      const latePaymentNotifications = [];
-
-      if (refundStatus === "succeeded") {
-        if (reservation.studentId) {
-          latePaymentNotifications.push({
-            id:
-              `late_payment_refund_succeeded_student_${reservationId}`,
-            recipientId: reservation.studentId,
-            type: "latePaymentRefundedToStudent",
-            title:
-              "開始時刻後の決済を全額返金しました",
-            message:
-              "レッスン開始時刻を過ぎてから決済が完了したため、" +
-              "予約は確定せず全額返金しました。",
-          });
+      if (cancellationSource === "weather") {
+        if (refundStatus === "succeeded") {
+          targetWeatherCancellationStatus =
+            "completed";
+        } else if (
+          refundStatus === "failed" ||
+          refundStatus === "canceled"
+        ) {
+          targetWeatherCancellationStatus =
+            "refund_failed";
+        } else {
+          targetWeatherCancellationStatus =
+            "refund_processing";
         }
+      }
 
-        if (reservation.coachId) {
-          latePaymentNotifications.push({
-            id:
-              `late_payment_refund_succeeded_coach_${reservationId}`,
-            recipientId: reservation.coachId,
-            type: "latePaymentRefundedToCoach",
-            title:
-              "開始時刻後の決済を無効にしました",
-            message:
-              "開始時刻後に完了した決済を無効として扱い、" +
-              "生徒へ全額返金しました。",
-          });
-        }
-      } else if (
-        refundStatus === "failed" ||
-        refundStatus === "canceled"
+      const currentRefundStatus = String(
+        reservation.refundStatus || "",
+      );
+      const currentPaymentStatus = String(
+        reservation.paymentStatus || "",
+      );
+      const currentStatus = String(
+        reservation.status || "",
+      );
+      const currentSource = String(
+        reservation.cancellationSource || "",
+      );
+      const currentRefundId = String(
+        reservation.stripeRefundId || "",
+      );
+      const currentRefundAmount = Number(
+        reservation.refundAmount || 0,
+      );
+      const currentWeatherStatus = String(
+        reservation.weatherCancellationStatus || "",
+      );
+
+      // succeededは返金完了の最終状態です。
+      // もし古いpending/failed Eventが後から届いても、
+      // Firestoreを完了前の状態へ戻しません。
+      if (
+        currentRefundStatus === "succeeded" &&
+        refundStatus !== "succeeded"
       ) {
-        if (reservation.studentId) {
-          latePaymentNotifications.push({
-            id:
-              `late_payment_refund_failed_student_${reservationId}`,
-            recipientId: reservation.studentId,
-            type: "latePaymentRefundFailedToStudent",
-            title:
-              "返金状況をご確認ください",
-            message:
-              "開始時刻後の決済を検知しましたが、" +
-              "全額返金を完了できませんでした。運営が確認します。",
-          });
-        }
-
-        if (reservation.coachId) {
-          latePaymentNotifications.push({
-            id:
-              `late_payment_refund_failed_coach_${reservationId}`,
-            recipientId: reservation.coachId,
-            type: "latePaymentRefundFailedToCoach",
-            title:
-              "開始時刻後決済の返金確認が必要です",
-            message:
-              "開始時刻後の決済に対する返金を完了できませんでした。" +
-              "運営が確認します。",
-          });
-        }
-      }
-
-      for (const item of latePaymentNotifications) {
-        transaction.set(
-          db.collection("notifications").doc(item.id),
+        logger.warn(
+          "古いRefundイベントによる返金完了状態の巻き戻しを防止しました。",
           {
-            recipientId: item.recipientId,
-            coachId: reservation.coachId || "",
-            studentId: reservation.studentId || "",
             reservationId,
-            type: item.type,
-            title: item.title,
-            message: item.message,
+            refundId,
+            eventId,
+            currentRefundStatus,
+            incomingRefundStatus: refundStatus,
+          },
+        );
+
+        return {
+          changed: false,
+          ignoredOlderState: true,
+          refundStatus: currentRefundStatus,
+        };
+      }
+
+      const sameState =
+        currentRefundId === refundId &&
+        currentRefundStatus === refundStatus &&
+        currentPaymentStatus === targetPaymentStatus &&
+        currentStatus === cancellationStatus &&
+        currentSource === cancellationSource &&
+        currentRefundAmount === refundAmount &&
+        (
+          cancellationSource !== "weather" ||
+          currentWeatherStatus ===
+            targetWeatherCancellationStatus
+        );
+
+      // 同じRefund状態のWebhook再送では、
+      // updatedAt・通知createdAt・isReadを上書きしません。
+      if (sameState) {
+        return {
+          changed: false,
+          ignoredDuplicate: true,
+          refundStatus,
+        };
+      }
+
+      const update = {
+        status: cancellationStatus,
+        cancellationSource,
+        refundStatus,
+        stripeRefundId: refundId,
+        stripeRefundEventId: eventId,
+        refundAmount,
+        paymentStatus: targetPaymentStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+
+      if (refundStatus === "succeeded") {
+        update.refundedAt =
+          FieldValue.serverTimestamp();
+      } else if (
+        refundStatus === "failed" ||
+        refundStatus === "canceled"
+      ) {
+        update.refundFailureReason =
+          effectiveRefund.failure_reason ||
+          "unknown";
+      }
+
+      if (cancellationSource === "weather") {
+        update.weatherCancellationStatus =
+          targetWeatherCancellationStatus;
+      }
+
+      transaction.set(
+        reservationRef,
+        update,
+        {merge: true},
+      );
+
+      if (cancellationSource === "late_payment") {
+        const latePaymentNotifications = [];
+
+        if (refundStatus === "succeeded") {
+          if (reservation.studentId) {
+            latePaymentNotifications.push({
+              id:
+                `late_payment_refund_succeeded_student_${reservationId}`,
+              recipientId: reservation.studentId,
+              type:
+                "latePaymentRefundedToStudent",
+              title:
+                "開始時刻後の決済を全額返金しました",
+              message:
+                "レッスン開始時刻を過ぎてから決済が完了したため、" +
+                "予約は確定せず全額返金しました。",
+            });
+          }
+
+          if (reservation.coachId) {
+            latePaymentNotifications.push({
+              id:
+                `late_payment_refund_succeeded_coach_${reservationId}`,
+              recipientId: reservation.coachId,
+              type:
+                "latePaymentRefundedToCoach",
+              title:
+                "開始時刻後の決済を無効にしました",
+              message:
+                "開始時刻後に完了した決済を無効として扱い、" +
+                "生徒へ全額返金しました。",
+            });
+          }
+        } else if (
+          refundStatus === "failed" ||
+          refundStatus === "canceled"
+        ) {
+          if (reservation.studentId) {
+            latePaymentNotifications.push({
+              id:
+                `late_payment_refund_failed_student_${reservationId}`,
+              recipientId: reservation.studentId,
+              type:
+                "latePaymentRefundFailedToStudent",
+              title:
+                "返金状況をご確認ください",
+              message:
+                "開始時刻後の決済を検知しましたが、" +
+                "全額返金を完了できませんでした。運営が確認します。",
+            });
+          }
+
+          if (reservation.coachId) {
+            latePaymentNotifications.push({
+              id:
+                `late_payment_refund_failed_coach_${reservationId}`,
+              recipientId: reservation.coachId,
+              type:
+                "latePaymentRefundFailedToCoach",
+              title:
+                "開始時刻後決済の返金確認が必要です",
+              message:
+                "開始時刻後の決済に対する返金を完了できませんでした。" +
+                "運営が確認します。",
+            });
+          }
+        }
+
+        for (const item of latePaymentNotifications) {
+          transaction.set(
+            db.collection("notifications")
+              .doc(item.id),
+            {
+              recipientId: item.recipientId,
+              coachId:
+                reservation.coachId || "",
+              studentId:
+                reservation.studentId || "",
+              reservationId,
+              type: item.type,
+              title: item.title,
+              message: item.message,
+              date: reservation.date || "",
+              times: reservation.times || [],
+              isRead: false,
+              createdAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        return {
+          changed: true,
+          refundStatus,
+        };
+      }
+
+      if (cancellationSource === "weather") {
+        const weatherNotifications = [];
+
+        if (refundStatus === "succeeded") {
+          if (reservation.studentId) {
+            weatherNotifications.push({
+              id:
+                `weather_refund_succeeded_student_${reservationId}`,
+              recipientId: reservation.studentId,
+              type:
+                "weatherCancellationRefundedToStudent",
+            });
+          }
+
+          if (reservation.coachId) {
+            weatherNotifications.push({
+              id:
+                `weather_refund_succeeded_coach_${reservationId}`,
+              recipientId: reservation.coachId,
+              type:
+                "weatherCancellationRefundedToCoach",
+            });
+          }
+
+          for (const item of weatherNotifications) {
+            transaction.set(
+              db.collection("notifications")
+                .doc(item.id),
+              {
+                recipientId: item.recipientId,
+                coachId:
+                  reservation.coachId || "",
+                studentId:
+                  reservation.studentId || "",
+                reservationId,
+                type: item.type,
+                title:
+                  "雨天・施設都合キャンセルの返金が完了しました",
+                message:
+                  "双方合意でキャンセルした予約の全額返金が完了しました。",
+                date: reservation.date || "",
+                times: reservation.times || [],
+                isRead: false,
+                createdAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+        } else if (
+          refundStatus === "failed" ||
+          refundStatus === "canceled"
+        ) {
+          if (reservation.studentId) {
+            weatherNotifications.push({
+              id:
+                `weather_refund_failed_student_${reservationId}`,
+              recipientId: reservation.studentId,
+              type:
+                "weatherCancellationRefundFailedToStudent",
+            });
+          }
+
+          if (reservation.coachId) {
+            weatherNotifications.push({
+              id:
+                `weather_refund_failed_coach_${reservationId}`,
+              recipientId: reservation.coachId,
+              type:
+                "weatherCancellationRefundFailedToCoach",
+            });
+          }
+
+          for (const item of weatherNotifications) {
+            transaction.set(
+              db.collection("notifications")
+                .doc(item.id),
+              {
+                recipientId: item.recipientId,
+                coachId:
+                  reservation.coachId || "",
+                studentId:
+                  reservation.studentId || "",
+                reservationId,
+                type: item.type,
+                title:
+                  "雨天キャンセルの返金状況をご確認ください",
+                message:
+                  "全額返金を完了できませんでした。運営が確認します。",
+                date: reservation.date || "",
+                times: reservation.times || [],
+                isRead: false,
+                createdAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+        }
+
+        return {
+          changed: true,
+          refundStatus,
+        };
+      }
+
+      let notificationId = "";
+      let notificationType = "";
+      let title = "";
+      let message = "";
+
+      if (cancellationSource === "student") {
+        const storedPercent = Number(
+          reservation.cancellationRefundPercent,
+        );
+        const refundPercent =
+          Number.isFinite(storedPercent) &&
+          storedPercent >= 0 ?
+            storedPercent :
+            amountPaid > 0 ?
+              Math.round(
+                (refundAmount / amountPaid) * 100,
+              ) :
+              0;
+
+        if (refundStatus === "succeeded") {
+          notificationId =
+            `student_refund_succeeded_${reservationId}`;
+          notificationType =
+            "studentCancellationRefunded";
+          title =
+            "キャンセルの返金が完了しました";
+          message =
+            `キャンセル規定に基づく${refundPercent}%返金が` +
+            "完了しました。";
+        } else if (
+          refundStatus === "failed" ||
+          refundStatus === "canceled"
+        ) {
+          notificationId =
+            `student_refund_failed_${reservationId}`;
+          notificationType =
+            "studentCancellationRefundFailed";
+          title =
+            "返金状況をご確認ください";
+          message =
+            "生徒都合キャンセルの返金処理を" +
+            "完了できませんでした。運営が確認します。";
+        }
+      } else if (refundStatus === "succeeded") {
+        notificationId =
+          `refund_succeeded_${reservationId}`;
+        notificationType =
+          "coachCancellationRefunded";
+        title = "返金が完了しました";
+        message =
+          "コーチ都合でキャンセルされた予約の" +
+          "全額返金が完了しました。";
+      } else if (
+        refundStatus === "failed" ||
+        refundStatus === "canceled"
+      ) {
+        notificationId =
+          `refund_failed_${reservationId}`;
+        notificationType =
+          "coachCancellationRefundFailed";
+        title =
+          "返金状況をご確認ください";
+        message =
+          "コーチ都合キャンセルの返金処理を" +
+          "完了できませんでした。運営が確認します。";
+      }
+
+      if (
+        notificationId &&
+        reservation.studentId
+      ) {
+        const notificationRef = db
+          .collection("notifications")
+          .doc(notificationId);
+
+        transaction.set(
+          notificationRef,
+          {
+            recipientId:
+              reservation.studentId,
+            coachId:
+              reservation.coachId || "",
+            studentId:
+              reservation.studentId,
+            reservationId,
+            type: notificationType,
+            title,
+            message,
             date: reservation.date || "",
             times: reservation.times || [],
             isRead: false,
-            createdAt: FieldValue.serverTimestamp(),
+            createdAt:
+              FieldValue.serverTimestamp(),
           },
           {merge: true},
         );
       }
 
-      return;
-    }
+      return {
+        changed: true,
+        refundStatus,
+      };
+    },
+  );
 
-    if (cancellationSource === "weather") {
-      const weatherNotifications = [];
-
-      if (refundStatus === "succeeded") {
-        if (reservation.studentId) {
-          weatherNotifications.push({
-            id: `weather_refund_succeeded_student_${reservationId}`,
-            recipientId: reservation.studentId,
-            type: "weatherCancellationRefundedToStudent",
-          });
-        }
-
-        if (reservation.coachId) {
-          weatherNotifications.push({
-            id: `weather_refund_succeeded_coach_${reservationId}`,
-            recipientId: reservation.coachId,
-            type: "weatherCancellationRefundedToCoach",
-          });
-        }
-
-        for (const item of weatherNotifications) {
-          transaction.set(
-            db.collection("notifications").doc(item.id),
-            {
-              recipientId: item.recipientId,
-              coachId: reservation.coachId || "",
-              studentId: reservation.studentId || "",
-              reservationId,
-              type: item.type,
-              title: "雨天・施設都合キャンセルの返金が完了しました",
-              message:
-                "双方合意でキャンセルした予約の全額返金が完了しました。",
-              date: reservation.date || "",
-              times: reservation.times || [],
-              isRead: false,
-              createdAt: FieldValue.serverTimestamp(),
-            },
-            {merge: true},
-          );
-        }
-      } else if (
-        refundStatus === "failed" ||
-        refundStatus === "canceled"
-      ) {
-        if (reservation.studentId) {
-          weatherNotifications.push({
-            id: `weather_refund_failed_student_${reservationId}`,
-            recipientId: reservation.studentId,
-            type: "weatherCancellationRefundFailedToStudent",
-          });
-        }
-
-        if (reservation.coachId) {
-          weatherNotifications.push({
-            id: `weather_refund_failed_coach_${reservationId}`,
-            recipientId: reservation.coachId,
-            type: "weatherCancellationRefundFailedToCoach",
-          });
-        }
-
-        for (const item of weatherNotifications) {
-          transaction.set(
-            db.collection("notifications").doc(item.id),
-            {
-              recipientId: item.recipientId,
-              coachId: reservation.coachId || "",
-              studentId: reservation.studentId || "",
-              reservationId,
-              type: item.type,
-              title: "雨天キャンセルの返金状況をご確認ください",
-              message:
-                "全額返金を完了できませんでした。運営が確認します。",
-              date: reservation.date || "",
-              times: reservation.times || [],
-              isRead: false,
-              createdAt: FieldValue.serverTimestamp(),
-            },
-            {merge: true},
-          );
-        }
-      }
-
-      return;
-    }
-
-    let notificationId = "";
-    let notificationType = "";
-    let title = "";
-    let message = "";
-
-    if (cancellationSource === "student") {
-      const storedPercent = Number(
-        reservation.cancellationRefundPercent,
-      );
-      const refundPercent =
-        Number.isFinite(storedPercent) && storedPercent >= 0 ?
-          storedPercent :
-          amountPaid > 0 ?
-            Math.round((refundAmount / amountPaid) * 100) :
-            0;
-
-      if (refundStatus === "succeeded") {
-        notificationId =
-          `student_refund_succeeded_${reservationId}`;
-        notificationType = "studentCancellationRefunded";
-        title = "キャンセルの返金が完了しました";
-        message =
-          `キャンセル規定に基づく${refundPercent}%返金が` +
-          "完了しました。";
-      } else if (
-        refundStatus === "failed" ||
-        refundStatus === "canceled"
-      ) {
-        notificationId =
-          `student_refund_failed_${reservationId}`;
-        notificationType = "studentCancellationRefundFailed";
-        title = "返金状況をご確認ください";
-        message =
-          "生徒都合キャンセルの返金処理を" +
-          "完了できませんでした。運営が確認します。";
-      }
-    } else if (refundStatus === "succeeded") {
-      notificationId = `refund_succeeded_${reservationId}`;
-      notificationType = "coachCancellationRefunded";
-      title = "返金が完了しました";
-      message =
-        "コーチ都合でキャンセルされた予約の" +
-        "全額返金が完了しました。";
-    } else if (
-      refundStatus === "failed" ||
-      refundStatus === "canceled"
-    ) {
-      notificationId = `refund_failed_${reservationId}`;
-      notificationType = "coachCancellationRefundFailed";
-      title = "返金状況をご確認ください";
-      message =
-        "コーチ都合キャンセルの返金処理を" +
-        "完了できませんでした。運営が確認します。";
-    }
-
-    if (notificationId && reservation.studentId) {
-      const notificationRef = db
-        .collection("notifications")
-        .doc(notificationId);
-
-      transaction.set(
-        notificationRef,
-        {
-          recipientId: reservation.studentId,
-          coachId: reservation.coachId || "",
-          studentId: reservation.studentId,
-          reservationId,
-          type: notificationType,
-          title,
-          message,
-          date: reservation.date || "",
-          times: reservation.times || [],
-          isRead: false,
-          createdAt: FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
-    }
-  });
+  if (!transactionResult.changed) {
+    logger.info(
+      "Refund状態はすでに反映済みのため更新をスキップしました。",
+      {
+        reservationId,
+        refundId:
+          effectiveRefund.id || refund?.id || "",
+        refundStatus:
+          transactionResult.refundStatus ||
+          effectiveRefund.status ||
+          "",
+        eventId,
+        ignoredDuplicate:
+          Boolean(
+            transactionResult.ignoredDuplicate,
+          ),
+        ignoredOlderState:
+          Boolean(
+            transactionResult.ignoredOlderState,
+          ),
+      },
+    );
+    return;
+  }
 
   logger.info("予約の返金状態を反映しました。", {
     reservationId,
-    refundId: refund.id,
-    refundStatus: refund.status,
+    refundId:
+      effectiveRefund.id || refund?.id || "",
+    refundStatus:
+      effectiveRefund.status,
     eventId,
   });
 }
@@ -5224,6 +5465,64 @@ exports.createCheckoutSession = onCall(
   },
 );
 
+/**
+ * 同じ予約についてStripe側ですでに作成済みのRefundを探します。
+ *
+ * Firestore保存前の通信断などで「アプリ側は失敗扱いだが、
+ * Stripe側ではRefund作成済み」というケースでも、
+ * 新しいRefundを重ねて作らないための最終防御です。
+ *
+ * @param {Stripe} stripe Stripe client
+ * @param {object} options search options
+ * @return {Promise<object|null>} matching Refund or null
+ */
+async function findExistingReservationRefund(
+  stripe,
+  {
+    paymentIntentId,
+    reservationId,
+    cancellationSource,
+    expectedAmount = 0,
+  },
+) {
+  const refunds = await stripe.refunds.list({
+    payment_intent: paymentIntentId,
+    limit: 100,
+  });
+
+  const matches = refunds.data.filter((refund) => {
+    const metadataReservationId = String(
+      refund.metadata?.reservationId || "",
+    ).trim();
+    const metadataSource = String(
+      refund.metadata?.cancellationSource || "",
+    ).trim();
+    const amount = Number(refund.amount || 0);
+
+    const amountMatches =
+      !Number.isInteger(expectedAmount) ||
+      expectedAmount <= 0 ||
+      amount === expectedAmount;
+
+    return (
+      metadataReservationId === reservationId &&
+      metadataSource === cancellationSource &&
+      amountMatches
+    );
+  });
+
+  if (matches.length > 1) {
+    const error = new Error(
+      "同じ予約に複数の返金が見つかりました。" +
+      "自動処理を停止して運営確認が必要です。",
+    );
+    error.code = "multiple_matching_refunds";
+    throw error;
+  }
+
+  return matches[0] || null;
+}
+
 exports.requestCoachRefund = onCall(
   {secrets: [stripeSecretKey]},
   async (request) => {
@@ -5234,12 +5533,11 @@ exports.requestCoachRefund = onCall(
       );
     }
 
-    const reservationId = request.data?.reservationId;
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
 
-    if (
-      typeof reservationId !== "string" ||
-      reservationId.trim() === ""
-    ) {
+    if (!reservationId) {
       throw new HttpsError(
         "invalid-argument",
         "予約IDがありません。",
@@ -5312,9 +5610,10 @@ exports.requestCoachRefund = onCall(
 
         if (
           !refundablePaymentStatuses.includes(
-            data.paymentStatus,
+            String(data.paymentStatus || ""),
           ) ||
-          !data.stripePaymentIntentId
+          typeof data.stripePaymentIntentId !== "string" ||
+          data.stripePaymentIntentId.trim() === ""
         ) {
           throw new HttpsError(
             "failed-precondition",
@@ -5331,13 +5630,19 @@ exports.requestCoachRefund = onCall(
             paymentStatus: "refund_processing",
             refundStatus: "creating",
             refundRequestedBy: request.auth.uid,
-            refundRequestedAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
+            refundRequestedAt:
+              data.refundRequestedAt ||
+              FieldValue.serverTimestamp(),
+            updatedAt:
+              FieldValue.serverTimestamp(),
           },
           {merge: true},
         );
 
-        return data;
+        return {
+          ...data,
+          alreadyRefunded: false,
+        };
       },
     );
 
@@ -5348,128 +5653,277 @@ exports.requestCoachRefund = onCall(
       };
     }
 
-    const stripe = new Stripe(stripeSecretKey.value());
+    const stripe = new Stripe(
+      stripeSecretKey.value(),
+      {
+        maxNetworkRetries: 1,
+        timeout: 15000,
+      },
+    );
+
+    const expectedRefundAmount = Number(
+      reservation.amountPaid ||
+      reservation.totalPrice ||
+      0,
+    );
+
     let refund;
+    let reconciledExistingRefund = false;
 
     try {
-      refund = await stripe.refunds.create(
+      // Idempotency Keyの保持期間だけに依存せず、
+      // Stripe側にすでにRefundが存在しないか先に確認します。
+      refund = await findExistingReservationRefund(
+        stripe,
         {
-          payment_intent: reservation.stripePaymentIntentId,
-          metadata: {
-            reservationId,
-            coachId: reservation.coachId || "",
-            studentId: reservation.studentId || "",
-            cancellationSource: "coach",
-            refundPercent: "100",
-          },
-        },
-        {
-          idempotencyKey: `coach_refund_${reservationId}`,
+          paymentIntentId:
+            reservation.stripePaymentIntentId,
+          reservationId,
+          cancellationSource: "coach",
+          expectedAmount:
+            Number.isInteger(expectedRefundAmount) &&
+            expectedRefundAmount > 0 ?
+              expectedRefundAmount :
+              0,
         },
       );
+
+      reconciledExistingRefund = Boolean(refund);
     } catch (error) {
+      const multipleRefunds =
+        error?.code ===
+          "multiple_matching_refunds";
+
       await reservationRef.set(
         {
           paymentStatus: "refund_failed",
-          refundStatus: "failed_to_create",
-          refundError: error.message,
-          updatedAt: FieldValue.serverTimestamp(),
+          refundStatus:
+            multipleRefunds ?
+              "manual_review_required" :
+              "failed_to_create",
+          refundError:
+            error?.message || String(error),
+          updatedAt:
+            FieldValue.serverTimestamp(),
         },
         {merge: true},
       );
 
-      logger.error("Stripe返金の作成に失敗しました。", {
-        reservationId,
-        message: error.message,
-      });
+      logger.error(
+        "コーチ都合返金の既存Refund確認に失敗しました。",
+        {
+          reservationId,
+          stripeErrorMessage:
+            error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+          stripeErrorType: error?.type || "",
+          multipleRefunds,
+        },
+      );
 
       throw new HttpsError(
-        "internal",
-        "返金処理を開始できませんでした。",
+        multipleRefunds ?
+          "failed-precondition" :
+          "unavailable",
+        multipleRefunds ?
+          "返金状況に重複の可能性があるため、運営確認が必要です。" :
+          "返金状況を確認できませんでした。" +
+          "二重返金防止のため新しい返金は作成していません。" +
+          "少し待ってからもう一度お試しください。",
       );
     }
 
-    await db.runTransaction(async (transaction) => {
-      const latestSnap = await transaction.get(reservationRef);
-
-      if (!latestSnap.exists) {
-        throw new Error("返金対象の予約が見つかりません。");
-      }
-
-      const latest = latestSnap.data();
-      const refundStatus = String(refund.status || "pending");
-      const paymentStatus = refundStatus === "succeeded" ?
-        "refunded" :
-        "refund_processing";
-
-      const update = {
-        status: "coach_cancelled",
-        paymentStatus,
-        refundStatus,
-        stripeRefundId: refund.id,
-        refundAmount: Number(refund.amount || 0),
-        coachCancelledAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      };
-
-      if (refundStatus === "succeeded") {
-        update.refundedAt = FieldValue.serverTimestamp();
-      }
-
-      transaction.set(reservationRef, update, {merge: true});
-
-      const dateId = String(latest.date || "")
-        .replaceAll("/", "-");
-      const times = Array.isArray(latest.times) ?
-        latest.times :
-        latest.time ? [latest.time] : [];
-
-      if (dateId && times.length > 0) {
-        const availabilityRef = db
-          .collection("coachAvailability")
-          .doc(latest.coachId)
-          .collection("dates")
-          .doc(dateId);
-
-        transaction.set(
-          availabilityRef,
+    if (!refund) {
+      try {
+        refund = await stripe.refunds.create(
           {
-            times: FieldValue.arrayUnion(...times),
-            updatedAt: FieldValue.serverTimestamp(),
+            payment_intent:
+              reservation.stripePaymentIntentId,
+            metadata: {
+              reservationId,
+              coachId:
+                reservation.coachId || "",
+              studentId:
+                reservation.studentId || "",
+              cancellationSource: "coach",
+              refundPercent: "100",
+            },
+          },
+          {
+            idempotencyKey:
+              `coach_refund_${reservationId}`,
+          },
+        );
+      } catch (error) {
+        await reservationRef.set(
+          {
+            paymentStatus: "refund_failed",
+            refundStatus: "failed_to_create",
+            refundError:
+              error?.message || String(error),
+            updatedAt:
+              FieldValue.serverTimestamp(),
           },
           {merge: true},
         );
-      }
 
-      if (latest.studentId) {
-        const notificationRef = db
-          .collection("notifications")
-          .doc(`coach_cancel_${reservationId}`);
-
-        transaction.set(
-          notificationRef,
+        logger.error(
+          "Stripe返金の作成に失敗しました。",
           {
-            recipientId: latest.studentId,
-            coachId: latest.coachId || "",
             reservationId,
-            type: "coachCancellationRefundStarted",
-            title: "コーチ都合で予約がキャンセルされました",
             message:
-              "予約はキャンセルされ、" +
-              "全額返金の手続きを開始しました。",
-            date: latest.date || "",
-            times,
-            isRead: false,
-            createdAt: FieldValue.serverTimestamp(),
+              error?.message || String(error),
           },
-          {merge: true},
+        );
+
+        throw new HttpsError(
+          "internal",
+          "返金処理を開始できませんでした。",
         );
       }
-    });
+    }
+
+    // 新規作成でも既存Refundの復旧でも、
+    // D2で強化した共通処理から最新状態を反映します。
+    await markReservationRefund(
+      refund,
+      reconciledExistingRefund ?
+        `callable_coach_refund_reconcile_${reservationId}` :
+        `callable_coach_refund_${reservationId}`,
+    );
+
+    // 返金とは別に、予約枠の復活と
+    // 「コーチ都合キャンセル開始」通知を確実に補完します。
+    await db.runTransaction(
+      async (transaction) => {
+        const latestSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!latestSnap.exists) {
+          throw new Error(
+            "返金対象の予約が見つかりません。",
+          );
+        }
+
+        const latest = latestSnap.data();
+        const dateId = String(
+          latest.date || "",
+        ).replaceAll("/", "-");
+        const times = Array.isArray(latest.times) ?
+          latest.times.map(
+            (time) => String(time),
+          ) :
+          latest.time ?
+            [String(latest.time)] :
+            [];
+
+        let notificationRef = null;
+        let notificationSnap = null;
+
+        if (latest.studentId) {
+          notificationRef = db
+            .collection("notifications")
+            .doc(
+              `coach_cancel_${reservationId}`,
+            );
+
+          notificationSnap =
+            await transaction.get(
+              notificationRef,
+            );
+        }
+
+        const reservationUpdate = {
+          status: "coach_cancelled",
+          cancellationSource: "coach",
+          cancellationRefundPercent: 100,
+        };
+
+        if (!latest.coachCancelledAt) {
+          reservationUpdate.coachCancelledAt =
+            FieldValue.serverTimestamp();
+        }
+
+        transaction.set(
+          reservationRef,
+          reservationUpdate,
+          {merge: true},
+        );
+
+        if (
+          latest.coachId &&
+          dateId &&
+          times.length > 0
+        ) {
+          const availabilityRef = db
+            .collection("coachAvailability")
+            .doc(latest.coachId)
+            .collection("dates")
+            .doc(dateId);
+
+          transaction.set(
+            availabilityRef,
+            {
+              times:
+                FieldValue.arrayUnion(...times),
+              updatedAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+        }
+
+        if (
+          notificationRef &&
+          !notificationSnap?.exists
+        ) {
+          transaction.set(
+            notificationRef,
+            {
+              recipientId:
+                latest.studentId,
+              coachId:
+                latest.coachId || "",
+              studentId:
+                latest.studentId || "",
+              reservationId,
+              type:
+                "coachCancellationRefundStarted",
+              title:
+                "コーチ都合で予約がキャンセルされました",
+              message:
+                "予約はキャンセルされ、" +
+                "全額返金の手続きを開始しました。",
+              date:
+                latest.date || "",
+              times,
+              isRead: false,
+              createdAt:
+                FieldValue.serverTimestamp(),
+            },
+          );
+        }
+      },
+    );
+
+    logger.info(
+      reconciledExistingRefund ?
+        "既存のコーチ都合Refundを再利用して返金状態を復旧しました。" :
+        "コーチ都合返金を作成しました。",
+      {
+        reservationId,
+        refundId: refund.id,
+        refundStatus: refund.status,
+        reconciledExistingRefund,
+      },
+    );
 
     return {
-      status: refund.status,
+      status:
+        String(refund.status || "pending"),
       refundId: refund.id,
+      reconciledExistingRefund,
     };
   },
 );
@@ -6550,6 +7004,373 @@ exports.respondWeatherCancellation = onCall(
 );
 
 /**
+ * 雨天・施設都合キャンセルで「Refund作成自体に失敗した」予約について、
+ * 同じ予約・同じPaymentIntentに対して安全に返金作成を再試行します。
+ *
+ * - 参加者本人のみ実行可能
+ * - weather_cancelled / weather / failed_to_create の完全一致時だけ再試行
+ * - Transactionで同時再試行を1件に制限
+ * - Stripe側に既存Refundがないか先に確認
+ * - 既存Refundがあれば新規作成せず、その最新状態をFirestoreへ反映
+ * - 新規作成時は元の weather_refund_${reservationId} Idempotency Keyを再利用
+ */
+exports.retryWeatherCancellationRefund = onCall(
+  {secrets: [stripeSecretKey]},
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "返金の再試行にはログインが必要です。",
+      );
+    }
+
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
+
+    if (!reservationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "予約IDがありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const reservationRef = db
+      .collection("reservations")
+      .doc(reservationId);
+
+    const prepared = await db.runTransaction(
+      async (transaction) => {
+        const reservationSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!reservationSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const data = reservationSnap.data();
+        const isParticipant =
+          data.studentId === uid ||
+          data.coachId === uid;
+
+        if (!isParticipant) {
+          throw new HttpsError(
+            "permission-denied",
+            "この返金を再試行する権限がありません。",
+          );
+        }
+
+        if (
+          String(data.cancellationSource || "") !== "weather" ||
+          String(data.status || "") !== "weather_cancelled"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "この予約は雨天・施設都合キャンセルの返金対象ではありません。",
+          );
+        }
+
+        if (
+          String(data.paymentStatus || "") === "refunded" ||
+          String(data.refundStatus || "") === "succeeded"
+        ) {
+          return {
+            ...data,
+            alreadyRefunded: true,
+          };
+        }
+
+        const currentPaymentStatus = String(
+          data.paymentStatus || "",
+        );
+        const currentRefundStatus = String(
+          data.refundStatus || "",
+        );
+        const currentWeatherStatus = String(
+          data.weatherCancellationStatus || "",
+        );
+
+        if (
+          currentPaymentStatus === "refund_processing" &&
+          ["creating", "pending"].includes(
+            currentRefundStatus,
+          )
+        ) {
+          return {
+            ...data,
+            alreadyProcessing: true,
+          };
+        }
+
+        // 自動再試行の対象は「Refundオブジェクトを作れなかった」
+        // failed_to_create のみに限定します。
+        // Stripe上で作成済みRefund自体が failed/canceled のケースは、
+        // 別の原因調査が必要なためここでは新しいRefundを作りません。
+        if (
+          currentPaymentStatus !== "refund_failed" ||
+          currentRefundStatus !== "failed_to_create" ||
+          currentWeatherStatus !== "refund_failed"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "この返金は自動再試行できる状態ではありません。" +
+            "運営による確認が必要です。",
+          );
+        }
+
+        if (
+          typeof data.stripePaymentIntentId !== "string" ||
+          data.stripePaymentIntentId.trim() === ""
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "決済情報を確認できませんでした。",
+          );
+        }
+
+        const amountPaid = Number(
+          data.amountPaid ||
+          data.totalPrice ||
+          0,
+        );
+
+        if (
+          !Number.isInteger(amountPaid) ||
+          amountPaid <= 0
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "返金額を確認できませんでした。",
+          );
+        }
+
+        transaction.set(
+          reservationRef,
+          {
+            paymentStatus: "refund_processing",
+            refundStatus: "creating",
+            weatherCancellationStatus:
+              "refund_processing",
+            refundRetryRequestedBy: uid,
+            refundRetryRequestedAt:
+              FieldValue.serverTimestamp(),
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          ...data,
+          alreadyRefunded: false,
+          alreadyProcessing: false,
+          amountPaid,
+        };
+      },
+    );
+
+    if (prepared.alreadyRefunded) {
+      return {
+        status: "succeeded",
+        alreadyRefunded: true,
+        reservationId,
+      };
+    }
+
+    if (prepared.alreadyProcessing) {
+      return {
+        status: "processing",
+        alreadyProcessing: true,
+        reservationId,
+      };
+    }
+
+    const stripe = new Stripe(
+      stripeSecretKey.value(),
+      {
+        maxNetworkRetries: 1,
+        timeout: 15000,
+      },
+    );
+
+    let refund = null;
+
+    try {
+      // 前回のStripe応答が不明だっただけで、
+      // 実際にはRefundが作成済みの可能性を先に確認します。
+      const existingRefunds =
+        await stripe.refunds.list({
+          payment_intent:
+            prepared.stripePaymentIntentId,
+          limit: 100,
+        });
+
+      refund =
+        existingRefunds.data.find((item) => {
+          const metadataReservationId =
+            String(
+              item.metadata?.reservationId || "",
+            ).trim();
+          const metadataSource =
+            String(
+              item.metadata
+                ?.cancellationSource || "",
+            ).trim();
+
+          return (
+            metadataReservationId === reservationId &&
+            metadataSource === "weather"
+          );
+        }) || null;
+    } catch (error) {
+      await reservationRef.set(
+        {
+          paymentStatus: "refund_failed",
+          refundStatus: "failed_to_create",
+          weatherCancellationStatus:
+            "refund_failed",
+          refundError:
+            error?.message || String(error),
+          updatedAt:
+            FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      logger.error(
+        "雨天キャンセル返金の既存Refund確認に失敗しました。",
+        {
+          reservationId,
+          stripeErrorMessage:
+            error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+          stripeErrorType: error?.type || "",
+        },
+      );
+
+      throw new HttpsError(
+        "unavailable",
+        "返金状況を確認できませんでした。" +
+        "二重返金防止のため再試行していません。" +
+        "少し待ってからもう一度お試しください。",
+      );
+    }
+
+    // Stripe側に既存Refundが見つかった場合は、
+    // 新規作成せずその最新状態を正として復旧します。
+    if (refund) {
+      await markReservationRefund(
+        refund,
+        `callable_weather_retry_reconcile_${reservationId}`,
+      );
+
+      logger.info(
+        "既存の雨天キャンセルRefundを再利用して状態を復旧しました。",
+        {
+          reservationId,
+          refundId: refund.id,
+          refundStatus: refund.status,
+        },
+      );
+
+      return {
+        status: String(
+          refund.status || "pending",
+        ),
+        refundId: refund.id,
+        reservationId,
+        reconciledExistingRefund: true,
+      };
+    }
+
+    try {
+      refund = await stripe.refunds.create(
+        {
+          payment_intent:
+            prepared.stripePaymentIntentId,
+          metadata: {
+            reservationId,
+            coachId:
+              prepared.coachId || "",
+            studentId:
+              prepared.studentId || "",
+            cancellationSource: "weather",
+            refundPercent: "100",
+          },
+        },
+        {
+          // 元の返金作成と同じKeyを再利用します。
+          // Stripe側だけ成功してFirestore更新前に通信が途切れた場合も、
+          // 同じRefundへ収束させます。
+          idempotencyKey:
+            `weather_refund_${reservationId}`,
+        },
+      );
+    } catch (error) {
+      await reservationRef.set(
+        {
+          paymentStatus: "refund_failed",
+          refundStatus: "failed_to_create",
+          weatherCancellationStatus:
+            "refund_failed",
+          refundError:
+            error?.message || String(error),
+          updatedAt:
+            FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      logger.error(
+        "雨天キャンセル返金の再作成に失敗しました。",
+        {
+          reservationId,
+          stripeErrorMessage:
+            error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+          stripeErrorType: error?.type || "",
+        },
+      );
+
+      throw new HttpsError(
+        "internal",
+        "返金処理を再開できませんでした。" +
+        "時間をおいて再度お試しください。",
+      );
+    }
+
+    await markReservationRefund(
+      refund,
+      `callable_weather_retry_${reservationId}`,
+    );
+
+    logger.info(
+      "雨天キャンセル返金の再試行が完了しました。",
+      {
+        reservationId,
+        refundId: refund.id,
+        refundStatus: refund.status,
+      },
+    );
+
+    return {
+      status: String(
+        refund.status || "pending",
+      ),
+      refundId: refund.id,
+      reservationId,
+      reconciledExistingRefund: false,
+    };
+  },
+);
+
+/**
  * Stripe Connectの連結アカウントIDから、
  * Tennis Connect側のコーチConnectドキュメントを取得します。
  *
@@ -7084,7 +7905,11 @@ exports.stripeWebhook = onRequest(
         case "refund.created":
         case "refund.updated":
         case "refund.failed":
-          await markReservationRefund(stripeObject, event.id);
+          await markReservationRefund(
+            stripeObject,
+            event.id,
+            {refreshFromStripe: true},
+          );
           break;
 
         default:

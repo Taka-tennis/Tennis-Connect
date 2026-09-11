@@ -2323,7 +2323,47 @@ private struct StudentReservationDetailView: View {
             .font(.headline)
             .foregroundStyle(StudentReservationUI.brandGreen)
 
-            if weatherCancellationStatus == "pending" {
+            if canRetryWeatherCancellationRefund {
+                Text(
+                    "全額返金の作成に失敗しました。決済状況を安全に再確認してから、返金処理を再試行できます。"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Button {
+                    retryWeatherCancellationRefund()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        if isUpdatingWeatherCancellation {
+                            ProgressView()
+                        } else {
+                            Label(
+                                "返金処理を再試行する",
+                                systemImage:
+                                    "arrow.clockwise.circle.fill"
+                            )
+                            .fontWeight(.semibold)
+                        }
+
+                        Spacer()
+                    }
+                    .frame(height: 46)
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .disabled(isUpdatingWeatherCancellation)
+
+                Text(
+                    "二重返金を防ぐため、Stripe側に既存の返金がないか確認してから処理します。"
+                )
+                .font(.caption2)
+                .foregroundStyle(
+                    StudentReservationUI.textSecondary
+                )
+
+            } else if weatherCancellationStatus == "pending" {
                 if weatherCancellationRequesterRole == "student" {
                     Text(
                         "コーチへキャンセル申請を送信しています。コーチが同意すると、予約はキャンセルされ全額返金されます。"
@@ -2437,7 +2477,16 @@ private struct StudentReservationDetailView: View {
 
     private var shouldShowWeatherCancellationSection: Bool {
         weatherCancellationStatus == "pending" ||
+        canRetryWeatherCancellationRefund ||
         canRequestWeatherCancellation
+    }
+
+    private var canRetryWeatherCancellationRefund: Bool {
+        reservation.cancellationSource == "weather" &&
+        reservation.status == "weather_cancelled" &&
+        reservation.paymentStatus == "refund_failed" &&
+        reservation.refundStatus == "failed_to_create" &&
+        weatherCancellationStatus == "refund_failed"
     }
 
     private var canRequestWeatherCancellation: Bool {
@@ -2607,6 +2656,89 @@ private struct StudentReservationDetailView: View {
                     weatherResultTitle = "申請を取り下げました"
                     weatherResultMessage =
                         "予約はキャンセルされず、そのまま継続します。"
+                    showWeatherResult = true
+                }
+            }
+    }
+
+    private func retryWeatherCancellationRefund() {
+        guard
+            canRetryWeatherCancellationRefund,
+            !isUpdatingWeatherCancellation
+        else {
+            return
+        }
+
+        isUpdatingWeatherCancellation = true
+        weatherErrorMessage = ""
+
+        functions
+            .httpsCallable(
+                "retryWeatherCancellationRefund"
+            )
+            .call(
+                [
+                    "reservationId":
+                        reservation.id
+                ]
+            ) { result, error in
+                DispatchQueue.main.async {
+                    isUpdatingWeatherCancellation = false
+
+                    if let error {
+                        weatherErrorMessage =
+                            "返金処理を再試行できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    let data =
+                        result?.data
+                        as? [String: Any]
+                    let status =
+                        data?["status"]
+                        as? String
+                        ?? ""
+
+                    let alreadyRefunded =
+                        data?["alreadyRefunded"]
+                        as? Bool
+                        ?? false
+
+                    let alreadyProcessing =
+                        data?["alreadyProcessing"]
+                        as? Bool
+                        ?? false
+
+                    if status == "succeeded" ||
+                        alreadyRefunded {
+                        weatherCancellationStatus =
+                            "completed"
+                        weatherResultTitle =
+                            "返金が完了しました"
+                        weatherResultMessage =
+                            "雨天・施設都合キャンセルの全額返金が完了しました。"
+
+                    } else if status == "failed" ||
+                                status == "canceled" {
+                        weatherCancellationStatus =
+                            "refund_failed"
+                        weatherErrorMessage =
+                            "Stripe側で返金を完了できませんでした。" +
+                            "運営による確認が必要です。"
+                        return
+
+                    } else {
+                        weatherCancellationStatus =
+                            "refund_processing"
+                        weatherResultTitle =
+                            "返金処理を再開しました"
+                        weatherResultMessage =
+                            alreadyProcessing
+                            ? "返金処理はすでに進行中です。完了までしばらくお待ちください。"
+                            : "全額返金の処理を再開しました。完了までしばらくお待ちください。"
+                    }
+
                     showWeatherResult = true
                 }
             }
