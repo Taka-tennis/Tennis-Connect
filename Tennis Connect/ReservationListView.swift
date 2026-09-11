@@ -1658,6 +1658,10 @@ private struct StudentReservationDetailView: View {
                         paidCancellationCard
                     }
 
+                    if canRetryStudentCancellationRefund {
+                        studentRefundRetryCard
+                    }
+
                     reviewSection
                 }
                 .padding(.horizontal, 16)
@@ -2237,6 +2241,108 @@ private struct StudentReservationDetailView: View {
             )
             .stroke(
                 Color.red.opacity(0.15),
+                lineWidth: 1
+            )
+        }
+    }
+
+    private var studentRefundRetryCard: some View {
+        VStack(
+            alignment: .leading,
+            spacing: 12
+        ) {
+            Label(
+                "返金処理の再試行",
+                systemImage:
+                    "arrow.clockwise.circle.fill"
+            )
+            .font(.headline)
+            .foregroundStyle(
+                StudentReservationUI.textPrimary
+            )
+
+            Text(
+                "返金の作成に失敗しました。Stripe側に既存の返金がないか安全に確認してから、返金処理を再試行します。"
+            )
+            .font(.caption)
+            .foregroundStyle(
+                StudentReservationUI.textSecondary
+            )
+
+            if reservation.cancellationRefundPercent > 0 {
+                let expectedAmount =
+                    reservation.totalPrice *
+                    reservation.cancellationRefundPercent /
+                    100
+
+                Text(
+                    "予定返金額：¥\(expectedAmount)（\(reservation.cancellationRefundPercent)%）"
+                )
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(
+                    StudentReservationUI.textPrimary
+                )
+            }
+
+            Button {
+                requestStudentCancellation(
+                    isRetry: true
+                )
+            } label: {
+                HStack {
+                    Spacer()
+
+                    if isCancelling {
+                        ProgressView()
+                    } else {
+                        Label(
+                            "返金処理を再試行する",
+                            systemImage:
+                                "arrow.clockwise.circle.fill"
+                        )
+                        .fontWeight(.semibold)
+                    }
+
+                    Spacer()
+                }
+                .frame(height: 46)
+            }
+            .buttonStyle(.bordered)
+            .tint(.orange)
+            .disabled(isCancelling)
+
+            Text(
+                "二重返金を防ぐため、同じ予約・同じキャンセル理由・同じ返金額の既存Refundだけを再利用します。"
+            )
+            .font(.caption2)
+            .foregroundStyle(
+                StudentReservationUI.textSecondary
+            )
+
+            if !cancellationErrorMessage.isEmpty {
+                Text(
+                    cancellationErrorMessage
+                )
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 18,
+                style: .continuous
+            )
+            .stroke(
+                Color.orange.opacity(0.18),
                 lineWidth: 1
             )
         }
@@ -3088,6 +3194,14 @@ private struct StudentReservationDetailView: View {
         return lessonStartDate > Date()
     }
 
+    private var canRetryStudentCancellationRefund: Bool {
+        reservation.status == "student_cancelled" &&
+        reservation.cancellationSource == "student" &&
+        reservation.paymentStatus == "refund_failed" &&
+        reservation.refundStatus == "failed_to_create" &&
+        reservation.cancellationRefundPercent > 0
+    }
+
     private var cancellationPolicyPreview: String {
         guard let lessonStartDate = lessonStartDate else {
             return "予約日時を確認できないため、返金条件を表示できません。"
@@ -3131,7 +3245,9 @@ private struct StudentReservationDetailView: View {
         )
     }
 
-    private func requestStudentCancellation() {
+    private func requestStudentCancellation(
+        isRetry: Bool = false
+    ) {
         guard !isCancelling else {
             return
         }
@@ -3149,14 +3265,18 @@ private struct StudentReservationDetailView: View {
 
                     if let error = error {
                         cancellationErrorMessage =
-                            "キャンセルできませんでした: \(error.localizedDescription)"
+                            isRetry
+                            ? "返金処理を再試行できませんでした: \(error.localizedDescription)"
+                            : "キャンセルできませんでした: \(error.localizedDescription)"
                         return
                     }
 
                     guard let data =
                             result?.data as? [String: Any] else {
                         cancellationErrorMessage =
-                            "キャンセル結果を確認できませんでした。"
+                            isRetry
+                            ? "返金結果を確認できませんでした。"
+                            : "キャンセル結果を確認できませんでした。"
                         return
                     }
 
@@ -3164,22 +3284,63 @@ private struct StudentReservationDetailView: View {
                         integerValue(data["refundPercent"])
                     let refundAmount =
                         integerValue(data["refundAmount"])
+                    let refundStatus =
+                        data["refundStatus"] as? String
+                        ?? ""
 
-                    cancellationResultTitle =
-                        "予約をキャンセルしました"
+                    if isRetry {
+                        if refundStatus == "succeeded" {
+                            cancellationResultTitle =
+                                "返金が完了しました"
 
-                    switch refundPercent {
-                    case 100:
-                        cancellationResultMessage =
-                            "¥\(refundAmount)の全額返金手続きを開始しました。返金の反映まで時間がかかる場合があります。"
+                            switch refundPercent {
+                            case 100:
+                                cancellationResultMessage =
+                                    "¥\(refundAmount)の全額返金が完了しました。"
 
-                    case 50:
-                        cancellationResultMessage =
-                            "¥\(refundAmount)（50%）の返金手続きを開始しました。返金の反映まで時間がかかる場合があります。"
+                            case 50:
+                                cancellationResultMessage =
+                                    "¥\(refundAmount)（50%）の返金が完了しました。"
 
-                    default:
-                        cancellationResultMessage =
-                            "キャンセル規定により返金はありません。"
+                            default:
+                                cancellationResultMessage =
+                                    "返金状態を正常に復旧しました。"
+                            }
+                        } else {
+                            cancellationResultTitle =
+                                "返金処理を再開しました"
+
+                            switch refundPercent {
+                            case 100:
+                                cancellationResultMessage =
+                                    "¥\(refundAmount)の全額返金処理を再開しました。反映まで時間がかかる場合があります。"
+
+                            case 50:
+                                cancellationResultMessage =
+                                    "¥\(refundAmount)（50%）の返金処理を再開しました。反映まで時間がかかる場合があります。"
+
+                            default:
+                                cancellationResultMessage =
+                                    "返金処理を再開しました。"
+                            }
+                        }
+                    } else {
+                        cancellationResultTitle =
+                            "予約をキャンセルしました"
+
+                        switch refundPercent {
+                        case 100:
+                            cancellationResultMessage =
+                                "¥\(refundAmount)の全額返金手続きを開始しました。返金の反映まで時間がかかる場合があります。"
+
+                        case 50:
+                            cancellationResultMessage =
+                                "¥\(refundAmount)（50%）の返金手続きを開始しました。返金の反映まで時間がかかる場合があります。"
+
+                        default:
+                            cancellationResultMessage =
+                                "キャンセル規定により返金はありません。"
+                        }
                     }
 
                     showCancellationResult = true
