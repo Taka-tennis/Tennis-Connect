@@ -55,6 +55,8 @@ struct PaymentView: View {
     @State private var legacyCourt = ""
     @State private var isLoadingReservationDetails = true
 
+    @State private var latestCoachImageURL = ""
+
     private let db = Firestore.firestore()
     private let functions = Functions.functions(
         region: "asia-northeast1"
@@ -84,6 +86,21 @@ struct PaymentView: View {
 
     private var lessonLocationAddress: String {
         courtAddress.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+    }
+
+    private var effectiveCoachImageURL: String {
+        let latest =
+            latestCoachImageURL.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        if !latest.isEmpty {
+            return latest
+        }
+
+        return coach.imageURL.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
     }
@@ -127,6 +144,7 @@ struct PaymentView: View {
         }
         .onAppear {
             startPaymentListener()
+            loadLatestCoachImage()
         }
         .onDisappear {
             stopPaymentListener()
@@ -168,7 +186,7 @@ struct PaymentView: View {
     private var coachCard: some View {
         HStack(spacing: 14) {
             PaymentCoachAvatarView(
-                imageURL: coach.imageURL,
+                imageURL: effectiveCoachImageURL,
                 size: 60
             )
 
@@ -733,6 +751,48 @@ struct PaymentView: View {
                             }
                         }
                     }
+                }
+            }
+    }
+
+    private func loadLatestCoachImage() {
+        let coachId =
+            coach.id.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        guard !coachId.isEmpty else {
+            return
+        }
+
+        db.collection("coaches")
+            .document(coachId)
+            .getDocument { snapshot, error in
+                if let error {
+                    print(
+                        "支払い画面のコーチ画像取得失敗:",
+                        error.localizedDescription
+                    )
+                    return
+                }
+
+                let loadedImageURL =
+                    (
+                        snapshot?.data()?["imageURL"]
+                        as? String
+                        ?? ""
+                    )
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+
+                guard !loadedImageURL.isEmpty else {
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    latestCoachImageURL =
+                        loadedImageURL
                 }
             }
     }

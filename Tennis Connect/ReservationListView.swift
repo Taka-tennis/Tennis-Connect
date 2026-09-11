@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import FirebaseFirestore
 import FirebaseAuth
 import FirebaseFunctions
@@ -963,6 +964,10 @@ struct ReservationListView: View {
         _ reservation: ReservationItem
     ) -> String {
         if isRefunded(reservation) {
+            if reservation.cancellationSource == "late_payment" {
+                return "開始時刻後の決済を全額返金済み"
+            }
+
             if reservation.status == "weather_cancelled" ||
                 reservation.cancellationSource == "weather" {
                 return "雨天・施設都合キャンセル・全額返金済み"
@@ -979,10 +984,18 @@ struct ReservationListView: View {
         }
 
         if isRefundFailed(reservation) {
+            if reservation.cancellationSource == "late_payment" {
+                return "開始時刻後決済の返金状況を確認中"
+            }
+
             return "返金状況を確認しています"
         }
 
         if isRefundProcessing(reservation) {
+            if reservation.cancellationSource == "late_payment" {
+                return "開始時刻後に決済されたため全額返金中"
+            }
+
             if reservation.status == "weather_cancelled" ||
                 reservation.cancellationSource == "weather" {
                 return "雨天・施設都合キャンセル・全額返金処理中"
@@ -1215,11 +1228,13 @@ struct ReservationListView: View {
         if isRefunded(reservation) {
             reservationBadge(
                 title:
-                    reservation.status ==
-                        "student_cancelled" &&
-                    reservation.cancellationRefundPercent == 50
-                        ? "50%返金済み"
-                        : "返金済み",
+                    reservation.cancellationSource == "late_payment"
+                        ? "全額返金済み"
+                        : reservation.status ==
+                            "student_cancelled" &&
+                          reservation.cancellationRefundPercent == 50
+                            ? "50%返金済み"
+                            : "返金済み",
                 icon:
                     "arrow.uturn.backward",
                 color: .purple
@@ -1229,7 +1244,10 @@ struct ReservationListView: View {
             reservation
         ) {
             reservationBadge(
-                title: "返金確認中",
+                title:
+                    reservation.cancellationSource == "late_payment"
+                        ? "返金確認中"
+                        : "返金確認中",
                 icon:
                     "exclamationmark.triangle",
                 color: .red
@@ -1254,7 +1272,10 @@ struct ReservationListView: View {
             reservation
         ) {
             reservationBadge(
-                title: "返金処理中",
+                title:
+                    reservation.cancellationSource == "late_payment"
+                        ? "全額返金中"
+                        : "返金処理中",
                 icon:
                     "arrow.triangle.2.circlepath",
                 color: .orange
@@ -2734,31 +2755,47 @@ private struct StudentReservationDetailView: View {
                 icon: "arrow.uturn.backward.circle.fill",
                 color: .purple,
                 title:
-                    reservation.status == "student_cancelled" &&
-                    reservation.cancellationRefundPercent == 50
-                    ? "50%返金が完了しました"
-                    : "全額返金が完了しました",
+                    reservation.cancellationSource == "late_payment"
+                    ? "全額返金が完了しました"
+                    : reservation.status == "student_cancelled" &&
+                      reservation.cancellationRefundPercent == 50
+                        ? "50%返金が完了しました"
+                        : "全額返金が完了しました",
                 message:
-                    reservation.status == "weather_cancelled" ||
-                    reservation.cancellationSource == "weather"
-                    ? "双方合意による雨天・施設都合キャンセルです"
-                    : reservation.status == "student_cancelled"
-                        ? "生徒都合でキャンセルした予約です"
-                        : "コーチ都合でキャンセルされた予約です"
+                    reservation.cancellationSource == "late_payment"
+                    ? "レッスン開始時刻を過ぎてから決済されたため、予約は確定せず全額返金しました"
+                    : reservation.status == "weather_cancelled" ||
+                      reservation.cancellationSource == "weather"
+                        ? "双方合意による雨天・施設都合キャンセルです"
+                        : reservation.status == "student_cancelled"
+                            ? "生徒都合でキャンセルした予約です"
+                            : "コーチ都合でキャンセルされた予約です"
             )
         } else if isRefundFailed {
             statusMessage(
                 icon: "exclamationmark.triangle.fill",
                 color: .red,
-                title: "返金状況を確認しています",
-                message: "運営による確認をお待ちください"
+                title:
+                    reservation.cancellationSource == "late_payment"
+                        ? "開始時刻後決済の返金状況を確認しています"
+                        : "返金状況を確認しています",
+                message:
+                    reservation.cancellationSource == "late_payment"
+                        ? "開始時刻後の決済を検知しました。運営による返金状況の確認をお待ちください"
+                        : "運営による確認をお待ちください"
             )
         } else if isRefundProcessing {
             statusMessage(
                 icon: "arrow.triangle.2.circlepath",
                 color: .orange,
-                title: "返金を処理しています",
-                message: "返金完了までしばらくお待ちください"
+                title:
+                    reservation.cancellationSource == "late_payment"
+                        ? "全額返金を処理しています"
+                        : "返金を処理しています",
+                message:
+                    reservation.cancellationSource == "late_payment"
+                        ? "開始時刻後に決済されたため、予約は確定せず全額返金を処理しています"
+                        : "返金完了までしばらくお待ちください"
             )
         } else {
             reservationStatusHeader
@@ -3257,27 +3294,24 @@ private struct ReservationCoachAvatarView: View {
     let imageURL: String
     let size: CGFloat
 
+    @State private var loadedImage: UIImage?
+    @State private var isLoading = false
+    @State private var didFail = false
+
     var body: some View {
-        AsyncImage(
-            url: URL(string: imageURL)
-        ) { phase in
-            switch phase {
-            case .success(let image):
-                image
+        Group {
+            if let loadedImage {
+                Image(uiImage: loadedImage)
                     .resizable()
                     .scaledToFill()
 
-            case .failure:
-                placeholder
+            } else if isLoading &&
+                        !imageURL.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty {
+                ProgressView()
 
-            case .empty:
-                if imageURL.isEmpty {
-                    placeholder
-                } else {
-                    ProgressView()
-                }
-
-            @unknown default:
+            } else {
                 placeholder
             }
         }
@@ -3297,6 +3331,109 @@ private struct ReservationCoachAvatarView: View {
                 )
         )
         .accessibilityHidden(true)
+        .task(id: imageURL) {
+            await loadImage()
+        }
+    }
+
+    @MainActor
+    private func resetStateForLoading() {
+        loadedImage = nil
+        isLoading = true
+        didFail = false
+    }
+
+    @MainActor
+    private func finishLoading(
+        image: UIImage?
+    ) {
+        loadedImage = image
+        isLoading = false
+        didFail = image == nil
+    }
+
+    private func loadImage() async {
+        let trimmedURL =
+            imageURL.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        guard
+            !trimmedURL.isEmpty,
+            let url = URL(string: trimmedURL)
+        else {
+            await MainActor.run {
+                loadedImage = nil
+                isLoading = false
+                didFail = false
+            }
+            return
+        }
+
+        await resetStateForLoading()
+
+        let request = URLRequest(
+            url: url,
+            cachePolicy: .returnCacheDataElseLoad,
+            timeoutInterval: 15
+        )
+
+        // Firebase Storage画像の一時的な通信失敗で、
+        // 同じコーチなのに一部セルだけプレースホルダーになるのを避けるため、
+        // 最大2回まで安全に再取得します。
+        for attempt in 0..<2 {
+            if Task.isCancelled {
+                return
+            }
+
+            do {
+                let (data, response) =
+                    try await URLSession.shared.data(
+                        for: request
+                    )
+
+                if let httpResponse =
+                    response as? HTTPURLResponse,
+                   !(200...299).contains(
+                        httpResponse.statusCode
+                   ) {
+                    throw URLError(
+                        .badServerResponse
+                    )
+                }
+
+                guard let image =
+                    UIImage(data: data)
+                else {
+                    throw URLError(
+                        .cannotDecodeContentData
+                    )
+                }
+
+                await finishLoading(
+                    image: image
+                )
+                return
+
+            } catch {
+                if attempt == 0 {
+                    try? await Task.sleep(
+                        nanoseconds:
+                            500_000_000
+                    )
+                    continue
+                }
+
+                print(
+                    "予約一覧のコーチ画像取得失敗:",
+                    error.localizedDescription
+                )
+
+                await finishLoading(
+                    image: nil
+                )
+            }
+        }
     }
 
     private var placeholder: some View {
@@ -3304,10 +3441,11 @@ private struct ReservationCoachAvatarView: View {
             .resizable()
             .scaledToFit()
             .padding(size * 0.22)
-            .foregroundStyle(StudentReservationUI.brandGreen)
+            .foregroundStyle(
+                StudentReservationUI.brandGreen
+            )
     }
 }
-
 
 #Preview {
     NavigationStack {

@@ -524,7 +524,11 @@ function reservationIdFromSession(session) {
  * @param {string} eventId Stripe Event ID
  * @return {Promise<void>}
  */
-async function markReservationPaid(session, eventId) {
+async function markReservationPaid(
+  session,
+  eventId,
+  eventCreatedAtSeconds,
+) {
   if (session.payment_status !== "paid") {
     logger.info("Sessionはまだ支払い済みではありません。", {
       sessionId: session.id,
@@ -546,75 +550,342 @@ async function markReservationPaid(session, eventId) {
       session.payment_intent :
       session.payment_intent?.id || "";
 
+  const eventCreatedNumber =
+    Number(eventCreatedAtSeconds || 0);
+  const paymentCompletedAt =
+    Number.isFinite(eventCreatedNumber) &&
+    eventCreatedNumber > 0 ?
+      new Date(eventCreatedNumber * 1000) :
+      new Date();
+
   const db = getFirestore();
   const reservationRef = db
     .collection("reservations")
     .doc(reservationId);
 
-  await db.runTransaction(async (transaction) => {
-    const reservationSnap = await transaction.get(
-      reservationRef,
-    );
-
-    if (!reservationSnap.exists) {
-      throw new Error(
-        `予約が見つかりません: ${reservationId}`,
+  const transactionResult = await db.runTransaction(
+    async (transaction) => {
+      const reservationSnap = await transaction.get(
+        reservationRef,
       );
-    }
 
-    const reservation = reservationSnap.data();
+      if (!reservationSnap.exists) {
+        throw new Error(
+          `予約が見つかりません: ${reservationId}`,
+        );
+      }
 
-    if (
-      reservation.stripeCheckoutSessionId &&
-      reservation.stripeCheckoutSessionId !== session.id
-    ) {
-      throw new Error(
-        "現在の予約とCheckout Sessionが一致しません。",
+      const reservation = reservationSnap.data();
+
+      if (
+        reservation.stripeCheckoutSessionId &&
+        reservation.stripeCheckoutSessionId !== session.id
+      ) {
+        throw new Error(
+          "現在の予約とCheckout Sessionが一致しません。",
+        );
+      }
+
+      const expectedTotal = Number(
+        reservation.totalPrice || 0,
       );
-    }
 
-    const expectedTotal = Number(reservation.totalPrice || 0);
+      if (
+        expectedTotal <= 0 ||
+        amountPaid !== expectedTotal ||
+        currency !== "jpy"
+      ) {
+        throw new Error(
+          "Stripeの決済金額と予約金額が一致しません。",
+        );
+      }
 
-    if (
-      expectedTotal <= 0 ||
-      amountPaid !== expectedTotal ||
-      currency !== "jpy"
-    ) {
-      throw new Error(
-        "Stripeの決済金額と予約金額が一致しません。",
+      const currentStatus = String(
+        reservation.status || "",
       );
-    }
+      const currentPaymentStatus = String(
+        reservation.paymentStatus || "",
+      );
+      const currentCancellationSource = String(
+        reservation.cancellationSource || "",
+      );
 
-    if (
-      reservation.paymentStatus === "paid" &&
-      reservation.status === "paid"
-    ) {
-      return;
-    }
+      // Stripe Webhookは同じEventが再送されることがあります。
+      // すでにこの支払い成功Eventを反映済みなら、
+      // 現在の予約状態を絶対に巻き戻しません。
+      if (
+        eventId &&
+        String(reservation.stripeEventId || "") ===
+          String(eventId)
+      ) {
+        return {
+          alreadyHandled: true,
+          latePayment:
+            currentCancellationSource === "late_payment",
+          refundAlreadySucceeded:
+            currentPaymentStatus === "refunded" ||
+            String(reservation.refundStatus || "") ===
+              "succeeded",
+          ignoredPaymentReplay: true,
+        };
+      }
 
-    transaction.set(
-      reservationRef,
+      if (
+        currentPaymentStatus === "paid" &&
+        ["paid", "completed"].includes(currentStatus)
+      ) {
+        return {
+          alreadyHandled: true,
+          latePayment: false,
+        };
+      }
+
+      if (
+        currentCancellationSource ===
+          "late_payment" &&
+        [
+          "refund_processing",
+          "refund_failed",
+          "refunded",
+        ].includes(currentPaymentStatus)
+      ) {
+        return {
+          alreadyHandled: true,
+          latePayment: true,
+          refundAlreadySucceeded:
+            currentPaymentStatus === "refunded" ||
+            String(reservation.refundStatus || "") ===
+              "succeeded",
+        };
+      }
+
+      // すでにキャンセル・返金・完了まで進んだ予約へ、
+      // 過去のCheckout成功Webhookが後から再送されても
+      // status/paymentStatusを "paid" に戻しません。
+      //
+      // 例:
+      // paid → coach_cancelled → refunded
+      // の後に古いcheckout.session.completedが再送されるケース。
+      const terminalReservationStatuses = new Set([
+        "completed",
+        "rejected",
+        "coach_cancelled",
+        "student_cancelled",
+        "weather_cancelled",
+        "cancelled",
+        "canceled",
+      ]);
+      const protectedPaymentStatuses = new Set([
+        "partially_refunded",
+        "refund_processing",
+        "refund_failed",
+        "refunded",
+      ]);
+
+      if (
+        terminalReservationStatuses.has(currentStatus) ||
+        protectedPaymentStatuses.has(currentPaymentStatus) ||
+        (
+          currentCancellationSource &&
+          currentCancellationSource !== "late_payment"
+        )
+      ) {
+        logger.warn(
+          "過去の支払い成功Webhookによる予約状態の巻き戻しを防止しました。",
+          {
+            reservationId,
+            sessionId: session.id,
+            eventId,
+            currentStatus,
+            currentPaymentStatus,
+            currentCancellationSource,
+          },
+        );
+
+        return {
+          alreadyHandled: true,
+          latePayment: false,
+          ignoredPaymentReplay: true,
+        };
+      }
+
+      const lessonStartDate =
+        lessonStartDateFromReservation(reservation);
+
+      const shouldRefundLatePayment =
+        !lessonStartDate ||
+        paymentCompletedAt.getTime() >=
+          lessonStartDate.getTime();
+
+      if (shouldRefundLatePayment) {
+        transaction.set(
+          reservationRef,
+          {
+            status: "cancelled",
+            paymentStatus: "refund_processing",
+            paymentMethod: "stripe_checkout",
+            cancellationSource: "late_payment",
+            cancellationRefundPercent: 100,
+            refundStatus: "creating",
+            stripeCheckoutSessionId: session.id,
+            stripePaymentIntentId: paymentIntentId,
+            stripeEventId: eventId,
+            amountPaid,
+            currency,
+            latePaymentDetectedAt:
+              FieldValue.serverTimestamp(),
+            latePaymentStripeEventCreatedAt:
+              paymentCompletedAt,
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          alreadyHandled: false,
+          latePayment: true,
+          refundAlreadySucceeded: false,
+        };
+      }
+
+      transaction.set(
+        reservationRef,
+        {
+          status: "paid",
+          paymentStatus: "paid",
+          paymentMethod: "stripe_checkout",
+          stripeCheckoutSessionId: session.id,
+          stripePaymentIntentId: paymentIntentId,
+          stripeEventId: eventId,
+          amountPaid,
+          currency,
+          paidAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+
+      return {
+        alreadyHandled: false,
+        latePayment: false,
+      };
+    },
+  );
+
+  if (!transactionResult.latePayment) {
+    if (!transactionResult.alreadyHandled) {
+      logger.info("予約の支払い完了を反映しました。", {
+        reservationId,
+        sessionId: session.id,
+        eventId,
+      });
+    }
+    return;
+  }
+
+  if (transactionResult.refundAlreadySucceeded) {
+    logger.info(
+      "開始時刻後決済の返金はすでに完了しています。",
       {
-        status: "paid",
-        paymentStatus: "paid",
-        paymentMethod: "stripe_checkout",
-        stripeCheckoutSessionId: session.id,
-        stripePaymentIntentId: paymentIntentId,
-        stripeEventId: eventId,
-        amountPaid,
-        currency,
-        paidAt: FieldValue.serverTimestamp(),
+        reservationId,
+        sessionId: session.id,
+        eventId,
+      },
+    );
+    return;
+  }
+
+  if (!paymentIntentId) {
+    await reservationRef.set(
+      {
+        paymentStatus: "refund_failed",
+        refundStatus: "failed_to_create",
+        refundError:
+          "Stripe PaymentIntent IDを確認できませんでした。",
         updatedAt: FieldValue.serverTimestamp(),
       },
       {merge: true},
     );
-  });
 
-  logger.info("予約の支払い完了を反映しました。", {
-    reservationId,
-    sessionId: session.id,
-    eventId,
-  });
+    throw new Error(
+      "開始時刻後決済を検知しましたが、" +
+      "PaymentIntent IDを確認できませんでした。",
+    );
+  }
+
+  const stripe = new Stripe(
+    stripeSecretKey.value(),
+    {
+      maxNetworkRetries: 1,
+      timeout: 15000,
+    },
+  );
+
+  let refund;
+
+  try {
+    refund = await stripe.refunds.create(
+      {
+        payment_intent: paymentIntentId,
+        metadata: {
+          reservationId,
+          cancellationSource: "late_payment",
+          refundPercent: "100",
+        },
+      },
+      {
+        idempotencyKey:
+          `late_payment_refund_${reservationId}`,
+      },
+    );
+  } catch (error) {
+    await reservationRef.set(
+      {
+        paymentStatus: "refund_processing",
+        refundStatus: "creating",
+        refundError:
+          error?.message || String(error),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      {merge: true},
+    );
+
+    logger.error(
+      "開始時刻後決済の自動返金作成に失敗しました。",
+      {
+        reservationId,
+        sessionId: session.id,
+        eventId,
+        stripeErrorMessage:
+          error?.message || String(error),
+        stripeErrorCode: error?.code || "",
+        stripeErrorType: error?.type || "",
+      },
+    );
+
+    // Webhookへ500を返し、Stripeの再送で
+    // 同じIdempotency Keyを使って安全に再試行します。
+    throw error;
+  }
+
+  await markReservationRefund(
+    refund,
+    `late_payment_${eventId}`,
+  );
+
+  logger.warn(
+    "レッスン開始時刻後の決済を検知し、全額返金を開始しました。",
+    {
+      reservationId,
+      sessionId: session.id,
+      paymentIntentId,
+      refundId: refund.id,
+      eventId,
+      paymentCompletedAt:
+        paymentCompletedAt.toISOString(),
+    },
+  );
 }
 
 /**
@@ -741,6 +1012,11 @@ async function markReservationRefund(refund, eventId) {
     let cancellationSource = "coach";
 
     if (
+      metadataSource === "late_payment" ||
+      storedSource === "late_payment"
+    ) {
+      cancellationSource = "late_payment";
+    } else if (
       metadataSource === "weather" ||
       storedSource === "weather" ||
       reservation.status === "weather_cancelled"
@@ -755,11 +1031,13 @@ async function markReservationRefund(refund, eventId) {
     }
 
     const cancellationStatus =
-      cancellationSource === "student" ?
-        "student_cancelled" :
-        cancellationSource === "weather" ?
-          "weather_cancelled" :
-          "coach_cancelled";
+      cancellationSource === "late_payment" ?
+        "cancelled" :
+        cancellationSource === "student" ?
+          "student_cancelled" :
+          cancellationSource === "weather" ?
+            "weather_cancelled" :
+            "coach_cancelled";
     const refundStatus = String(refund.status || "pending");
     const refundAmount = Number(refund.amount || 0);
     const amountPaid = Number(
@@ -813,6 +1091,93 @@ async function markReservationRefund(refund, eventId) {
     }
 
     transaction.set(reservationRef, update, {merge: true});
+
+    if (cancellationSource === "late_payment") {
+      const latePaymentNotifications = [];
+
+      if (refundStatus === "succeeded") {
+        if (reservation.studentId) {
+          latePaymentNotifications.push({
+            id:
+              `late_payment_refund_succeeded_student_${reservationId}`,
+            recipientId: reservation.studentId,
+            type: "latePaymentRefundedToStudent",
+            title:
+              "開始時刻後の決済を全額返金しました",
+            message:
+              "レッスン開始時刻を過ぎてから決済が完了したため、" +
+              "予約は確定せず全額返金しました。",
+          });
+        }
+
+        if (reservation.coachId) {
+          latePaymentNotifications.push({
+            id:
+              `late_payment_refund_succeeded_coach_${reservationId}`,
+            recipientId: reservation.coachId,
+            type: "latePaymentRefundedToCoach",
+            title:
+              "開始時刻後の決済を無効にしました",
+            message:
+              "開始時刻後に完了した決済を無効として扱い、" +
+              "生徒へ全額返金しました。",
+          });
+        }
+      } else if (
+        refundStatus === "failed" ||
+        refundStatus === "canceled"
+      ) {
+        if (reservation.studentId) {
+          latePaymentNotifications.push({
+            id:
+              `late_payment_refund_failed_student_${reservationId}`,
+            recipientId: reservation.studentId,
+            type: "latePaymentRefundFailedToStudent",
+            title:
+              "返金状況をご確認ください",
+            message:
+              "開始時刻後の決済を検知しましたが、" +
+              "全額返金を完了できませんでした。運営が確認します。",
+          });
+        }
+
+        if (reservation.coachId) {
+          latePaymentNotifications.push({
+            id:
+              `late_payment_refund_failed_coach_${reservationId}`,
+            recipientId: reservation.coachId,
+            type: "latePaymentRefundFailedToCoach",
+            title:
+              "開始時刻後決済の返金確認が必要です",
+            message:
+              "開始時刻後の決済に対する返金を完了できませんでした。" +
+              "運営が確認します。",
+          });
+        }
+      }
+
+      for (const item of latePaymentNotifications) {
+        transaction.set(
+          db.collection("notifications").doc(item.id),
+          {
+            recipientId: item.recipientId,
+            coachId: reservation.coachId || "",
+            studentId: reservation.studentId || "",
+            reservationId,
+            type: item.type,
+            title: item.title,
+            message: item.message,
+            date: reservation.date || "",
+            times: reservation.times || [],
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
+
+      return;
+    }
 
     if (cancellationSource === "weather") {
       const weatherNotifications = [];
@@ -2455,6 +2820,27 @@ exports.approveReservationRequest = onCall(
           throw new HttpsError(
             "failed-precondition",
             "承認待ちの予約だけ承認できます。",
+          );
+        }
+
+        // コーチが承認する瞬間にも、サーバー側で
+        // レッスン開始時刻が未来であることを再確認します。
+        // 申請時点では未来でも、放置されたpending予約を
+        // 開始後に承認できないようにします。
+        const lessonStartDate =
+          lessonStartDateFromReservation(reservation);
+
+        if (!lessonStartDate) {
+          throw new HttpsError(
+            "failed-precondition",
+            "予約日時を確認できないため承認できません。",
+          );
+        }
+
+        if (lessonStartDate.getTime() <= Date.now()) {
+          throw new HttpsError(
+            "failed-precondition",
+            "開始時刻を過ぎた予約は承認できません。",
           );
         }
 
@@ -4112,12 +4498,11 @@ exports.createCheckoutSession = onCall(
       );
     }
 
-    const reservationId = request.data?.reservationId;
+    const reservationId = String(
+      request.data?.reservationId || "",
+    ).trim();
 
-    if (
-      typeof reservationId !== "string" ||
-      reservationId.trim() === ""
-    ) {
+    if (!reservationId) {
       throw new HttpsError(
         "invalid-argument",
         "予約IDがありません。",
@@ -4128,176 +4513,481 @@ exports.createCheckoutSession = onCall(
     const reservationRef = db
       .collection("reservations")
       .doc(reservationId);
-    const reservationSnap = await reservationRef.get();
 
-    if (!reservationSnap.exists) {
+    /**
+     * Checkout作成前後で予約状態が変わっていないか確認するため、
+     * 予約から支払いに必要な固定情報だけを検証・抽出します。
+     *
+     * @param {object} reservation 予約データ
+     * @return {object} 支払い固定情報
+     */
+    const validateReservationForCheckout = (reservation) => {
+      if (reservation.studentId !== request.auth.uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "この予約は支払えません。",
+        );
+      }
+
+      if (reservation.coachId === request.auth.uid) {
+        throw new HttpsError(
+          "failed-precondition",
+          "自分自身へのレッスン料金は支払えません。",
+        );
+      }
+
+      if (
+        !["confirmed", "approved"].includes(
+          String(reservation.status || ""),
+        )
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "コーチの承認後に支払えます。",
+        );
+      }
+
+      if (
+        String(reservation.paymentStatus || "") === "paid" ||
+        String(reservation.status || "") === "paid"
+      ) {
+        throw new HttpsError(
+          "already-exists",
+          "この予約は支払い済みです。",
+        );
+      }
+
+      if (
+        typeof reservation.coachId !== "string" ||
+        reservation.coachId === ""
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "コーチ情報がありません。",
+        );
+      }
+
+      // 支払い画面を作成・再利用する瞬間にも、
+      // レッスン開始時刻がまだ未来であることを
+      // サーバー側で必ず再確認します。
+      //
+      // 承認済みのまま放置された予約について、
+      // 開始時刻を過ぎてから新しくCheckout Sessionを
+      // 作成・再利用できないようにします。
+      const lessonStartDate =
+        lessonStartDateFromReservation(reservation);
+
+      if (!lessonStartDate) {
+        throw new HttpsError(
+          "failed-precondition",
+          "予約日時を確認できないため支払いを開始できません。",
+        );
+      }
+
+      if (lessonStartDate.getTime() <= Date.now()) {
+        throw new HttpsError(
+          "failed-precondition",
+          "レッスン開始時刻を過ぎているため支払いできません。",
+        );
+      }
+
+      const selectedTimes =
+        Array.isArray(reservation.times) &&
+        reservation.times.length > 0 ?
+          reservation.times.map((time) => String(time)) :
+          typeof reservation.time === "string" &&
+          reservation.time !== "" ?
+            [String(reservation.time)] :
+            [];
+
+      const lessonHours = selectedTimes.length;
+
+      // 料金は「予約申請した瞬間」にreservationへ保存した値だけを使います。
+      // 支払い時のcoaches.priceは参照しません。
+      const pricePerHour = Number(
+        reservation.pricePerHour,
+      );
+      const totalPrice = Number(
+        reservation.totalPrice,
+      );
+
+      if (
+        !Number.isInteger(pricePerHour) ||
+        pricePerHour <= 0 ||
+        !Number.isInteger(totalPrice) ||
+        totalPrice <= 0 ||
+        lessonHours <= 0
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "予約時の料金情報を確認できません。" +
+          "この予約は支払いを開始できません。",
+        );
+      }
+
+      const calculatedTotal =
+        pricePerHour * lessonHours;
+
+      if (totalPrice !== calculatedTotal) {
+        logger.error(
+          "予約の固定料金と時間数が一致しません。",
+          {
+            reservationId,
+            pricePerHour,
+            totalPrice,
+            lessonHours,
+            calculatedTotal,
+          },
+        );
+
+        throw new HttpsError(
+          "failed-precondition",
+          "予約料金の整合性を確認できません。" +
+          "運営へお問い合わせください。",
+        );
+      }
+
+      return {
+        selectedTimes,
+        lessonHours,
+        pricePerHour,
+        totalPrice,
+        coachId: reservation.coachId,
+        coachName: String(
+          reservation.coachName || "コーチ",
+        ),
+        date: String(reservation.date || ""),
+        lessonStartDate,
+      };
+    };
+
+    const initialSnap = await reservationRef.get();
+
+    if (!initialSnap.exists) {
       throw new HttpsError(
         "not-found",
         "予約が見つかりません。",
       );
     }
 
-    const reservation = reservationSnap.data();
-
-    if (reservation.studentId !== request.auth.uid) {
-      throw new HttpsError(
-        "permission-denied",
-        "この予約は支払えません。",
-      );
-    }
-
-    if (reservation.coachId === request.auth.uid) {
-      throw new HttpsError(
-        "failed-precondition",
-        "自分自身へのレッスン料金は支払えません。",
-      );
-    }
-
-    if (
-      !["confirmed", "approved"].includes(
-        reservation.status,
-      )
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        "コーチの承認後に支払えます。",
-      );
-    }
-
-    if (
-      typeof reservation.coachId !== "string" ||
-      reservation.coachId === ""
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        "コーチ情報がありません。",
-      );
-    }
-
-    const selectedTimes =
-      Array.isArray(reservation.times) &&
-      reservation.times.length > 0 ?
-        reservation.times.map((time) => String(time)) :
-        typeof reservation.time === "string" &&
-        reservation.time !== "" ?
-          [String(reservation.time)] : [];
-
-    const lessonHours = selectedTimes.length;
-
-    // 料金は「予約申請した瞬間」にreservationへ保存した値だけを使います。
-    // 支払い時のcoaches.priceは参照しません。
-    // これにより、申請後にコーチが料金を変更しても
-    // 既存予約の請求額は変わりません。
-    const pricePerHour = Number(
-      reservation.pricePerHour,
-    );
-    const totalPrice = Number(
-      reservation.totalPrice,
+    const initialReservation = initialSnap.data() || {};
+    const locked =
+      validateReservationForCheckout(initialReservation);
+    const stripe = new Stripe(
+      stripeSecretKey.value(),
+      {
+        maxNetworkRetries: 1,
+        timeout: 15000,
+      },
     );
 
-    if (
-      !Number.isInteger(pricePerHour) ||
-      pricePerHour <= 0 ||
-      !Number.isInteger(totalPrice) ||
-      totalPrice <= 0 ||
-      lessonHours <= 0
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        "予約時の料金情報を確認できません。" +
-        "この予約は支払いを開始できません。",
-      );
-    }
+    const initialSessionId = String(
+      initialReservation.stripeCheckoutSessionId || "",
+    ).trim();
 
-    const calculatedTotal =
-      pricePerHour * lessonHours;
+    /**
+     * 既存Sessionを確認します。
+     *
+     * openかつ金額一致なら同じURLを再利用し、
+     * paid/completeなら新しいSessionを作りません。
+     * Stripe照会自体が失敗した場合は、重複作成防止のため
+     * 「分からないまま新規作成」せず失敗側へ倒します。
+     */
+    const reusableCheckoutUrl = async (sessionId) => {
+      if (!sessionId) {
+        return {
+          reusableUrl: "",
+          canCreateNew: true,
+        };
+      }
 
-    if (totalPrice !== calculatedTotal) {
-      logger.error(
-        "予約の固定料金と時間数が一致しません。",
-        {
-          reservationId,
-          pricePerHour,
-          totalPrice,
-          lessonHours,
-          calculatedTotal,
-        },
-      );
+      let session;
 
-      throw new HttpsError(
-        "failed-precondition",
-        "予約料金の整合性を確認できません。" +
-        "運営へお問い合わせください。",
-      );
-    }
-
-    const stripe = new Stripe(stripeSecretKey.value());
-
-    if (reservation.stripeCheckoutSessionId) {
       try {
-        const oldSession =
-          await stripe.checkout.sessions.retrieve(
-            reservation.stripeCheckoutSessionId,
-          );
-
-        if (oldSession.payment_status === "paid") {
-          throw new HttpsError(
-            "already-exists",
-            "この予約は支払い済みです。",
-          );
-        }
-
-        if (oldSession.status === "open" && oldSession.url) {
-          const oldSessionAmount =
-            Number(oldSession.amount_total || 0);
-          const oldSessionCurrency =
-            String(oldSession.currency || "")
-              .toLowerCase();
-
-          if (
-            oldSessionAmount === totalPrice &&
-            oldSessionCurrency === "jpy"
-          ) {
-            return {
-              checkoutUrl: oldSession.url,
-            };
-          }
-
+        session = await stripe.checkout.sessions.retrieve(
+          sessionId,
+        );
+      } catch (error) {
+        if (error?.code === "resource_missing") {
           logger.warn(
-            "既存Checkout Sessionの金額が予約固定額と一致しないため失効させます。",
+            "保存済みCheckout SessionがStripe上に見つかりません。",
             {
               reservationId,
-              sessionId: oldSession.id,
-              oldSessionAmount,
-              lockedTotalPrice: totalPrice,
-              oldSessionCurrency,
+              sessionId,
             },
           );
 
-          await stripe.checkout.sessions.expire(
-            oldSession.id,
-          );
+          return {
+            reusableUrl: "",
+            canCreateNew: true,
+          };
         }
 
-        if (oldSession.status === "complete") {
-          throw new HttpsError(
-            "failed-precondition",
-            "現在、支払い結果を確認しています。",
-          );
-        }
-      } catch (error) {
-        if (error instanceof HttpsError) {
-          throw error;
+        logger.error(
+          "既存Checkout Sessionの確認に失敗しました。",
+          {
+            reservationId,
+            sessionId,
+            stripeErrorMessage:
+              error?.message || String(error),
+            stripeErrorCode: error?.code || "",
+            stripeErrorType: error?.type || "",
+          },
+        );
+
+        throw new HttpsError(
+          "unavailable",
+          "既存の支払い画面の状態を確認できませんでした。" +
+          "重複決済防止のため、新しい支払い画面は作成していません。" +
+          "少し待ってからもう一度お試しください。",
+        );
+      }
+
+      if (session.payment_status === "paid") {
+        throw new HttpsError(
+          "already-exists",
+          "この予約は支払い済みです。",
+        );
+      }
+
+      if (session.status === "complete") {
+        throw new HttpsError(
+          "failed-precondition",
+          "現在、支払い結果を確認しています。",
+        );
+      }
+
+      if (session.status === "open" && session.url) {
+        const oldSessionAmount =
+          Number(session.amount_total || 0);
+        const oldSessionCurrency =
+          String(session.currency || "")
+            .toLowerCase();
+
+        if (
+          oldSessionAmount === locked.totalPrice &&
+          oldSessionCurrency === "jpy"
+        ) {
+          return {
+            reusableUrl: session.url,
+            canCreateNew: false,
+          };
         }
 
         logger.warn(
-          "既存のCheckout Sessionを確認できませんでした。",
+          "既存Checkout Sessionの金額が予約固定額と一致しないため失効させます。",
           {
             reservationId,
-            message: error.message,
+            sessionId: session.id,
+            oldSessionAmount,
+            lockedTotalPrice: locked.totalPrice,
+            oldSessionCurrency,
           },
         );
+
+        try {
+          await stripe.checkout.sessions.expire(
+            session.id,
+          );
+        } catch (error) {
+          logger.error(
+            "不整合Checkout Sessionの失効に失敗しました。",
+            {
+              reservationId,
+              sessionId: session.id,
+              stripeErrorMessage:
+                error?.message || String(error),
+            },
+          );
+
+          throw new HttpsError(
+            "unavailable",
+            "既存の支払い画面を安全に終了できませんでした。" +
+            "新しい支払い画面は作成していません。",
+          );
+        }
       }
+
+      return {
+        reusableUrl: "",
+        canCreateNew: true,
+      };
+    };
+
+    if (initialSessionId) {
+      const existing =
+        await reusableCheckoutUrl(initialSessionId);
+
+      if (existing.reusableUrl) {
+        return {
+          checkoutUrl: existing.reusableUrl,
+        };
+      }
+    }
+
+    /**
+     * 新しいCheckout Session用の「支払い試行番号」を
+     * Firestore Transactionで1つだけ確保します。
+     *
+     * - 同時タップ/別端末からの同時呼び出し:
+     *   片方だけがStripe作成へ進む
+     * - Stripe応答後にFirestore保存だけ失敗:
+     *   同じ試行番号 = 同じIdempotency Keyで再試行
+     * - 既存Sessionが失効済み:
+     *   次の試行番号へ進む
+     */
+    const creationLockMillis = 30 * 1000;
+
+    const claim = await db.runTransaction(
+      async (transaction) => {
+        const latestSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!latestSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "予約が見つかりません。",
+          );
+        }
+
+        const latest = latestSnap.data() || {};
+        const latestLocked =
+          validateReservationForCheckout(latest);
+
+        if (
+          latestLocked.totalPrice !== locked.totalPrice ||
+          latestLocked.pricePerHour !== locked.pricePerHour ||
+          latestLocked.lessonHours !== locked.lessonHours
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "予約内容が変わりました。" +
+            "画面を更新してもう一度お試しください。",
+          );
+        }
+
+        const currentSessionId = String(
+          latest.stripeCheckoutSessionId || "",
+        ).trim();
+
+        if (
+          currentSessionId &&
+          currentSessionId !== initialSessionId
+        ) {
+          return {
+            existingSessionId: currentSessionId,
+            attemptVersion: 0,
+          };
+        }
+
+        const currentVersion = Number(
+          latest.stripeCheckoutAttemptVersion || 0,
+        );
+        const creationState = String(
+          latest.stripeCheckoutCreationState || "",
+        );
+        const startedAt =
+          latest.stripeCheckoutCreationStartedAt
+            ?.toDate?.();
+        const lockIsFresh =
+          creationState === "creating" &&
+          startedAt instanceof Date &&
+          Date.now() - startedAt.getTime() <
+            creationLockMillis;
+
+        if (
+          creationState === "creating" &&
+          Number.isInteger(currentVersion) &&
+          currentVersion > 0
+        ) {
+          if (lockIsFresh) {
+            throw new HttpsError(
+              "aborted",
+              "支払い画面を準備中です。" +
+              "数秒待ってからもう一度お試しください。",
+            );
+          }
+
+          // 前回がStripe応答待ち・Firestore保存失敗等で
+          // 途中停止した可能性があるため、
+          // 同じ試行番号を再利用します。
+          transaction.set(
+            reservationRef,
+            {
+              stripeCheckoutCreationStartedAt:
+                FieldValue.serverTimestamp(),
+              updatedAt:
+                FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          return {
+            existingSessionId: "",
+            attemptVersion: currentVersion,
+          };
+        }
+
+        const nextVersion =
+          Number.isInteger(currentVersion) &&
+          currentVersion >= 0 ?
+            currentVersion + 1 :
+            1;
+
+        transaction.set(
+          reservationRef,
+          {
+            stripeCheckoutAttemptVersion: nextVersion,
+            stripeCheckoutCreationState: "creating",
+            stripeCheckoutCreationStartedAt:
+              FieldValue.serverTimestamp(),
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          existingSessionId: "",
+          attemptVersion: nextVersion,
+        };
+      },
+    );
+
+    // 別の同時呼び出しが先にSessionを保存していた場合は、
+    // それを再利用し、新規Sessionは作りません。
+    if (claim.existingSessionId) {
+      const concurrentExisting =
+        await reusableCheckoutUrl(
+          claim.existingSessionId,
+        );
+
+      if (concurrentExisting.reusableUrl) {
+        return {
+          checkoutUrl:
+            concurrentExisting.reusableUrl,
+        };
+      }
+
+      throw new HttpsError(
+        "aborted",
+        "支払い画面の状態が更新されました。" +
+        "もう一度お試しください。",
+      );
+    }
+
+    const attemptVersion =
+      Number(claim.attemptVersion);
+
+    if (
+      !Number.isInteger(attemptVersion) ||
+      attemptVersion <= 0
+    ) {
+      throw new HttpsError(
+        "internal",
+        "支払い試行情報を作成できませんでした。",
+      );
     }
 
     const projectId =
@@ -4312,31 +5002,35 @@ exports.createCheckoutSession = onCall(
     const commonMetadata = {
       reservationId,
       studentId: request.auth.uid,
-      coachId: reservation.coachId,
-      lessonHours: String(lessonHours),
-      pricePerHour: String(pricePerHour),
-      totalPrice: String(totalPrice),
+      coachId: locked.coachId,
+      lessonHours: String(locked.lessonHours),
+      pricePerHour: String(locked.pricePerHour),
+      totalPrice: String(locked.totalPrice),
+      checkoutAttemptVersion: String(attemptVersion),
     };
 
-    const session = await stripe.checkout.sessions.create({
+    const idempotencyKey =
+      `tc_checkout_${reservationId}_v${attemptVersion}`;
+
+    const checkoutSessionParams = {
       mode: "payment",
       locale: "ja",
       line_items: [
         {
           price_data: {
             currency: "jpy",
-            unit_amount: pricePerHour,
+            unit_amount: locked.pricePerHour,
             product_data: {
               name:
                 `テニスレッスン（${
-                  reservation.coachName || "コーチ"
+                  locked.coachName
                 }）`,
               description:
-                `${reservation.date || ""} ` +
-                selectedTimes.join(", "),
+                `${locked.date} ` +
+                locked.selectedTimes.join(", "),
             },
           },
-          quantity: lessonHours,
+          quantity: locked.lessonHours,
         },
       ],
       client_reference_id: reservationId,
@@ -4348,16 +5042,181 @@ exports.createCheckoutSession = onCall(
         `${resultUrl}?result=success` +
         "&session_id={CHECKOUT_SESSION_ID}",
       cancel_url: `${resultUrl}?result=cancel`,
-    });
+    };
 
-    await reservationRef.set(
-      {
-        stripeCheckoutSessionId: session.id,
-        paymentStatus: "checkout_created",
-        updatedAt: FieldValue.serverTimestamp(),
+    /**
+     * Stripe Checkoutの expires_at は
+     * 「作成から30分以上24時間以内」の範囲に制限があります。
+     *
+     * そのため、レッスン開始まで31分以上かつ24時間以内なら
+     * Session自体をレッスン開始時刻で失効させます。
+     *
+     * 30分境界ぴったりは、Stripe APIへ到達するまでの数秒で
+     * 最低30分を下回る可能性があるため、1分の安全余裕を取ります。
+     *
+     * 31分未満のケースは次段階（Webhook側）で最終防御します。
+     */
+    const checkoutCreatedAtMillis = Date.now();
+    const lessonStartMillis =
+      locked.lessonStartDate.getTime();
+    const millisUntilLesson =
+      lessonStartMillis - checkoutCreatedAtMillis;
+    const minimumExpiryWindowMillis =
+      31 * 60 * 1000;
+    const maximumExpiryWindowMillis =
+      24 * 60 * 60 * 1000;
+
+    if (
+      millisUntilLesson >= minimumExpiryWindowMillis &&
+      millisUntilLesson <= maximumExpiryWindowMillis
+    ) {
+      checkoutSessionParams.expires_at =
+        Math.floor(lessonStartMillis / 1000);
+    }
+
+    let session;
+
+    try {
+      session = await stripe.checkout.sessions.create(
+        checkoutSessionParams,
+        {
+          idempotencyKey,
+        },
+      );
+    } catch (error) {
+      logger.error(
+        "Checkout Session作成の結果を確定できませんでした。",
+        {
+          reservationId,
+          attemptVersion,
+          stripeErrorMessage:
+            error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+          stripeErrorType: error?.type || "",
+          stripeErrorStatusCode:
+            error?.statusCode || "",
+        },
+      );
+
+      // creationStateは意図的にcreatingのまま保持します。
+      // 次回は同じattemptVersion / Idempotency Keyで再試行し、
+      // Stripe側だけ成功していた場合でも二重Sessionを防ぎます。
+      throw new HttpsError(
+        "unavailable",
+        "支払い画面の作成結果を確認できませんでした。" +
+        "二重決済防止のため同じ処理を保持しています。" +
+        "少し待ってからもう一度お試しください。",
+      );
+    }
+
+    const finalResult = await db.runTransaction(
+      async (transaction) => {
+        const latestSnap = await transaction.get(
+          reservationRef,
+        );
+
+        if (!latestSnap.exists) {
+          return {
+            shouldExpire: true,
+            reason: "reservation_missing",
+          };
+        }
+
+        const latest = latestSnap.data() || {};
+
+        try {
+          const latestLocked =
+            validateReservationForCheckout(latest);
+
+          if (
+            latestLocked.totalPrice !== locked.totalPrice ||
+            latestLocked.pricePerHour !== locked.pricePerHour ||
+            latestLocked.lessonHours !== locked.lessonHours
+          ) {
+            return {
+              shouldExpire: true,
+              reason: "reservation_changed",
+            };
+          }
+        } catch (_) {
+          return {
+            shouldExpire: true,
+            reason: "reservation_not_payable",
+          };
+        }
+
+        const latestVersion = Number(
+          latest.stripeCheckoutAttemptVersion || 0,
+        );
+        const latestSessionId = String(
+          latest.stripeCheckoutSessionId || "",
+        ).trim();
+
+        if (latestVersion !== attemptVersion) {
+          return {
+            shouldExpire: true,
+            reason: "attempt_changed",
+          };
+        }
+
+        if (
+          latestSessionId &&
+          latestSessionId !== session.id
+        ) {
+          return {
+            shouldExpire: true,
+            reason: "different_session_saved",
+          };
+        }
+
+        transaction.set(
+          reservationRef,
+          {
+            stripeCheckoutSessionId: session.id,
+            stripeCheckoutCreationState: "created",
+            stripeCheckoutCreatedAt:
+              FieldValue.serverTimestamp(),
+            paymentStatus: "checkout_created",
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          shouldExpire: false,
+          reason: "",
+        };
       },
-      {merge: true},
     );
+
+    if (finalResult.shouldExpire) {
+      try {
+        if (session.status === "open") {
+          await stripe.checkout.sessions.expire(
+            session.id,
+          );
+        }
+      } catch (error) {
+        logger.error(
+          "予約状態変更後のCheckout Session失効に失敗しました。",
+          {
+            reservationId,
+            sessionId: session.id,
+            reason: finalResult.reason,
+            stripeErrorMessage:
+              error?.message || String(error),
+          },
+        );
+      }
+
+      throw new HttpsError(
+        "failed-precondition",
+        "予約状況が変わりました。" +
+        "支払いは開始していません。" +
+        "画面を更新してご確認ください。",
+      );
+    }
 
     return {
       checkoutUrl: session.url,
@@ -6199,7 +7058,11 @@ exports.stripeWebhook = onRequest(
       switch (event.type) {
         case "checkout.session.completed":
         case "checkout.session.async_payment_succeeded":
-          await markReservationPaid(stripeObject, event.id);
+          await markReservationPaid(
+            stripeObject,
+            event.id,
+            event.created,
+          );
           break;
 
         case "checkout.session.async_payment_failed":
