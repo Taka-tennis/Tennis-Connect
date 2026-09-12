@@ -312,6 +312,11 @@ struct CoachRegisterView: View {
             return
         }
 
+        guard let validatedPrice =
+                validatedPriceForProfileUpdate() else {
+            return
+        }
+
         profileErrorMessage = ""
         isSavingProfile = true
 
@@ -335,7 +340,7 @@ struct CoachRegisterView: View {
                 coachingExperience.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 ),
-            "price": Int(price) ?? 0,
+            "price": validatedPrice,
             "imageURL": imageURL,
             "introduction": introduction,
             "ageGroup": ageGroup,
@@ -364,6 +369,39 @@ struct CoachRegisterView: View {
                     showUpdateAlert = true
                 }
             }
+    }
+
+    private func validatedPriceForProfileUpdate() -> Int? {
+        let trimmedPrice =
+            price.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        guard !trimmedPrice.isEmpty else {
+            profileErrorMessage =
+                "料金を入力してください。"
+            return nil
+        }
+
+        let isASCIIInteger =
+            trimmedPrice.unicodeScalars.allSatisfy {
+                $0.value >= 48 && $0.value <= 57
+            }
+
+        guard isASCIIInteger else {
+            profileErrorMessage =
+                "料金は半角数字のみで入力してください。"
+            return nil
+        }
+
+        guard let value = Int(trimmedPrice),
+              (1...1_000_000).contains(value) else {
+            profileErrorMessage =
+                "料金は1円以上1,000,000円以下で入力してください。"
+            return nil
+        }
+
+        return value
     }
 
     private func loadedCareer(

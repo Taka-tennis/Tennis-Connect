@@ -70,6 +70,11 @@ struct RegisterButtonSectionView: View {
             return
         }
 
+        guard let validatedPrice =
+                validatedPriceForRegistration() else {
+            return
+        }
+
         registrationError = ""
         isRegistering = true
 
@@ -77,7 +82,7 @@ struct RegisterButtonSectionView: View {
             "name": name,
             "area": area,
             "career": career,
-            "price": Int(price) ?? 0,
+            "price": validatedPrice,
             "imageURL": imageURL,
             "introduction": introduction,
             "tennisExperience": tennisExperience,
@@ -110,6 +115,39 @@ struct RegisterButtonSectionView: View {
                     showSuccessAlert = true
                 }
             }
+    }
+
+    private func validatedPriceForRegistration() -> Int? {
+        let trimmedPrice =
+            price.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        guard !trimmedPrice.isEmpty else {
+            registrationError =
+                "料金を入力してください。"
+            return nil
+        }
+
+        let isASCIIInteger =
+            trimmedPrice.unicodeScalars.allSatisfy {
+                $0.value >= 48 && $0.value <= 57
+            }
+
+        guard isASCIIInteger else {
+            registrationError =
+                "料金は半角数字のみで入力してください。"
+            return nil
+        }
+
+        guard let value = Int(trimmedPrice),
+              (1...1_000_000).contains(value) else {
+            registrationError =
+                "料金は1円以上1,000,000円以下で入力してください。"
+            return nil
+        }
+
+        return value
     }
 
     private var availabilityEntries: [String] {

@@ -10373,6 +10373,7 @@ async function anonymizeReservationsForDeletedAccount(uid, db) {
       reference: document.ref,
       data: {
         studentId: FieldValue.delete(),
+        studentName: "退会済みユーザー",
         updatedAt: FieldValue.serverTimestamp(),
       },
     });
@@ -10387,6 +10388,8 @@ async function anonymizeReservationsForDeletedAccount(uid, db) {
         ...(existing?.data || {}),
         coachId: FieldValue.delete(),
         coachName: "退会済みコーチ",
+        reviewId: FieldValue.delete(),
+        reviewSubmittedAt: FieldValue.delete(),
         updatedAt: FieldValue.serverTimestamp(),
       },
     });
