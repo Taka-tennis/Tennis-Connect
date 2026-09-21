@@ -323,10 +323,15 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // レビュー：公開閲覧。
-    // 投稿・評価集計はCloud Functions側で行う。
+    // レビュー本体にはstudentId / reservationIdなどの内部識別子を含むため、
+    // クライアントへ全件公開しない。
+    // 本人は自分が投稿したレビューだけ直接確認できる。
+    // コーチ詳細画面の公開レビュー表示はgetCoachReviews（Cloud Functions）経由。
     match /reviews/{reviewId} {
-      allow read: if true;
+      allow read:
+        if signedIn()
+        && resource.data.studentId == request.auth.uid;
+
       allow write: if false;
     }
 

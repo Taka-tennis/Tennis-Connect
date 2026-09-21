@@ -14,6 +14,7 @@ const {
 const {getStorage} = require("firebase-admin/storage");
 const logger = require("firebase-functions/logger");
 const Stripe = require("stripe");
+const crypto = require("crypto");
 
 initializeApp();
 
@@ -11066,6 +11067,135 @@ exports.deleteAccount = onCall(
     }
   },
 );
+
+/**
+ * コーチ詳細画面に表示するレビューを安全な公開項目だけ返します。
+ *
+ * reviews本体にはstudentId / reservationIdなどの内部識別子が含まれるため、
+ * クライアントへDocument全体を直接公開しません。
+ *
+ * @param {object} request Callable request
+ * @return {Promise<object>} 公開用レビュー一覧
+ */
+exports.getCoachReviews = onCall(
+  {invoker: "public"},
+  async (request) => {
+    const coachId = String(
+      request.data?.coachId || "",
+    ).trim();
+
+    const requestedLimit = Number(
+      request.data?.limit ?? 3,
+    );
+    const requestedOffset = Number(
+      request.data?.offset ?? 0,
+    );
+
+    if (!coachId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "コーチ情報がありません。",
+      );
+    }
+
+    if (
+      !Number.isInteger(requestedLimit) ||
+      requestedLimit < 1 ||
+      requestedLimit > 20
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "レビュー取得件数が正しくありません。",
+      );
+    }
+
+    if (
+      !Number.isInteger(requestedOffset) ||
+      requestedOffset < 0 ||
+      requestedOffset > 2000
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "レビュー取得位置が正しくありません。",
+      );
+    }
+
+    const db = getFirestore();
+
+    const snapshot = await db
+      .collection("reviews")
+      .where("coachId", "==", coachId)
+      .orderBy("createdAt", "desc")
+      .offset(requestedOffset)
+      .limit(requestedLimit + 1)
+      .get();
+
+    const pageDocuments =
+      snapshot.docs.slice(0, requestedLimit);
+
+    const reviews = pageDocuments
+      .map((document) => {
+        const data = document.data() || {};
+        const rating = Number(data.rating);
+        const comment = String(
+          data.comment || "",
+        ).trim();
+        const studentDisplayName = String(
+          data.studentDisplayName || "",
+        ).trim();
+
+        const createdAtDate =
+          data.createdAt?.toDate?.();
+        const createdAtMillis =
+          createdAtDate instanceof Date ?
+            createdAtDate.getTime() :
+            0;
+
+        if (
+          !Number.isInteger(rating) ||
+          rating < 1 ||
+          rating > 5 ||
+          !comment
+        ) {
+          logger.warn(
+            "公開対象から不正なレビューを除外しました。",
+            {
+              reviewId: document.id,
+              coachId,
+            },
+          );
+
+          return null;
+        }
+
+        const publicId = crypto
+          .createHash("sha256")
+          .update(document.id)
+          .digest("hex")
+          .slice(0, 24);
+
+        return {
+          id: publicId,
+          rating,
+          comment: comment.slice(0, 500),
+          studentDisplayName:
+            studentDisplayName ?
+              studentDisplayName.slice(0, 100) :
+              "匿名ユーザー",
+          createdAtMillis,
+        };
+      })
+      .filter((review) => review !== null);
+
+    return {
+      reviews,
+      hasMore: snapshot.docs.length > requestedLimit,
+      nextOffset:
+        requestedOffset + pageDocuments.length,
+    };
+  },
+);
+
 
 /**
  * 受講済み予約に対するレビューを登録します。

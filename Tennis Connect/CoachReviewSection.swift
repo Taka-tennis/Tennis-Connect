@@ -466,26 +466,47 @@ struct CoachReviewSection: View {
 
         group.enter()
 
-        db.collection("reviews")
-            .whereField("coachId", isEqualTo: coachId)
-            .order(by: "createdAt", descending: true)
-            .limit(to: 3)
-            .getDocuments { snapshot, error in
+        functions
+            .httpsCallable("getCoachReviews")
+            .call(
+                [
+                    "coachId": coachId,
+                    "limit": 3,
+                    "offset": 0
+                ]
+            ) { result, error in
 
                 defer {
                     group.leave()
                 }
 
-                if let error = error {
+                if let error {
                     if firstError == nil {
                         firstError = error
                     }
                     return
                 }
 
-                loadedReviews = snapshot?.documents.compactMap {
-                    CoachReviewItem(document: $0)
-                } ?? []
+                guard let data =
+                        result?.data as? [String: Any],
+                      let rawReviews =
+                        data["reviews"] as? [[String: Any]] else {
+                    if firstError == nil {
+                        firstError = NSError(
+                            domain: "TennisConnect.Reviews",
+                            code: 1,
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "レビュー情報を読み取れませんでした"
+                            ]
+                        )
+                    }
+                    return
+                }
+
+                loadedReviews = rawReviews.compactMap {
+                    CoachReviewItem(data: $0)
+                }
             }
 
         group.notify(queue: .main) {
@@ -510,13 +531,15 @@ private struct CoachReviewListView: View {
     let coachId: String
 
     @State private var reviews: [CoachReviewItem] = []
-    @State private var lastDocument: DocumentSnapshot?
+    @State private var nextOffset = 0
     @State private var isInitialLoading = false
     @State private var isLoadingMore = false
     @State private var hasMore = true
     @State private var errorMessage = ""
 
-    private let db = Firestore.firestore()
+    private let functions = Functions.functions(
+        region: "asia-northeast1"
+    )
     private let pageSize = 20
 
     var body: some View {
@@ -596,7 +619,7 @@ private struct CoachReviewListView: View {
 
     private func loadFirstPage() {
         reviews = []
-        lastDocument = nil
+        nextOffset = 0
         hasMore = true
         errorMessage = ""
         isInitialLoading = true
@@ -626,50 +649,66 @@ private struct CoachReviewListView: View {
             return
         }
 
-        var query: Query = db.collection("reviews")
-            .whereField("coachId", isEqualTo: coachId)
-            .order(by: "createdAt", descending: true)
-            .limit(to: pageSize)
+        let requestOffset =
+            isFirstPage ? 0 : nextOffset
 
-        if !isFirstPage,
-           let lastDocument {
-            query = query.start(afterDocument: lastDocument)
-        }
+        functions
+            .httpsCallable("getCoachReviews")
+            .call(
+                [
+                    "coachId": coachId,
+                    "limit": pageSize,
+                    "offset": requestOffset
+                ]
+            ) { result, error in
+                DispatchQueue.main.async {
+                    isInitialLoading = false
+                    isLoadingMore = false
 
-        query.getDocuments { snapshot, error in
-            DispatchQueue.main.async {
-                isInitialLoading = false
-                isLoadingMore = false
+                    if let error {
+                        errorMessage =
+                            "レビューを取得できませんでした: " +
+                            error.localizedDescription
+                        return
+                    }
 
-                if let error = error {
-                    errorMessage =
-                        "レビューを取得できませんでした: " +
-                        error.localizedDescription
-                    return
+                    guard let data =
+                            result?.data as? [String: Any],
+                          let rawReviews =
+                            data["reviews"] as? [[String: Any]] else {
+                        errorMessage =
+                            "レビュー情報を読み取れませんでした"
+                        return
+                    }
+
+                    let newReviews = rawReviews.compactMap {
+                        CoachReviewItem(data: $0)
+                    }
+
+                    if isFirstPage {
+                        reviews = newReviews
+                    } else {
+                        let existingIds = Set(reviews.map(\.id))
+                        reviews.append(
+                            contentsOf: newReviews.filter {
+                                !existingIds.contains($0.id)
+                            }
+                        )
+                    }
+
+                    hasMore =
+                        (data["hasMore"] as? Bool) ??
+                        (data["hasMore"] as? NSNumber)?.boolValue ??
+                        false
+
+                    nextOffset =
+                        (data["nextOffset"] as? Int) ??
+                        (data["nextOffset"] as? NSNumber)?.intValue ??
+                        (requestOffset + rawReviews.count)
+
+                    errorMessage = ""
                 }
-
-                let documents = snapshot?.documents ?? []
-
-                let newReviews = documents.compactMap {
-                    CoachReviewItem(document: $0)
-                }
-
-                if isFirstPage {
-                    reviews = newReviews
-                } else {
-                    let existingIds = Set(reviews.map(\.id))
-                    reviews.append(
-                        contentsOf: newReviews.filter {
-                            !existingIds.contains($0.id)
-                        }
-                    )
-                }
-
-                lastDocument = documents.last
-                hasMore = documents.count == pageSize
-                errorMessage = ""
             }
-        }
     }
 }
 
@@ -740,24 +779,27 @@ private struct CoachReviewItem: Identifiable {
     let studentDisplayName: String
     let createdAt: Date
 
-    init?(document: QueryDocumentSnapshot) {
-        let data = document.data()
+    init?(data: [String: Any]) {
+        let id =
+            (data["id"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        guard let rating =
-                (data["rating"] as? NSNumber)?.intValue,
-              (1...5).contains(rating) else {
-            return nil
-        }
+        let rating =
+            (data["rating"] as? NSNumber)?.intValue ??
+            data["rating"] as? Int ??
+            0
 
         let comment =
             (data["comment"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        guard !comment.isEmpty else {
+        guard !id.isEmpty,
+              (1...5).contains(rating),
+              !comment.isEmpty else {
             return nil
         }
 
-        self.id = document.documentID
+        self.id = id
         self.rating = rating
         self.comment = comment
 
@@ -770,9 +812,19 @@ private struct CoachReviewItem: Identifiable {
             ? "匿名ユーザー"
             : savedName
 
-        self.createdAt =
-            (data["createdAt"] as? Timestamp)?.dateValue() ??
-            .distantPast
+        let createdAtMillis =
+            (data["createdAtMillis"] as? NSNumber)?.doubleValue ??
+            data["createdAtMillis"] as? Double ??
+            0
+
+        if createdAtMillis > 0 {
+            self.createdAt = Date(
+                timeIntervalSince1970:
+                    createdAtMillis / 1000
+            )
+        } else {
+            self.createdAt = .distantPast
+        }
     }
 
     var displayDate: String {
