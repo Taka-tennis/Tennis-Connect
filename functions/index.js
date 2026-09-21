@@ -2560,12 +2560,12 @@ exports.registerCoachProfile = onCall(
     if (
       typeof price !== "number" ||
       !Number.isInteger(price) ||
-      price < 0 ||
+      price < 1 ||
       price > 1000000
     ) {
       throw new HttpsError(
         "invalid-argument",
-        "料金の設定が正しくありません。",
+        "料金は1円以上1,000,000円以下の整数で設定してください。",
       );
     }
 
@@ -10017,7 +10017,7 @@ function accountDeletionCoachPayoutBlockReason(
  * @param {FirebaseFirestore.Firestore} db Firestore
  * @return {Promise<Array<object>>} 削除を止める予約一覧
  */
-async function getAccountDeletionBlockers(uid, db) {
+async function getAccountDeletionBlockers(uid, db, stripe = null) {
   const [
     studentReservationsSnap,
     coachReservationsSnap,
@@ -10126,6 +10126,99 @@ async function getAccountDeletionBlockers(uid, db) {
     }
 
     if (
+      !connectReason &&
+      stripe
+    ) {
+      const stripeAccountId = String(
+        connect.stripeAccountId || "",
+      ).trim();
+
+      if (stripeAccountId) {
+        try {
+          let accountAlreadyClosed = false;
+          const accountsApiVersion = String(
+            connect.accountsApiVersion || "",
+          ).trim().toLowerCase();
+
+          if (accountsApiVersion === "v2") {
+            const accountResponse = await fetch(
+              "https://api.stripe.com/v2/core/accounts/" +
+                encodeURIComponent(stripeAccountId),
+              {
+                method: "GET",
+                headers: {
+                  Authorization:
+                    `Bearer ${stripeSecretKey.value()}`,
+                  "Stripe-Version": "2026-07-29.dahlia",
+                },
+                signal: AbortSignal.timeout(15000),
+              },
+            );
+
+            if (accountResponse.ok) {
+              const accountData = await accountResponse.json();
+              accountAlreadyClosed =
+                accountData?.closed === true;
+            } else if (accountResponse.status !== 404) {
+              const rawBody = await accountResponse.text();
+              throw new Error(
+                "Stripe Accounts v2の状態確認に失敗しました。" +
+                ` status=${accountResponse.status}` +
+                ` body=${rawBody.slice(0, 500)}`,
+              );
+            } else {
+              accountAlreadyClosed = true;
+            }
+          }
+
+          if (!accountAlreadyClosed) {
+            const balance = await stripe.balance.retrieve(
+              {},
+              {
+                stripeAccount: stripeAccountId,
+              },
+            );
+
+            const balanceCollections = [
+              ...(Array.isArray(balance.available) ?
+                balance.available : []),
+              ...(Array.isArray(balance.pending) ?
+                balance.pending : []),
+            ];
+
+            const hasNonZeroBalance =
+              balanceCollections.some(
+                (item) => Number(item.amount || 0) !== 0,
+              );
+
+            if (hasNonZeroBalance) {
+              connectReason =
+                "Stripeの売上受取口座に残高があります。" +
+                "すべての売上を銀行口座へ出金し、" +
+                "残高が0円になってからアカウントを削除してください。";
+            }
+          }
+        } catch (error) {
+          logger.error(
+            "アカウント削除前のStripe Connect状態確認に失敗しました。",
+            {
+              uid,
+              stripeAccountId,
+              stripeErrorMessage:
+                error?.message || String(error),
+              stripeErrorCode: error?.code || "",
+              stripeErrorType: error?.type || "",
+            },
+          );
+
+          connectReason =
+            "Stripeの売上受取口座の状態を確認できませんでした。" +
+            "時間をおいてからもう一度お試しください。";
+        }
+      }
+    }
+
+    if (
       connectReason &&
       !blockers.some(
         (item) => item.reason === connectReason,
@@ -10146,6 +10239,315 @@ async function getAccountDeletionBlockers(uid, db) {
   }
 
   return blockers;
+}
+
+/**
+ * Tennis Connect退会時にStripe Connectアカウントを閉鎖します。
+ *
+ * Firebase側のプロフィール等を削除する前にStripe側を閉鎖し、
+ * Stripeが残高・未処理取引を理由に拒否した場合はローカル削除を開始しません。
+ *
+ * @param {string} uid Firebase Authentication UID
+ * @param {FirebaseFirestore.Firestore} db Firestore
+ * @param {Stripe} stripe Stripeクライアント
+ * @return {Promise<object>} Stripe Connect閉鎖結果
+ */
+async function closeCoachStripeConnectAccountForDeletion(
+  uid,
+  db,
+  stripe,
+) {
+  const connectRef = db
+    .collection("stripeConnectAccounts")
+    .doc(uid);
+  const connectSnap = await connectRef.get();
+
+  if (!connectSnap.exists) {
+    return {
+      hadConnectAccount: false,
+      alreadyClosed: false,
+      closedNow: false,
+    };
+  }
+
+  const connect = connectSnap.data() || {};
+  const stripeAccountId = String(
+    connect.stripeAccountId || "",
+  ).trim();
+
+  if (!stripeAccountId) {
+    return {
+      hadConnectAccount: false,
+      alreadyClosed: false,
+      closedNow: false,
+    };
+  }
+
+  const accountsApiVersion = String(
+    connect.accountsApiVersion || "",
+  ).trim().toLowerCase();
+
+  if (accountsApiVersion === "v2") {
+    let accountData = null;
+
+    try {
+      const accountResponse = await fetch(
+        "https://api.stripe.com/v2/core/accounts/" +
+          encodeURIComponent(stripeAccountId),
+        {
+          method: "GET",
+          headers: {
+            Authorization:
+              `Bearer ${stripeSecretKey.value()}`,
+            "Stripe-Version": "2026-07-29.dahlia",
+          },
+          signal: AbortSignal.timeout(15000),
+        },
+      );
+
+      if (accountResponse.status === 404) {
+        return {
+          hadConnectAccount: true,
+          alreadyClosed: true,
+          closedNow: false,
+          stripeAccountId,
+        };
+      }
+
+      const rawBody = await accountResponse.text();
+
+      try {
+        accountData = JSON.parse(rawBody);
+      } catch (_) {
+        throw new Error(
+          "Stripe Accounts v2の応答を解析できませんでした。" +
+          ` status=${accountResponse.status}` +
+          ` body=${rawBody.slice(0, 500)}`,
+        );
+      }
+
+      if (!accountResponse.ok) {
+        const error = new Error(
+          accountData?.error?.message ||
+          accountData?.message ||
+          "Stripe Connectアカウントの状態を確認できませんでした。",
+        );
+        error.code =
+          accountData?.error?.code ||
+          accountData?.code ||
+          "";
+        error.type =
+          accountData?.error?.type ||
+          accountData?.type ||
+          "StripeAccountsV2Error";
+        error.statusCode = accountResponse.status;
+        throw error;
+      }
+    } catch (error) {
+      logger.error(
+        "削除前のStripe Accounts v2取得に失敗しました。",
+        {
+          uid,
+          stripeAccountId,
+          stripeErrorMessage:
+            error?.message || String(error),
+          stripeErrorCode: error?.code || "",
+          stripeErrorType: error?.type || "",
+          stripeErrorStatusCode:
+            error?.statusCode || "",
+        },
+      );
+
+      throw new HttpsError(
+        "unavailable",
+        "Stripeの売上受取口座を確認できませんでした。" +
+        "時間をおいてからもう一度お試しください。",
+      );
+    }
+
+    if (accountData?.closed === true) {
+      return {
+        hadConnectAccount: true,
+        alreadyClosed: true,
+        closedNow: false,
+        stripeAccountId,
+      };
+    }
+
+    const appliedConfigurations =
+      Array.isArray(accountData?.applied_configurations) &&
+      accountData.applied_configurations.length > 0 ?
+        accountData.applied_configurations
+          .map((value) => String(value || "").trim())
+          .filter((value) => value !== "") :
+        ["recipient"];
+
+    let closeResponse;
+    let closeData;
+
+    try {
+      closeResponse = await fetch(
+        "https://api.stripe.com/v2/core/accounts/" +
+          encodeURIComponent(stripeAccountId) +
+          "/close",
+        {
+          method: "POST",
+          headers: {
+            Authorization:
+              `Bearer ${stripeSecretKey.value()}`,
+            "Content-Type": "application/json",
+            "Stripe-Version": "2026-07-29.dahlia",
+            "Idempotency-Key":
+              `coach_connect_close_${stripeAccountId}`,
+          },
+          body: JSON.stringify({
+            applied_configurations:
+              appliedConfigurations,
+          }),
+          signal: AbortSignal.timeout(15000),
+        },
+      );
+
+      const rawBody = await closeResponse.text();
+
+      try {
+        closeData = JSON.parse(rawBody);
+      } catch (_) {
+        throw new Error(
+          "Stripe Accounts v2閉鎖応答を解析できませんでした。" +
+          ` status=${closeResponse.status}` +
+          ` body=${rawBody.slice(0, 500)}`,
+        );
+      }
+    } catch (error) {
+      logger.error(
+        "Stripe Accounts v2の閉鎖結果を確認できませんでした。",
+        {
+          uid,
+          stripeAccountId,
+          stripeErrorMessage:
+            error?.message || String(error),
+        },
+      );
+
+      throw new HttpsError(
+        "unavailable",
+        "Stripeの売上受取口座の閉鎖結果を確認できませんでした。" +
+        "二重処理を防ぐため、時間をおいてからもう一度お試しください。",
+      );
+    }
+
+    if (!closeResponse.ok) {
+      const stripeCode = String(
+        closeData?.error?.code ||
+        closeData?.code ||
+        "",
+      );
+      const stripeMessage = String(
+        closeData?.error?.message ||
+        closeData?.message ||
+        "",
+      );
+
+      logger.warn(
+        "Stripe Accounts v2がアカウント閉鎖を拒否しました。",
+        {
+          uid,
+          stripeAccountId,
+          stripeCode,
+          stripeMessage,
+          stripeStatusCode: closeResponse.status,
+        },
+      );
+
+      if (
+        stripeCode === "cannot_delete_account_with_balance" ||
+        stripeCode ===
+          "cannot_delete_customer_with_available_cash_balance"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Stripeの売上受取口座に残高があります。" +
+          "すべての売上を銀行口座へ出金し、" +
+          "残高が0円になってからアカウントを削除してください。",
+          {stripeCode},
+        );
+      }
+
+      if (
+        stripeCode === "pending_transactions_cannot_be_deleted"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Stripe側に未処理の取引があります。" +
+          "処理が完了してからアカウントを削除してください。",
+          {stripeCode},
+        );
+      }
+
+      throw new HttpsError(
+        "failed-precondition",
+        "Stripeの売上受取口座を閉鎖できませんでした。" +
+        "売上・出金状況を確認してからもう一度お試しください。",
+        {stripeCode},
+      );
+    }
+
+    return {
+      hadConnectAccount: true,
+      alreadyClosed: false,
+      closedNow: true,
+      stripeAccountId,
+    };
+  }
+
+  // 過去のAccounts v1ベースのExpress/Custom口座にも対応します。
+  try {
+    await stripe.accounts.del(
+      stripeAccountId,
+      {
+        idempotencyKey:
+          `coach_connect_delete_${stripeAccountId}`,
+      },
+    );
+
+    return {
+      hadConnectAccount: true,
+      alreadyClosed: false,
+      closedNow: true,
+      stripeAccountId,
+    };
+  } catch (error) {
+    if (error?.code === "resource_missing") {
+      return {
+        hadConnectAccount: true,
+        alreadyClosed: true,
+        closedNow: false,
+        stripeAccountId,
+      };
+    }
+
+    logger.warn(
+      "Stripe Connect v1アカウントを削除できませんでした。",
+      {
+        uid,
+        stripeAccountId,
+        stripeErrorMessage:
+          error?.message || String(error),
+        stripeErrorCode: error?.code || "",
+        stripeErrorType: error?.type || "",
+        stripeErrorStatusCode:
+          error?.statusCode || "",
+      },
+    );
+
+    throw new HttpsError(
+      "failed-precondition",
+      "Stripeの売上受取口座を閉鎖できませんでした。" +
+      "残高や未処理の取引がないことを確認してから" +
+      "もう一度お試しください。",
+    );
+  }
 }
 
 /**
@@ -10482,6 +10884,7 @@ async function deleteUserStorageAssets(uid) {
  * 生徒側・コーチ側の両方の予約を確認します。
  */
 exports.checkAccountDeletionEligibility = onCall(
+  {secrets: [stripeSecretKey]},
   async (request) => {
     if (!request.auth) {
       throw new HttpsError(
@@ -10492,7 +10895,15 @@ exports.checkAccountDeletionEligibility = onCall(
 
     const uid = request.auth.uid;
     const db = getFirestore();
-    const blockers = await getAccountDeletionBlockers(uid, db);
+    const stripe = new Stripe(stripeSecretKey.value(), {
+      maxNetworkRetries: 0,
+      timeout: 15000,
+    });
+    const blockers = await getAccountDeletionBlockers(
+      uid,
+      db,
+      stripe,
+    );
 
     logger.info("アカウント削除可否を確認しました。", {
       uid,
@@ -10513,7 +10924,10 @@ exports.checkAccountDeletionEligibility = onCall(
  * 関連データを削除・匿名化した後にAuthenticationを削除します。
  */
 exports.deleteAccount = onCall(
-  {timeoutSeconds: 120},
+  {
+    timeoutSeconds: 120,
+    secrets: [stripeSecretKey],
+  },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError(
@@ -10531,8 +10945,16 @@ exports.deleteAccount = onCall(
 
     const uid = request.auth.uid;
     const db = getFirestore();
+    const stripe = new Stripe(stripeSecretKey.value(), {
+      maxNetworkRetries: 0,
+      timeout: 15000,
+    });
 
-    const blockers = await getAccountDeletionBlockers(uid, db);
+    const blockers = await getAccountDeletionBlockers(
+      uid,
+      db,
+      stripe,
+    );
 
     if (blockers.length > 0) {
       throw new HttpsError(
@@ -10546,6 +10968,13 @@ exports.deleteAccount = onCall(
     }
 
     try {
+      const stripeClosure =
+        await closeCoachStripeConnectAccountForDeletion(
+          uid,
+          db,
+          stripe,
+        );
+
       const writtenReviewCount =
         await deleteReviewsWrittenByStudent(uid, db);
       const coachReviewCount =
@@ -10594,6 +11023,9 @@ exports.deleteAccount = onCall(
       await db.recursiveDelete(
         db.collection("coaches").doc(uid),
       );
+      await db.recursiveDelete(
+        db.collection("stripeConnectAccounts").doc(uid),
+      );
 
       await deleteUserStorageAssets(uid);
 
@@ -10605,6 +11037,12 @@ exports.deleteAccount = onCall(
         coachReviewCount,
         deletedRelatedDocumentCount,
         anonymizedReservationCount,
+        stripeConnectHadAccount:
+          stripeClosure.hadConnectAccount,
+        stripeConnectAlreadyClosed:
+          stripeClosure.alreadyClosed,
+        stripeConnectClosedNow:
+          stripeClosure.closedNow,
       });
 
       return {
