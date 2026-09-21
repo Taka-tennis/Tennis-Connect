@@ -26,9 +26,12 @@ struct LoginView: View {
 
             VStack(spacing: 20) {
 
-                Text("Tennis Connect")
-                    .font(.largeTitle)
-                    .bold()
+                Image("TennisConnectBrandLogo")
+                    .renderingMode(.original)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 220, height: 84)
+                    .accessibilityLabel("Tennis Connect")
 
                 TextField("メールアドレス", text: $email)
                     .textFieldStyle(.roundedBorder)

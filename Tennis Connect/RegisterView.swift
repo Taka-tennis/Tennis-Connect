@@ -26,6 +26,13 @@ struct RegisterView: View {
 
             VStack(spacing: 20) {
 
+                Image("TennisConnectBrandLogo")
+                    .renderingMode(.original)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 180, height: 69)
+                    .accessibilityLabel("Tennis Connect")
+
                 Text("新規会員登録")
                     .font(.largeTitle)
                     .bold()

@@ -24,6 +24,7 @@
 		07EDD484300F67AC0097B050 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07EDD483300F67AC0097B050 /* ContentView.swift */; };
 		07EDD486300F67B40097B050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD485300F67B40097B050 /* Assets.xcassets */; };
 		07EDD48A300F67B40097B050 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD489300F67B40097B050 /* Preview Assets.xcassets */; };
+		138AABD930613D3800615584 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 138AABD830613D3800615584 /* FirebaseAppCheck */; };
 		139711B3301722AC0031C537 /* BookingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B2301722AC0031C537 /* BookingView.swift */; };
 		139711B53017424D0031C537 /* CoachRegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B43017424D0031C537 /* CoachRegisterView.swift */; };
 		139711B73018D5D70031C537 /* TimePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B63018D5D70031C537 /* TimePickerView.swift */; };
@@ -134,6 +135,7 @@
 				07E1E83F3010979700DA7170 /* FirebaseStorage in Frameworks */,
 				13971202302F41000031C537 /* FirebaseFunctions in Frameworks */,
 				07E1E83B3010979700DA7170 /* FirebaseAuth in Frameworks */,
+				138AABD930613D3800615584 /* FirebaseAppCheck in Frameworks */,
 				07E1E83D3010979700DA7170 /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -493,8 +495,8 @@
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
@@ -503,10 +505,11 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.takahiromatsuzaki.Tennis-Connect";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -530,8 +533,8 @@
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
@@ -540,10 +543,11 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.takahiromatsuzaki.Tennis-Connect";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -601,6 +605,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseStorage;
+		};
+		138AABD830613D3800615584 /* FirebaseAppCheck */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAppCheck;
 		};
 		13971201302F41000031C537 /* FirebaseFunctions */ = {
 			isa = XCSwiftPackageProductDependency;

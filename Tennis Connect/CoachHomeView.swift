@@ -209,21 +209,12 @@ struct CoachHomeView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 if selectedTab == 0 {
-                    HStack(spacing: 8) {
-                        CoachBrandMark(size: 24)
-
-                        Text("Tennis Connect")
-                            .font(
-                                .system(
-                                    size: 18,
-                                    weight: .bold,
-                                    design: .rounded
-                                )
-                            )
-                            .foregroundStyle(
-                                CoachUI.brandGreen
-                            )
-                    }
+                    Image("TennisConnectBrandLogo")
+                        .renderingMode(.original)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 104, height: 40)
+                        .accessibilityLabel("Tennis Connect")
                 } else {
                     Text(tabTitle)
                         .font(

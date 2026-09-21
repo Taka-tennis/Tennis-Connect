@@ -1145,16 +1145,12 @@ struct HomeView: View {
 private struct HomeBrandTitle: View {
 
     var body: some View {
-        HStack(spacing: 9) {
-            HomeLogoMark()
-                .frame(width: 30, height: 30)
-
-            Text("Tennis Connect")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.tcBrandGreen)
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-        }
+        Image("TennisConnectBrandLogo")
+            .renderingMode(.original)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 142, height: 54)
+            .accessibilityLabel("Tennis Connect")
     }
 }
 

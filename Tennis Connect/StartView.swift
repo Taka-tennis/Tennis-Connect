@@ -33,22 +33,17 @@ struct StartView: View {
 
                     Spacer(minLength: 48)
 
-                    VStack(spacing: 22) {
+                    VStack(spacing: 18) {
 
-                        TennisConnectLogoMark()
+                        Image("TennisConnectBrandLogo")
+                            .renderingMode(.original)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 300, height: 115)
+                            .padding(.horizontal, 8)
+                            .accessibilityLabel("Tennis Connect")
 
                         VStack(spacing: 9) {
-
-                            Text("Tennis Connect")
-                                .font(
-                                    .system(
-                                        size: 36,
-                                        weight: .bold,
-                                        design: .rounded
-                                    )
-                                )
-                                .foregroundStyle(Color.tcTextPrimary)
-                                .minimumScaleFactor(0.85)
 
                             Text("コーチと生徒をつなぐ")
                                 .font(.system(size: 16, weight: .medium))
@@ -112,9 +107,12 @@ struct StartView: View {
 
                     Spacer(minLength: 32)
 
-                    Text("Tennis Connect")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.tcTextTertiary)
+                    Image("TennisConnectBrandLogo")
+                            .renderingMode(.original)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 92, height: 36)
+                        .accessibilityHidden(true)
                         .padding(.bottom, 10)
                 }
             }
