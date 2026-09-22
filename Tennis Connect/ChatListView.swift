@@ -34,6 +34,7 @@ struct ChatListView: View {
     @State private var errorMessage = ""
     @State private var isLoggedIn = false
     @State private var showLogin = false
+    @State private var coachProfileRequestID = UUID()
 
     init(role: ChatParticipantRole = .student) {
         self.role = role
@@ -555,6 +556,8 @@ struct ChatListView: View {
     private func loadCoachImagesForStudentChat(
         coachIds: [String]
     ) {
+        let requestID = UUID()
+        coachProfileRequestID = requestID
         let uniqueCoachIds = Set(
             coachIds.filter { !$0.isEmpty }
         )
@@ -566,6 +569,7 @@ struct ChatListView: View {
         let group = DispatchGroup()
         let lock = NSLock()
         var imageURLs: [String: String] = [:]
+        var coachNames: [String: String] = [:]
 
         for coachId in uniqueCoachIds {
             group.enter()
@@ -577,7 +581,14 @@ struct ChatListView: View {
                         snapshot?.data()?["imageURL"]
                         as? String ?? ""
 
+                    let currentName =
+                        (snapshot?.data()?["name"] as? String ?? "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+
                     lock.lock()
+                    if !currentName.isEmpty {
+                        coachNames[coachId] = currentName
+                    }
                     imageURLs[coachId] = imageURL
                     lock.unlock()
 
@@ -586,6 +597,7 @@ struct ChatListView: View {
         }
 
         group.notify(queue: .main) {
+            guard coachProfileRequestID == requestID else { return }
             studentConversations =
                 studentConversations.map {
                     conversation in
@@ -593,7 +605,8 @@ struct ChatListView: View {
                     StudentConversation(
                         id: conversation.id,
                         coachName:
-                            conversation.coachName,
+                            coachNames[conversation.id]
+                            ?? conversation.coachName,
                         coachImageURL:
                             imageURLs[
                                 conversation.id
@@ -703,6 +716,7 @@ struct ChatListView: View {
     }
 
     private func resetChatState() {
+        coachProfileRequestID = UUID()
         studentConversations = []
         coachConversations = []
     }

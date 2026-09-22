@@ -52,12 +52,15 @@ struct ProfileSectionView: View {
                 }
             }
 
-            TextField(
-                "自己紹介",
-                text: $introduction,
-                axis: .vertical
-            )
-            .lineLimit(3...8)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("自己紹介")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $introduction)
+                    .frame(minHeight: 160)
+                    .accessibilityLabel("自己紹介")
+            }
         }
     }
 

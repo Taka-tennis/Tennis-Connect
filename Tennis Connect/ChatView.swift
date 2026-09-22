@@ -34,6 +34,7 @@ struct ChatView: View {
 
     @State private var message = ""
     @State private var messages: [Message] = []
+    @State private var currentCoachDisplayName = ""
     @State private var studentDisplayName: String
     @State private var partnerImageURL: String
     @State private var errorMessage = ""
@@ -91,7 +92,9 @@ struct ChatView: View {
     private var navigationTitle: String {
         switch currentRole {
         case .student:
-            return coachName
+            return currentCoachDisplayName.isEmpty
+                ? coachName
+                : currentCoachDisplayName
 
         case .coach:
             let trimmed =
@@ -939,7 +942,7 @@ struct ChatView: View {
         switch currentRole {
         case .student:
             loadCurrentStudentDisplayNameIfNeeded()
-            loadCoachImageIfNeeded()
+            loadCoachProfile()
 
         case .coach:
             loadStudentProfileForCoach()
@@ -1004,11 +1007,7 @@ struct ChatView: View {
             }
     }
 
-    private func loadCoachImageIfNeeded() {
-        if !partnerImageURL.isEmpty {
-            return
-        }
-
+    private func loadCoachProfile() {
         guard
             !coachId.isEmpty
         else {
@@ -1029,9 +1028,15 @@ struct ChatView: View {
                     as? String
                     ?? ""
 
+                let currentName =
+                    (snapshot?.data()?["name"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+
                 DispatchQueue.main.async {
-                    partnerImageURL =
-                        imageURL
+                    currentCoachDisplayName = currentName
+                    if partnerImageURL.isEmpty {
+                        partnerImageURL = imageURL
+                    }
                 }
             }
     }

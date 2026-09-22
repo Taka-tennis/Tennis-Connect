@@ -131,6 +131,8 @@ struct ReservationListView: View {
 
     @State private var reservations: [ReservationItem] = []
     @State private var coachImageURLs: [String: String] = [:]
+    @State private var coachNames: [String: String] = [:]
+    @State private var coachProfileRequestID = UUID()
     @State private var selectedCategory: ReservationCategory = .upcoming
     @State private var isLoading = false
     @State private var errorMessage = ""
@@ -267,6 +269,7 @@ struct ReservationListView: View {
                 selectedReservationForNavigation {
                 StudentReservationDetailView(
                     reservation: reservation,
+                    displayCoachName: displayCoachName(for: reservation),
                     coachImageURL:
                         coachImageURLs[
                             reservation.coachId
@@ -484,7 +487,7 @@ struct ReservationListView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(
-                            "\(reservation.coachName)コーチのプロフィール"
+                            "\(displayCoachName(for: reservation))コーチのプロフィール"
                         )
 
                         Button {
@@ -652,7 +655,7 @@ struct ReservationListView: View {
                     alignment: .leading,
                     spacing: 3
                 ) {
-                    Text(reservation.coachName)
+                    Text(displayCoachName(for: reservation))
                         .font(.headline)
                         .foregroundStyle(
                             StudentReservationUI.textPrimary
@@ -1180,9 +1183,15 @@ struct ReservationListView: View {
             }
     }
 
+    private func displayCoachName(for reservation: ReservationItem) -> String {
+        coachNames[reservation.coachId] ?? reservation.coachName
+    }
+
     private func loadCoachImages(
         for reservations: [ReservationItem]
     ) {
+        let requestID = UUID()
+        coachProfileRequestID = requestID
         let coachIds = Set(
             reservations
                 .map(\.coachId)
@@ -1191,12 +1200,14 @@ struct ReservationListView: View {
 
         guard !coachIds.isEmpty else {
             coachImageURLs = [:]
+            coachNames = [:]
             return
         }
 
         let group = DispatchGroup()
         let lock = NSLock()
         var loadedImages: [String: String] = [:]
+        var loadedNames: [String: String] = [:]
 
         for coachId in coachIds {
             group.enter()
@@ -1208,7 +1219,14 @@ struct ReservationListView: View {
                         snapshot?.data()?["imageURL"]
                         as? String ?? ""
 
+                    let currentName =
+                        (snapshot?.data()?["name"] as? String ?? "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+
                     lock.lock()
+                    if !currentName.isEmpty {
+                        loadedNames[coachId] = currentName
+                    }
                     loadedImages[coachId] = imageURL
                     lock.unlock()
 
@@ -1217,7 +1235,9 @@ struct ReservationListView: View {
         }
 
         group.notify(queue: .main) {
+            guard coachProfileRequestID == requestID else { return }
             coachImageURLs = loadedImages
+            coachNames = loadedNames
         }
     }
 
@@ -1500,6 +1520,7 @@ struct ReservationListView: View {
 private struct StudentReservationDetailView: View {
     let reservation: ReservationItem
     let coachImageURL: String
+    let displayCoachName: String
     let onCancellationCompleted: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -1545,10 +1566,12 @@ private struct StudentReservationDetailView: View {
 
     init(
         reservation: ReservationItem,
+        displayCoachName: String? = nil,
         coachImageURL: String = "",
         onCancellationCompleted: @escaping () -> Void = {}
     ) {
         self.reservation = reservation
+        self.displayCoachName = displayCoachName ?? reservation.coachName
         self.coachImageURL = coachImageURL
         self.onCancellationCompleted = onCancellationCompleted
         _reviewSubmitted = State(
@@ -1568,7 +1591,7 @@ private struct StudentReservationDetailView: View {
     private var coach: Coach {
         Coach(
             id: reservation.coachId,
-            name: reservation.coachName,
+            name: displayCoachName,
             price: reservation.pricePerHour,
             area: "",
             imageURL: coachImageURL,
@@ -1832,7 +1855,7 @@ private struct StudentReservationDetailView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(
-                    "\(reservation.coachName)コーチのプロフィール"
+                    "\(displayCoachName)コーチのプロフィール"
                 )
 
                 VStack(
@@ -1840,7 +1863,7 @@ private struct StudentReservationDetailView: View {
                     spacing: 4
                 ) {
                     Text(
-                        reservation.coachName
+                        displayCoachName
                     )
                     .font(.title3)
                     .fontWeight(.bold)
