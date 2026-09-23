@@ -125,6 +125,15 @@ service cloud.firestore {
       }
     }
 
+    function validLessonOptions(data, key, allowed) {
+      return !(key in data) || (
+        data[key] is list
+        && data[key].size() <= allowed.size()
+        && data[key].hasOnly(allowed)
+        && data[key].toSet().size() == data[key].size()
+      );
+    }
+
     // コーチプロフィール：閲覧は公開、編集は本人だけ
     // 削除は正式な退会処理（Cloud Functions）からのみ行う
     // コーチプロフィール
@@ -155,8 +164,14 @@ service cloud.firestore {
             'specialty',
             'profileVideoURL',
             'profileVideoPath',
-            'profileVideoUpdatedAt'
-          ]);
+            'profileVideoUpdatedAt',
+            'lessonLevels',
+            'lessonAudiences',
+            'lessonCompetition'
+          ])
+        && validLessonOptions(request.resource.data, "lessonLevels", ["初心者・未経験", "初級", "中級", "上級", "選手"])
+        && validLessonOptions(request.resource.data, "lessonAudiences", ["一般（大人）", "ジュニア"])
+        && validLessonOptions(request.resource.data, "lessonCompetition", ["試合・大会に向けた指導", "ジュニア選手育成"]);
 
       allow delete: if false;
     }

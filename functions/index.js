@@ -2541,6 +2541,30 @@ exports.registerCoachProfile = onCall(
     ).trim();
     const ageGroup = readString("ageGroup", 20);
 
+    // 未送信の旧アプリとも互換性を保ち、指定された選択肢だけを保存する。
+    const readLessonOptions = (key, allowed) => {
+      const value = raw[key];
+      if (value === undefined) return [];
+      if (!Array.isArray(value) || value.length > allowed.length ||
+          value.some((item) => !allowed.includes(item)) ||
+          new Set(value).size !== value.length) {
+        throw new HttpsError(
+          "invalid-argument", "レッスン対象の設定が正しくありません。",
+        );
+      }
+      return allowed.filter((item) => value.includes(item));
+    };
+    const lessonLevels = readLessonOptions(
+      "lessonLevels", ["初心者・未経験", "初級", "中級", "上級", "選手"],
+    );
+    const lessonAudiences = readLessonOptions(
+      "lessonAudiences", ["一般（大人）", "ジュニア"],
+    );
+    const lessonCompetition = readLessonOptions(
+      "lessonCompetition", ["試合・大会に向けた指導", "ジュニア選手育成"],
+    );
+
+
     const allowedAgeGroups = new Set([
       "20代",
       "30代",
@@ -2711,6 +2735,9 @@ exports.registerCoachProfile = onCall(
             createdAt: FieldValue.serverTimestamp(),
             availableTimes,
             ageGroup,
+            lessonLevels,
+            lessonAudiences,
+            lessonCompetition,
           },
         );
 

@@ -25,6 +25,7 @@
 		07EDD486300F67B40097B050 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD485300F67B40097B050 /* Assets.xcassets */; };
 		07EDD48A300F67B40097B050 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07EDD489300F67B40097B050 /* Preview Assets.xcassets */; };
 		138AABD930613D3800615584 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 138AABD830613D3800615584 /* FirebaseAppCheck */; };
+		138AABDB30639AB300615584 /* LessonTargets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 138AABDA30639AB300615584 /* LessonTargets.swift */; };
 		139711B3301722AC0031C537 /* BookingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B2301722AC0031C537 /* BookingView.swift */; };
 		139711B53017424D0031C537 /* CoachRegisterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B43017424D0031C537 /* CoachRegisterView.swift */; };
 		139711B73018D5D70031C537 /* TimePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 139711B63018D5D70031C537 /* TimePickerView.swift */; };
@@ -84,6 +85,7 @@
 		07EDD485300F67B40097B050 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		07EDD487300F67B40097B050 /* Tennis_Connect.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Tennis_Connect.entitlements; sourceTree = "<group>"; };
 		07EDD489300F67B40097B050 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		138AABDA30639AB300615584 /* LessonTargets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LessonTargets.swift; sourceTree = "<group>"; };
 		139711B2301722AC0031C537 /* BookingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookingView.swift; sourceTree = "<group>"; };
 		139711B43017424D0031C537 /* CoachRegisterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachRegisterView.swift; sourceTree = "<group>"; };
 		139711B63018D5D70031C537 /* TimePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimePickerView.swift; sourceTree = "<group>"; };
@@ -174,6 +176,7 @@
 				139711BC3018E9760031C537 /* MainTabView.swift */,
 				139711BE3018E9D50031C537 /* ChatListView.swift */,
 				139711C03018EA0D0031C537 /* FavoriteView.swift */,
+				138AABDA30639AB300615584 /* LessonTargets.swift */,
 				139711C23018EA300031C537 /* MyPageView.swift */,
 				139711D6301A365F0031C537 /* BookingConfirmView.swift */,
 				139712073031CB1B0031C537 /* SettingsView.swift */,
@@ -328,6 +331,7 @@
 				07134EE23011F52300A87536 /* RecruitView.swift in Sources */,
 				139711DB301A3AA30031C537 /* BookingCompleteView.swift in Sources */,
 				139711F33021A7B30031C537 /* DashboardCard.swift in Sources */,
+				138AABDB30639AB300615584 /* LessonTargets.swift in Sources */,
 				1397120430304ECF0031C537 /* ReviewSubmissionView.swift in Sources */,
 				07134EE63011F59700A87536 /* ProfileView.swift in Sources */,
 				1397120C303F23960031C537 /* StudentPublicProfileView.swift in Sources */,

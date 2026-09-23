@@ -16,6 +16,8 @@ struct RegisterButtonSectionView: View {
     @Binding var ageGroup: String
     @Binding var showSuccessAlert: Bool
 
+    var lessonTargets = LessonTargets()
+
     @State private var registrationError = ""
     @State private var isRegistering = false
 
@@ -89,7 +91,10 @@ struct RegisterButtonSectionView: View {
             "coachingExperience": coachingExperience,
             "availableTimes": availabilityEntries,
             "availability": availabilityPayload,
-            "ageGroup": ageGroup
+            "ageGroup": ageGroup,
+            "lessonLevels": lessonTargets.levels,
+            "lessonAudiences": lessonTargets.audiences,
+            "lessonCompetition": lessonTargets.competition
         ]
 
         functions

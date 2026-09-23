@@ -7,6 +7,7 @@ import UIKit
 
 struct CoachRegisterView: View {
 
+    @State private var lessonTargets = LessonTargets()
     @State private var name = ""
     @State private var area = ""
     @State private var career = ""
@@ -60,6 +61,8 @@ struct CoachRegisterView: View {
                             coachingExperience: $coachingExperience
                         )
 
+                        LessonTargetsEditor(targets: $lessonTargets)
+
                         ProfileSectionView(
                             selectedItem: $selectedItem,
                             selectedImage: $selectedImage,
@@ -99,7 +102,8 @@ struct CoachRegisterView: View {
                                 coachingExperience: $coachingExperience,
                                 availableTimes: $availableTimes,
                                 ageGroup: $ageGroup,
-                                showSuccessAlert: $showSuccessAlert
+                                showSuccessAlert: $showSuccessAlert,
+                                lessonTargets: lessonTargets
                             )
                         }
                     }
@@ -258,6 +262,7 @@ struct CoachRegisterView: View {
                     }
 
                     isExistingCoach = true
+                    lessonTargets = LessonTargets(data: data)
 
                     name =
                         data["name"] as? String ?? ""
@@ -344,6 +349,9 @@ struct CoachRegisterView: View {
             "imageURL": imageURL,
             "introduction": introduction,
             "ageGroup": ageGroup,
+            "lessonLevels": lessonTargets.levels,
+            "lessonAudiences": lessonTargets.audiences,
+            "lessonCompetition": lessonTargets.competition,
 
             // 旧プロフィールで使っていた項目は
             // 今回の仕様変更に合わせて削除します。

@@ -8,6 +8,7 @@ private struct CoachSortMetadata {
     let rating: Double
     let reviewCount: Int
     let createdAt: Date?
+    let lessonTargets: LessonTargets
 }
 
 private enum CoachSearchSortOption: String, CaseIterable, Identifiable {
@@ -572,7 +573,8 @@ struct HomeView: View {
                         CoachSortMetadata(
                             rating: rating,
                             reviewCount: reviewCount,
-                            createdAt: createdAt
+                            createdAt: createdAt,
+                            lessonTargets: LessonTargets(data: data)
                         )
                 }
 
@@ -1321,6 +1323,8 @@ private struct StudentCoachSearchView: View {
         CoachAgeFilterOption = .all
     @State private var selectedPriceFilter:
         CoachPriceFilterOption = .noLimit
+    @State private var selectedLessonLevels: Set<String> = []
+    @State private var selectedLessonAudiences: Set<String> = []
     @State private var showFilterSheet = false
 
     @State private var isDateFilterEnabled = false
@@ -1355,6 +1359,8 @@ private struct StudentCoachSearchView: View {
             count += 1
         }
 
+        if !selectedLessonLevels.isEmpty { count += 1 }
+        if !selectedLessonAudiences.isEmpty { count += 1 }
         return count
     }
 
@@ -1403,7 +1409,12 @@ private struct StudentCoachSearchView: View {
             return matchesKeyword &&
                 matchesDate &&
                 matchesAge &&
-                matchesPrice
+                matchesPrice &&
+                matchesLessonTargets(
+                    sortMetadata[coach.id]?.lessonTargets,
+                    levels: selectedLessonLevels,
+                    audiences: selectedLessonAudiences
+                )
         }
 
         let context = dailyRecommendationContext()
@@ -1758,6 +1769,11 @@ private struct StudentCoachSearchView: View {
                         }
                     }
 
+                    LessonTargetFilterChips(
+                        levels: $selectedLessonLevels,
+                        audiences: $selectedLessonAudiences
+                    )
+
                     if hasActiveFilters {
                         HStack(spacing: 8) {
 
@@ -1783,6 +1799,8 @@ private struct StudentCoachSearchView: View {
 
                             Button("すべて解除") {
                                 selectedAgeFilter = .all
+                                selectedLessonLevels.removeAll()
+                                selectedLessonAudiences.removeAll()
                                 selectedPriceFilter = .noLimit
                             }
                             .font(
@@ -1904,7 +1922,9 @@ private struct StudentCoachSearchView: View {
         .sheet(isPresented: $showFilterSheet) {
             CoachSearchFilterSheet(
                 selectedAgeFilter: $selectedAgeFilter,
-                selectedPriceFilter: $selectedPriceFilter
+                selectedPriceFilter: $selectedPriceFilter,
+                selectedLessonLevels: $selectedLessonLevels,
+                selectedLessonAudiences: $selectedLessonAudiences
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -2074,6 +2094,8 @@ private struct SameDayCoachListView: View {
         CoachAgeFilterOption = .all
     @State private var selectedPriceFilter:
         CoachPriceFilterOption = .noLimit
+    @State private var selectedLessonLevels: Set<String> = []
+    @State private var selectedLessonAudiences: Set<String> = []
     @State private var showFilterSheet = false
     @State private var gridWidth: CGFloat = 0
 
@@ -2110,6 +2132,8 @@ private struct SameDayCoachListView: View {
             count += 1
         }
 
+        if !selectedLessonLevels.isEmpty { count += 1 }
+        if !selectedLessonAudiences.isEmpty { count += 1 }
         return count
     }
 
@@ -2155,7 +2179,12 @@ private struct SameDayCoachListView: View {
 
             return matchesKeyword &&
                 matchesAge &&
-                matchesPrice
+                matchesPrice &&
+                matchesLessonTargets(
+                    sortMetadata[coach.id]?.lessonTargets,
+                    levels: selectedLessonLevels,
+                    audiences: selectedLessonAudiences
+                )
         }
 
         let context = dailyRecommendationContext()
@@ -2432,6 +2461,11 @@ private struct SameDayCoachListView: View {
                     }
                 }
 
+                LessonTargetFilterChips(
+                        levels: $selectedLessonLevels,
+                        audiences: $selectedLessonAudiences
+                    )
+
                 if activeFilterCount > 0 {
                     HStack(spacing: 8) {
 
@@ -2458,6 +2492,8 @@ private struct SameDayCoachListView: View {
 
                         Button("すべて解除") {
                             selectedAgeFilter = .all
+                            selectedLessonLevels.removeAll()
+                            selectedLessonAudiences.removeAll()
                             selectedPriceFilter = .noLimit
                         }
                         .font(
@@ -2620,7 +2656,9 @@ private struct SameDayCoachListView: View {
                 selectedAgeFilter:
                     $selectedAgeFilter,
                 selectedPriceFilter:
-                    $selectedPriceFilter
+                    $selectedPriceFilter,
+                selectedLessonLevels: $selectedLessonLevels,
+                selectedLessonAudiences: $selectedLessonAudiences
             )
             .presentationDetents(
                 [.medium, .large]
@@ -2668,6 +2706,36 @@ private struct FilterConditionChip: View {
     }
 }
 
+private func matchesLessonTargets(
+    _ targets: LessonTargets?, levels: Set<String>, audiences: Set<String>
+) -> Bool {
+    let matchesLevel = levels.isEmpty ||
+        !levels.isDisjoint(with: targets?.levels ?? [])
+    let matchesAudience = audiences.isEmpty ||
+        !audiences.isDisjoint(with: targets?.audiences ?? [])
+    return matchesLevel && matchesAudience
+}
+
+private struct LessonTargetFilterChips: View {
+    @Binding var levels: Set<String>
+    @Binding var audiences: Set<String>
+
+    var body: some View {
+        if !levels.isEmpty || !audiences.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(LessonTargets.levelOptions.filter { levels.contains($0) }, id: \.self) { value in
+                        FilterConditionChip(text: value) { levels.remove(value) }
+                    }
+                    ForEach(LessonTargets.audienceOptions.filter { audiences.contains($0) }, id: \.self) { value in
+                        FilterConditionChip(text: value) { audiences.remove(value) }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct CoachSearchFilterSheet: View {
 
     @Binding var selectedAgeFilter:
@@ -2675,12 +2743,27 @@ private struct CoachSearchFilterSheet: View {
     @Binding var selectedPriceFilter:
         CoachPriceFilterOption
 
+    @Binding var selectedLessonLevels: Set<String>
+    @Binding var selectedLessonAudiences: Set<String>
+
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+
+                    lessonFilterSection(
+                        "対応レベル", options: LessonTargets.levelOptions,
+                        selected: $selectedLessonLevels
+                    )
+                    lessonFilterSection(
+                        "対応する生徒", options: LessonTargets.audienceOptions,
+                        selected: $selectedLessonAudiences
+                    )
+                    Text("複数選択できます。同じ分類ではいずれかに対応するコーチを表示します。未選択は指定なしです。")
+                        .font(.caption)
+                        .foregroundStyle(Color.tcTextSecondary)
 
                     filterSection(
                         title: "年代",
@@ -2704,6 +2787,8 @@ private struct CoachSearchFilterSheet: View {
 
                     Button {
                         selectedAgeFilter = .all
+                        selectedLessonLevels.removeAll()
+                        selectedLessonAudiences.removeAll()
                         selectedPriceFilter = .noLimit
                     } label: {
                         Text("条件をすべてクリア")
@@ -2741,6 +2826,49 @@ private struct CoachSearchFilterSheet: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(Color.tcBrandGreen)
                 }
+            }
+        }
+    }
+
+    private func lessonFilterSection(
+        _ title: String, options: [String], selected: Binding<Set<String>>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+                .foregroundStyle(Color.tcTextPrimary)
+            VStack(spacing: 0) {
+                ForEach(options, id: \.self) { option in
+                    Button {
+                        if selected.wrappedValue.contains(option) {
+                            selected.wrappedValue.remove(option)
+                        } else {
+                            selected.wrappedValue.insert(option)
+                        }
+                    } label: {
+                        HStack {
+                            Text(option).foregroundStyle(Color.tcTextPrimary)
+                            Spacer()
+                            Image(systemName: selected.wrappedValue.contains(option)
+                                  ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selected.wrappedValue.contains(option)
+                                                 ? Color.tcBrandGreen : Color.tcBorder)
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 48)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityValue(selected.wrappedValue.contains(option) ? "選択済み" : "未選択")
+                    if option != options.last {
+                        Divider().padding(.leading, 16)
+                    }
+                }
+            }
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.tcBorder, lineWidth: 1)
             }
         }
     }
