@@ -1,6 +1,8 @@
 import SwiftUI
+import FirebaseCore
 import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 import FirebaseStorage
 import PhotosUI
 import UIKit
@@ -52,6 +54,7 @@ struct MyPageView: View {
     @State private var profileError = ""
     @State private var showProfileEditor = false
     @State private var showLogoutAlert = false
+    @State private var isLoggingOut = false
     @State private var isLoggedIn = false
     @State private var showLogin = false
 
@@ -625,12 +628,22 @@ struct MyPageView: View {
         Button(role: .destructive) {
             showLogoutAlert = true
         } label: {
-            Label(
-                "ログアウト",
-                systemImage:
-                    "rectangle.portrait.and.arrow.right"
-            )
-            .fontWeight(.semibold)
+            HStack(spacing: 8) {
+                if isLoggingOut {
+                    ProgressView()
+                        .tint(.red)
+
+                    Text("ログアウト中…")
+                        .fontWeight(.semibold)
+                } else {
+                    Label(
+                        "ログアウト",
+                        systemImage:
+                            "rectangle.portrait.and.arrow.right"
+                    )
+                    .fontWeight(.semibold)
+                }
+            }
             .frame(maxWidth: .infinity)
             .frame(height: 48)
             .background(Color.white)
@@ -652,6 +665,7 @@ struct MyPageView: View {
             }
         }
         .buttonStyle(.plain)
+        .disabled(isLoggingOut)
     }
 
     @ViewBuilder
@@ -826,9 +840,58 @@ struct MyPageView: View {
     }
 
     private func logout() {
+        guard !isLoggingOut else {
+            return
+        }
+
+        guard Auth.auth().currentUser != nil else {
+            performLocalSignOut()
+            return
+        }
+
+        guard let firebaseApp = FirebaseApp.app() else {
+            profileError =
+                "Firebaseの初期化状態を確認できなかったため、" +
+                "ログアウトできませんでした。"
+            return
+        }
+
+        isLoggingOut = true
+        profileError = ""
+
+        let functions = Functions.functions(
+            app: firebaseApp,
+            region: "asia-northeast1"
+        )
+
+        functions
+            .httpsCallable("unregisterPushToken")
+            .call(
+                [
+                    "deviceId":
+                        PushNotificationDeviceIdentity.deviceID
+                ]
+            ) { _, error in
+                DispatchQueue.main.async {
+                    if let error {
+                        isLoggingOut = false
+                        profileError =
+                            "通知情報を安全に解除できなかったため、" +
+                            "ログアウトを中止しました: " +
+                            error.localizedDescription
+                        return
+                    }
+
+                    performLocalSignOut()
+                }
+            }
+    }
+
+    private func performLocalSignOut() {
         do {
             try Auth.auth().signOut()
 
+            isLoggingOut = false
             isLoggedIn = false
             resetMyPageState()
 
@@ -837,6 +900,7 @@ struct MyPageView: View {
                 object: nil
             )
         } catch {
+            isLoggingOut = false
             profileError =
                 "ログアウトできませんでした: " +
                 error.localizedDescription

@@ -67,6 +67,7 @@
 		1397120A303813FC0031C537 /* CoachVideoUploadSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13971209303813FC0031C537 /* CoachVideoUploadSection.swift */; };
 		1397120C303F23960031C537 /* StudentPublicProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120B303F23960031C537 /* StudentPublicProfileView.swift */; };
 		1397120E303F28840031C537 /* CoachProfileDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1397120D303F28840031C537 /* CoachProfileDestinationView.swift */; };
+		139EE1F8306A55F000B26E89 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 139EE1F7306A55F000B26E89 /* FirebaseMessaging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -126,6 +127,7 @@
 		13971209303813FC0031C537 /* CoachVideoUploadSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachVideoUploadSection.swift; sourceTree = "<group>"; };
 		1397120B303F23960031C537 /* StudentPublicProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentPublicProfileView.swift; sourceTree = "<group>"; };
 		1397120D303F28840031C537 /* CoachProfileDestinationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachProfileDestinationView.swift; sourceTree = "<group>"; };
+		139EE1F9306A5B6900B26E89 /* Tennis-Connect-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Tennis-Connect-Info.plist"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +137,7 @@
 			files = (
 				07E1E8393010979700DA7170 /* FirebaseAnalytics in Frameworks */,
 				07E1E83F3010979700DA7170 /* FirebaseStorage in Frameworks */,
+				139EE1F8306A55F000B26E89 /* FirebaseMessaging in Frameworks */,
 				13971202302F41000031C537 /* FirebaseFunctions in Frameworks */,
 				07E1E83B3010979700DA7170 /* FirebaseAuth in Frameworks */,
 				138AABD930613D3800615584 /* FirebaseAppCheck in Frameworks */,
@@ -165,6 +168,7 @@
 		07EDD480300F67AC0097B050 /* Tennis Connect */ = {
 			isa = PBXGroup;
 			children = (
+				139EE1F9306A5B6900B26E89 /* Tennis-Connect-Info.plist */,
 				07EDD481300F67AC0097B050 /* Tennis_ConnectApp.swift */,
 				07EDD483300F67AC0097B050 /* ContentView.swift */,
 				07EDD485300F67B40097B050 /* Assets.xcassets */,
@@ -488,9 +492,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Tennis Connect/Preview Content\"";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9TK24QCRYG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Tennis-Connect-Info.plist";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -526,9 +531,10 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Tennis Connect/Preview Content\"";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 9TK24QCRYG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Tennis-Connect-Info.plist";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -619,6 +625,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseFunctions;
+		};
+		139EE1F7306A55F000B26E89 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 07E1E8373010979700DA7170 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -158,6 +158,9 @@ private struct CoachMiniTennisSeams: Shape {
 
 struct CoachHomeView: View {
 
+    @ObservedObject private var pushRouter =
+        PushNotificationRouter.shared
+
     @State private var selectedTab = 0
 
     @State private var unreadNotificationCount = 0
@@ -277,6 +280,12 @@ struct CoachHomeView: View {
         .onAppear {
             startNotificationListener()
             startUnreadMessageListener()
+            applyPendingPushDestination()
+        }
+        .onChange(
+            of: pushRouter.pendingDestination
+        ) { _ in
+            applyPendingPushDestination()
         }
         .onDisappear {
             notificationListener?.remove()
@@ -284,6 +293,27 @@ struct CoachHomeView: View {
 
             messageListener?.remove()
             messageListener = nil
+        }
+    }
+
+    private func applyPendingPushDestination() {
+        guard let destination =
+                pushRouter.pendingDestination else {
+            return
+        }
+
+        switch destination {
+        case .coachReservations:
+            selectedTab = 1
+            pushRouter.consume(destination)
+
+        case .coachChat:
+            selectedTab = 3
+            pushRouter.consume(destination)
+
+        case .studentReservations,
+             .studentChat:
+            break
         }
     }
 

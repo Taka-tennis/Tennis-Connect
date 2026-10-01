@@ -32,6 +32,9 @@ extension EnvironmentValues {
 }
 
 struct MainTabView: View {
+    @ObservedObject private var pushRouter =
+        PushNotificationRouter.shared
+
     @State private var selectedTab = 0
     @State private var homeNavigationId = UUID()
 
@@ -117,6 +120,12 @@ struct MainTabView: View {
         .onAppear {
             startNotificationListener()
             startChatUnreadListener()
+            applyPendingPushDestination()
+        }
+        .onChange(
+            of: pushRouter.pendingDestination
+        ) { _ in
+            applyPendingPushDestination()
         }
         .onDisappear {
             notificationListener?.remove()
@@ -131,6 +140,28 @@ struct MainTabView: View {
         selectedTab = 0
         homeNavigationId = UUID()
     }
+
+    private func applyPendingPushDestination() {
+        guard let destination =
+                pushRouter.pendingDestination else {
+            return
+        }
+
+        switch destination {
+        case .studentReservations:
+            selectedTab = 1
+            pushRouter.consume(destination)
+
+        case .studentChat:
+            selectedTab = 2
+            pushRouter.consume(destination)
+
+        case .coachReservations,
+             .coachChat:
+            break
+        }
+    }
+
 
     private func startNotificationListener() {
         notificationListener?.remove()

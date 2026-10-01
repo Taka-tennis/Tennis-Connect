@@ -5,8 +5,10 @@ const {
   HttpsError,
 } = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
+const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const {initializeApp} = require("firebase-admin/app");
 const {getAuth} = require("firebase-admin/auth");
+const {getMessaging} = require("firebase-admin/messaging");
 const {
   getFirestore,
   FieldValue,
@@ -35,6 +37,1062 @@ setGlobalOptions({
 const PLATFORM_FEE_PERCENT = 10;
 const COACH_SHARE_PERCENT = 90;
 const COACH_PAYOUT_HOLD_HOURS = 24;
+
+
+/**
+ * ログイン中ユーザーのFCMトークンを保存します。
+ *
+ * - UIDはクライアントから受け取らずrequest.auth.uidを使用
+ * - 生のFCMトークンをFirestoreのDocument IDには使用しない
+ * - 1ユーザーが複数端末を利用できる構造
+ * - updatedAtを保存して古いトークンを将来整理できるようにする
+ */
+exports.registerPushToken = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "プッシュ通知の登録にはログインが必要です。",
+      );
+    }
+
+    const token = String(
+      request.data?.token || "",
+    ).trim();
+    const deviceId = String(
+      request.data?.deviceId || "",
+    ).trim().toLowerCase();
+
+    if (
+      token.length < 20 ||
+      token.length > 4096
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "FCMトークンが正しくありません。",
+      );
+    }
+
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        deviceId,
+      )
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "端末識別子が正しくありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+
+    const ownerRef = db
+      .collection("pushDeviceOwners")
+      .doc(deviceId);
+    const deviceRef = db
+      .collection("pushTokens")
+      .doc(uid)
+      .collection("devices")
+      .doc(deviceId);
+
+    await db.runTransaction(async (transaction) => {
+      const ownerSnap = await transaction.get(ownerRef);
+      const deviceSnap = await transaction.get(deviceRef);
+
+      const previousUid = String(
+        ownerSnap.data()?.uid || "",
+      ).trim();
+
+      if (previousUid && previousUid !== uid) {
+        const previousDeviceRef = db
+          .collection("pushTokens")
+          .doc(previousUid)
+          .collection("devices")
+          .doc(deviceId);
+
+        transaction.delete(previousDeviceRef);
+      }
+
+      const deviceData = {
+        token,
+        deviceId,
+        platform: "ios",
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+
+      if (!deviceSnap.exists) {
+        deviceData.createdAt = FieldValue.serverTimestamp();
+      }
+
+      transaction.set(
+        deviceRef,
+        deviceData,
+        {merge: true},
+      );
+
+      transaction.set(
+        ownerRef,
+        {
+          uid,
+          platform: "ios",
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+    });
+
+    // 旧バージョンではFCMトークンのSHA-256値を
+    // devices配下のDocument IDにしていました。
+    // 同一ユーザー・同一トークンの旧形式Documentだけ安全に削除し、
+    // 現在のdeviceId方式へ移行します。
+    const legacyTokenHash = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    if (legacyTokenHash !== deviceId) {
+      await db
+        .collection("pushTokens")
+        .doc(uid)
+        .collection("devices")
+        .doc(legacyTokenHash)
+        .delete();
+    }
+
+    logger.info("FCMトークンを登録しました。", {
+      uid,
+      deviceId,
+    });
+
+    return {
+      success: true,
+    };
+  },
+);
+
+
+/**
+ * ログアウト時などに、この端末のFCMトークン登録を解除します。
+ * FCMトークンの再取得には依存せず、アプリ内で永続化したdeviceIdを使います。
+ */
+exports.unregisterPushToken = onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "プッシュ通知の解除にはログインが必要です。",
+      );
+    }
+
+    const deviceId = String(
+      request.data?.deviceId || "",
+    ).trim().toLowerCase();
+
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        deviceId,
+      )
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "端末識別子が正しくありません。",
+      );
+    }
+
+    const uid = request.auth.uid;
+    const db = getFirestore();
+    const ownerRef = db
+      .collection("pushDeviceOwners")
+      .doc(deviceId);
+    const deviceRef = db
+      .collection("pushTokens")
+      .doc(uid)
+      .collection("devices")
+      .doc(deviceId);
+
+    await db.runTransaction(async (transaction) => {
+      const ownerSnap = await transaction.get(ownerRef);
+      const ownerUid = String(
+        ownerSnap.data()?.uid || "",
+      ).trim();
+
+      transaction.delete(deviceRef);
+
+      if (ownerUid === uid) {
+        transaction.delete(ownerRef);
+      }
+    });
+
+    logger.info("FCMトークンを解除しました。", {
+      uid,
+      deviceId,
+    });
+
+    return {
+      success: true,
+    };
+  },
+);
+
+
+/**
+ * 予約申請のアプリ内通知が作成されたら、
+ * 対象コーチの登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * クライアントが作成した通知データをそのまま信用せず、
+ * reservationIdの予約情報とcoachId/studentIdを照合してから送信します。
+ */
+exports.sendReservationRequestedPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn("予約申請プッシュの通知データがありません。", {
+        notificationId: event.params.notificationId,
+      });
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+
+    if (String(notification.type || "") !== "reservationRequested") {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      recipientId !== coachId
+    ) {
+      logger.warn("予約申請プッシュの通知データが不正です。", {
+        notificationId,
+        recipientId,
+        coachId,
+        studentId,
+        reservationId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn("予約申請プッシュ対象の予約が見つかりません。", {
+        notificationId,
+        reservationId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "pending"
+    ) {
+      logger.warn("予約申請プッシュと予約データが一致しません。", {
+        notificationId,
+        reservationId,
+        reservationCoachId,
+        reservationStudentId,
+        reservationStatus,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info("予約申請プッシュの送信先端末がありません。", {
+        notificationId,
+        reservationId,
+        recipientId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title || "新しい予約申請が届きました",
+    ).slice(0, 120);
+    const body = String(
+      notification.message || "予約申請の内容をご確認ください。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: "reservationRequested",
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id": `reservation-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error("予約申請プッシュの送信に失敗しました。", {
+        notificationId,
+        reservationId,
+        recipientId,
+        message: error?.message || String(error),
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot = await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info("予約申請プッシュを処理しました。", {
+      notificationId,
+      reservationId,
+      recipientId,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      removedInvalidDeviceCount: invalidDeviceIds.length,
+    });
+  },
+);
+
+
+
+/**
+ * 予約承認・却下のアプリ内通知が作成されたら、
+ * 対象生徒の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * notificationドキュメントだけを信用せず、
+ * 対象予約のcoachId / studentId / statusを照合してから送信します。
+ */
+exports.sendReservationResponsePush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn("予約回答プッシュの通知データがありません。", {
+        notificationId: event.params.notificationId,
+      });
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    if (
+      notificationType !== "reservationApproved" &&
+      notificationType !== "reservationRejected"
+    ) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !reservationId
+    ) {
+      logger.warn("予約回答プッシュの通知データが不正です。", {
+        notificationId,
+        notificationType,
+        recipientId,
+        coachId,
+        reservationId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn("予約回答プッシュ対象の予約が見つかりません。", {
+        notificationId,
+        notificationType,
+        reservationId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const expectedStatus =
+      notificationType === "reservationApproved" ?
+        "confirmed" :
+        "rejected";
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== recipientId ||
+      reservationStatus !== expectedStatus
+    ) {
+      logger.warn("予約回答プッシュと予約データが一致しません。", {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        coachId,
+        reservationCoachId,
+        reservationStudentId,
+        reservationStatus,
+        expectedStatus,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info("予約回答プッシュの送信先端末がありません。", {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const defaultTitle =
+      notificationType === "reservationApproved" ?
+        "予約が承認されました" :
+        "予約が却下されました";
+    const defaultBody =
+      notificationType === "reservationApproved" ?
+        "予約が承認されました。支払い手続きへ進めます。" :
+        "予約が却下されました。別の日時を選択してください。";
+    const title = String(
+      notification.title || defaultTitle,
+    ).slice(0, 120);
+    const body = String(
+      notification.message || defaultBody,
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId: reservationStudentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `reservation-response-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error("予約回答プッシュの送信に失敗しました。", {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        message: error?.message || String(error),
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot = await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info("予約回答プッシュを処理しました。", {
+      notificationId,
+      notificationType,
+      reservationId,
+      recipientId,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      removedInvalidDeviceCount: invalidDeviceIds.length,
+    });
+  },
+);
+
+
+
+/**
+ * チャットメッセージが作成されたら、
+ * 相手側ユーザーの登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * messageドキュメントのparticipant情報とsenderIdを照合し、
+ * 送信者本人ではなく相手側だけを送信先にします。
+ */
+exports.sendChatMessagePush = onDocumentCreated(
+  "messages/{messageId}",
+  async (event) => {
+    const messageSnapshot = event.data;
+
+    if (!messageSnapshot) {
+      logger.warn("チャットプッシュのメッセージデータがありません。", {
+        messageId: event.params.messageId,
+      });
+      return;
+    }
+
+    const message = messageSnapshot.data() || {};
+    const messageId = String(
+      event.params.messageId || "",
+    ).trim();
+    const conversationId = String(
+      message.conversationId || "",
+    ).trim();
+    const coachId = String(
+      message.coachId || "",
+    ).trim();
+    const studentId = String(
+      message.studentId || "",
+    ).trim();
+    const senderId = String(
+      message.senderId || "",
+    ).trim();
+    const sender = String(
+      message.sender || "",
+    ).trim();
+    const text = String(
+      message.text || "",
+    ).trim();
+
+    let recipientId = "";
+
+    if (
+      sender === "user" &&
+      senderId === studentId
+    ) {
+      recipientId = coachId;
+    } else if (
+      sender === "coach" &&
+      senderId === coachId
+    ) {
+      recipientId = studentId;
+    }
+
+    if (
+      !messageId ||
+      !coachId ||
+      !studentId ||
+      !senderId ||
+      !text ||
+      !recipientId ||
+      recipientId === senderId
+    ) {
+      logger.warn("チャットプッシュのメッセージデータが不正です。", {
+        messageId,
+        conversationId,
+        coachId,
+        studentId,
+        senderId,
+        sender,
+      });
+
+      await messageSnapshot.ref.set(
+        {
+          pushStatus: "invalid_message",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const db = getFirestore();
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info("チャットプッシュの送信先端末がありません。", {
+        messageId,
+        conversationId,
+        recipientId,
+      });
+
+      await messageSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const body = text.length > 180 ?
+      `${text.slice(0, 177)}...` :
+      text;
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title: "新しいメッセージが届きました",
+        body,
+      },
+      data: {
+        type: "chatMessage",
+        messageId,
+        conversationId:
+          conversationId || `${studentId}__${coachId}`,
+        coachId,
+        studentId,
+        senderId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+        },
+        payload: {
+          aps: {
+            sound: "default",
+            "thread-id":
+              `chat-${conversationId || `${studentId}__${coachId}`}`,
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error("チャットプッシュの送信に失敗しました。", {
+        messageId,
+        conversationId,
+        recipientId,
+        message: error?.message || String(error),
+      });
+
+      await messageSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot = await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await messageSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info("チャットプッシュを処理しました。", {
+      messageId,
+      conversationId,
+      senderId,
+      recipientId,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      removedInvalidDeviceCount: invalidDeviceIds.length,
+    });
+  },
+);
 
 
 /**
@@ -11053,6 +12111,27 @@ exports.deleteAccount = onCall(
       );
       await db.recursiveDelete(
         db.collection("stripeConnectAccounts").doc(uid),
+      );
+
+      const pushDeviceSnapshot = await db
+        .collection("pushTokens")
+        .doc(uid)
+        .collection("devices")
+        .get();
+
+      if (!pushDeviceSnapshot.empty) {
+        await Promise.all(
+          pushDeviceSnapshot.docs.map((documentSnapshot) =>
+            db
+              .collection("pushDeviceOwners")
+              .doc(documentSnapshot.id)
+              .delete(),
+          ),
+        );
+      }
+
+      await db.recursiveDelete(
+        db.collection("pushTokens").doc(uid),
       );
 
       await deleteUserStorageAssets(uid);

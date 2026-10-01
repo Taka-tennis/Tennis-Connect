@@ -10,6 +10,9 @@ extension Notification.Name {
 
 struct StartView: View {
 
+    @ObservedObject private var pushRouter =
+        PushNotificationRouter.shared
+
     @State private var showCoachLogin = false
     @State private var showCoachHome = false
     @State private var showCoachRegister = false
@@ -188,6 +191,56 @@ struct StartView: View {
                     print("コーチホームへ移動しました")
                 }
             }
+            .onAppear {
+                applyPendingPushDestination()
+            }
+            .onChange(
+                of: pushRouter.pendingDestination
+            ) { _ in
+                applyPendingPushDestination()
+            }
+        }
+    }
+
+    private func applyPendingPushDestination() {
+        guard let destination =
+                pushRouter.pendingDestination else {
+            return
+        }
+
+        switch destination {
+        case .studentReservations,
+             .studentChat:
+
+            showCoachLogin = false
+            showCoachRegister = false
+            showCoachHome = false
+
+            if showStudentHome {
+                return
+            }
+
+            DispatchQueue.main.async {
+                showStudentHome = true
+            }
+
+        case .coachReservations,
+             .coachChat:
+
+            showStudentHome = false
+            coachErrorMessage = ""
+
+            guard Auth.auth().currentUser != nil else {
+                shouldRouteAfterAuthentication = true
+                showCoachLogin = true
+                return
+            }
+
+            if showCoachHome {
+                return
+            }
+
+            routeAuthenticatedCoach()
         }
     }
 
