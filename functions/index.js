@@ -5,7 +5,10 @@ const {
   HttpsError,
 } = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
-const {onDocumentCreated} = require("firebase-functions/v2/firestore");
+const {
+  onDocumentCreated,
+  onDocumentWritten,
+} = require("firebase-functions/v2/firestore");
 const {initializeApp} = require("firebase-admin/app");
 const {getAuth} = require("firebase-admin/auth");
 const {getMessaging} = require("firebase-admin/messaging");
@@ -1096,6 +1099,1909 @@ exports.sendChatMessagePush = onDocumentCreated(
 
 
 /**
+ * 生徒都合キャンセルのアプリ内通知が作成されたら、
+ * 対象コーチの登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * notificationドキュメントだけを信用せず、
+ * 対象予約のcoachId / studentId / status / cancellationSourceを
+ * 照合してから送信します。
+ */
+exports.sendStudentCancellationPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn(
+        "生徒キャンセルプッシュの通知データがありません。",
+        {
+          notificationId: event.params.notificationId,
+        },
+      );
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    if (notificationType !== "studentCancellation") {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      recipientId !== coachId
+    ) {
+      logger.warn(
+        "生徒キャンセルプッシュの通知データが不正です。",
+        {
+          notificationId,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "生徒キャンセルプッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "student_cancelled" ||
+      cancellationSource !== "student"
+    ) {
+      logger.warn(
+        "生徒キャンセルプッシュと予約データが一致しません。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+          coachId,
+          studentId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "生徒キャンセルプッシュの送信先端末がありません。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "生徒都合で予約がキャンセルされました",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "生徒都合で予約がキャンセルされました。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: "studentCancellation",
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `student-cancellation-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "生徒キャンセルプッシュの送信に失敗しました。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "生徒キャンセルプッシュを処理しました。",
+      {
+        notificationId,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
+ * 支払い完了前の予約取り下げ通知が作成されたら、
+ * 対象コーチの登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * notificationドキュメントだけを信用せず、
+ * 対象予約のcoachId / studentId / status / cancellationSource /
+ * paymentStatusを照合してから送信します。
+ */
+exports.sendReservationWithdrawnPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn(
+        "予約取り下げプッシュの通知データがありません。",
+        {
+          notificationId: event.params.notificationId,
+        },
+      );
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    if (notificationType !== "reservationWithdrawn") {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      recipientId !== coachId
+    ) {
+      logger.warn(
+        "予約取り下げプッシュの通知データが不正です。",
+        {
+          notificationId,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "予約取り下げプッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+
+    const isWithdrawnStatus =
+      reservationStatus === "cancelled" ||
+      reservationStatus === "canceled";
+    const isAllowedSource =
+      cancellationSource === "student_withdrawal" ||
+      cancellationSource === "block";
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      !isWithdrawnStatus ||
+      !isAllowedSource ||
+      paymentStatus !== "not_paid"
+    ) {
+      logger.warn(
+        "予約取り下げプッシュと予約データが一致しません。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+          coachId,
+          studentId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+          paymentStatus,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "予約取り下げプッシュの送信先端末がありません。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "予約が取り下げられました",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "生徒が予約を取り下げました。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: "reservationWithdrawn",
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `reservation-withdrawn-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "予約取り下げプッシュの送信に失敗しました。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "予約取り下げプッシュを処理しました。",
+      {
+        notificationId,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
+ * 雨天・施設都合キャンセル申請のアプリ内通知が作成・更新されたら、
+ * 申請を受けた相手の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 雨天申請通知は同じ予約IDの固定Documentを再利用するため、
+ * onDocumentCreatedではなくonDocumentWrittenを使います。
+ * createdAtが更新されたときだけ送信することで、Push結果を書き戻した
+ * 更新では再送せず、申請取り下げ・拒否後の再申請にも対応します。
+ */
+exports.sendWeatherCancellationRequestPush = onDocumentWritten(
+  "notifications/{notificationId}",
+  async (event) => {
+    const change = event.data;
+    const beforeSnapshot = change?.before;
+    const afterSnapshot = change?.after;
+
+    if (!afterSnapshot || !afterSnapshot.exists) {
+      return;
+    }
+
+    const notification = afterSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const allowedTypes = new Set([
+      "weatherCancellationRequestToCoach",
+      "weatherCancellationRequestToStudent",
+    ]);
+
+    if (!allowedTypes.has(notificationType)) {
+      return;
+    }
+
+    const beforeData =
+      beforeSnapshot && beforeSnapshot.exists ?
+        beforeSnapshot.data() || {} :
+        {};
+
+    const timestampMillis = (value) => {
+      if (value && typeof value.toMillis === "function") {
+        return value.toMillis();
+      }
+      return null;
+    };
+
+    const beforeCreatedAt = timestampMillis(
+      beforeData.createdAt,
+    );
+    const afterCreatedAt = timestampMillis(
+      notification.createdAt,
+    );
+
+    if (
+      beforeSnapshot &&
+      beforeSnapshot.exists &&
+      beforeCreatedAt === afterCreatedAt
+    ) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const expectedNotificationId =
+      reservationId ?
+        `weather_cancel_request_${reservationId}` :
+        "";
+
+    const recipientShouldBeCoach =
+      notificationType ===
+        "weatherCancellationRequestToCoach";
+    const expectedRecipientId =
+      recipientShouldBeCoach ? coachId : studentId;
+    const expectedRequesterId =
+      recipientShouldBeCoach ? studentId : coachId;
+    const expectedRequesterRole =
+      recipientShouldBeCoach ? "student" : "coach";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      notificationId !== expectedNotificationId ||
+      recipientId !== expectedRecipientId ||
+      recipientId === expectedRequesterId
+    ) {
+      logger.warn(
+        "雨天キャンセル申請プッシュの通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "雨天キャンセル申請プッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+    const weatherStatus = String(
+      reservation.weatherCancellationStatus || "",
+    ).trim();
+    const requesterId = String(
+      reservation.weatherCancellationRequestedBy || "",
+    ).trim();
+    const requesterRole = String(
+      reservation.weatherCancellationRequesterRole || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "paid" ||
+      paymentStatus !== "paid" ||
+      weatherStatus !== "pending" ||
+      requesterId !== expectedRequesterId ||
+      requesterRole !== expectedRequesterRole
+    ) {
+      logger.warn(
+        "雨天キャンセル申請プッシュと予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          paymentStatus,
+          weatherStatus,
+          requesterId,
+          requesterRole,
+          expectedRequesterId,
+          expectedRequesterRole,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "雨天キャンセル申請プッシュの送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "雨天・施設都合のキャンセル申請",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "キャンセル申請が届きました。内容をご確認ください。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `weather-request-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "雨天キャンセル申請プッシュの送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await afterSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "雨天キャンセル申請プッシュを処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
+ * 雨天・施設都合キャンセル申請が拒否された通知が作成・更新されたら、
+ * 申請者の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 同じ予約では申請→拒否→再申請→再拒否があり得るため、
+ * 固定Document IDの再利用に対応できるonDocumentWrittenを使います。
+ * createdAtが更新されたときだけ送信し、Push結果の書き戻しでは再送しません。
+ */
+exports.sendWeatherCancellationRejectedPush = onDocumentWritten(
+  "notifications/{notificationId}",
+  async (event) => {
+    const change = event.data;
+    const beforeSnapshot = change?.before;
+    const afterSnapshot = change?.after;
+
+    if (!afterSnapshot || !afterSnapshot.exists) {
+      return;
+    }
+
+    const notification = afterSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const allowedTypes = new Set([
+      "weatherCancellationRejectedToCoach",
+      "weatherCancellationRejectedToStudent",
+    ]);
+
+    if (!allowedTypes.has(notificationType)) {
+      return;
+    }
+
+    const beforeData =
+      beforeSnapshot && beforeSnapshot.exists ?
+        beforeSnapshot.data() || {} :
+        {};
+
+    const timestampMillis = (value) => {
+      if (value && typeof value.toMillis === "function") {
+        return value.toMillis();
+      }
+      return null;
+    };
+
+    const beforeCreatedAt = timestampMillis(
+      beforeData.createdAt,
+    );
+    const afterCreatedAt = timestampMillis(
+      notification.createdAt,
+    );
+
+    if (
+      beforeSnapshot &&
+      beforeSnapshot.exists &&
+      beforeCreatedAt === afterCreatedAt
+    ) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const expectedNotificationId =
+      reservationId ?
+        `weather_cancel_rejected_${reservationId}` :
+        "";
+
+    const recipientIsStudent =
+      notificationType ===
+        "weatherCancellationRejectedToStudent";
+    const expectedRecipientId =
+      recipientIsStudent ? studentId : coachId;
+    const expectedRequesterRole =
+      recipientIsStudent ? "student" : "coach";
+    const expectedResponderId =
+      recipientIsStudent ? coachId : studentId;
+    const expectedResponderRole =
+      recipientIsStudent ? "coach" : "student";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      notificationId !== expectedNotificationId ||
+      recipientId !== expectedRecipientId ||
+      recipientId === expectedResponderId
+    ) {
+      logger.warn(
+        "雨天キャンセル拒否プッシュの通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "雨天キャンセル拒否プッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+    const weatherStatus = String(
+      reservation.weatherCancellationStatus || "",
+    ).trim();
+    const requesterId = String(
+      reservation.weatherCancellationRequestedBy || "",
+    ).trim();
+    const requesterRole = String(
+      reservation.weatherCancellationRequesterRole || "",
+    ).trim();
+    const responderId = String(
+      reservation.weatherCancellationRespondedBy || "",
+    ).trim();
+    const responderRole = String(
+      reservation.weatherCancellationResponderRole || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "paid" ||
+      paymentStatus !== "paid" ||
+      weatherStatus !== "rejected" ||
+      requesterId !== recipientId ||
+      requesterRole !== expectedRequesterRole ||
+      responderId !== expectedResponderId ||
+      responderRole !== expectedResponderRole
+    ) {
+      logger.warn(
+        "雨天キャンセル拒否プッシュと予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          paymentStatus,
+          weatherStatus,
+          requesterId,
+          requesterRole,
+          responderId,
+          responderRole,
+          expectedRequesterRole,
+          expectedResponderId,
+          expectedResponderRole,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "雨天キャンセル拒否プッシュの送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "雨天キャンセル申請は同意されませんでした",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "予約はキャンセルされず、そのまま継続します。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `weather-rejected-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "雨天キャンセル拒否プッシュの送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await afterSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "雨天キャンセル拒否プッシュを処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
+ * 雨天・施設都合キャンセル申請が同意された通知が作成・更新されたら、
+ * 申請者の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 同意直後にStripe返金処理が進み、予約のpaymentStatusや
+ * weatherCancellationStatusが短時間で更新される可能性があります。
+ * そのため、申請者・回答者・予約参加者・キャンセル種別を厳密に照合しつつ、
+ * 返金処理中／完了／失敗のいずれへ進んでいても同意通知自体は送信します。
+ */
+exports.sendWeatherCancellationApprovedPush = onDocumentWritten(
+  "notifications/{notificationId}",
+  async (event) => {
+    const change = event.data;
+    const beforeSnapshot = change?.before;
+    const afterSnapshot = change?.after;
+
+    if (!afterSnapshot || !afterSnapshot.exists) {
+      return;
+    }
+
+    const notification = afterSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const allowedTypes = new Set([
+      "weatherCancellationApprovedToCoach",
+      "weatherCancellationApprovedToStudent",
+    ]);
+
+    if (!allowedTypes.has(notificationType)) {
+      return;
+    }
+
+    const beforeData =
+      beforeSnapshot && beforeSnapshot.exists ?
+        beforeSnapshot.data() || {} :
+        {};
+
+    const timestampMillis = (value) => {
+      if (value && typeof value.toMillis === "function") {
+        return value.toMillis();
+      }
+      return null;
+    };
+
+    const beforeCreatedAt = timestampMillis(
+      beforeData.createdAt,
+    );
+    const afterCreatedAt = timestampMillis(
+      notification.createdAt,
+    );
+
+    if (
+      beforeSnapshot &&
+      beforeSnapshot.exists &&
+      beforeCreatedAt === afterCreatedAt
+    ) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const expectedNotificationId =
+      reservationId ?
+        `weather_cancel_approved_${reservationId}` :
+        "";
+
+    const recipientIsStudent =
+      notificationType ===
+        "weatherCancellationApprovedToStudent";
+    const expectedRecipientId =
+      recipientIsStudent ? studentId : coachId;
+    const expectedRequesterRole =
+      recipientIsStudent ? "student" : "coach";
+    const expectedResponderId =
+      recipientIsStudent ? coachId : studentId;
+    const expectedResponderRole =
+      recipientIsStudent ? "coach" : "student";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      notificationId !== expectedNotificationId ||
+      recipientId !== expectedRecipientId ||
+      recipientId === expectedResponderId
+    ) {
+      logger.warn(
+        "雨天キャンセル同意プッシュの通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "雨天キャンセル同意プッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+    const weatherStatus = String(
+      reservation.weatherCancellationStatus || "",
+    ).trim();
+    const requesterId = String(
+      reservation.weatherCancellationRequestedBy || "",
+    ).trim();
+    const requesterRole = String(
+      reservation.weatherCancellationRequesterRole || "",
+    ).trim();
+    const responderId = String(
+      reservation.weatherCancellationRespondedBy || "",
+    ).trim();
+    const responderRole = String(
+      reservation.weatherCancellationResponderRole || "",
+    ).trim();
+    const refundPercent = Number(
+      reservation.cancellationRefundPercent,
+    );
+
+    const allowedWeatherStatuses = new Set([
+      "approved",
+      "refund_processing",
+      "completed",
+      "refund_failed",
+    ]);
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "weather_cancelled" ||
+      cancellationSource !== "weather" ||
+      refundPercent !== 100 ||
+      !allowedWeatherStatuses.has(weatherStatus) ||
+      requesterId !== recipientId ||
+      requesterRole !== expectedRequesterRole ||
+      responderId !== expectedResponderId ||
+      responderRole !== expectedResponderRole
+    ) {
+      logger.warn(
+        "雨天キャンセル同意プッシュと予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+          weatherStatus,
+          requesterId,
+          requesterRole,
+          responderId,
+          responderRole,
+          refundPercent,
+          expectedRequesterRole,
+          expectedResponderId,
+          expectedResponderRole,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "雨天キャンセル同意プッシュの送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "雨天・施設都合キャンセルに同意されました",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "予約をキャンセルし、全額返金の手続きを開始します。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `weather-approved-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "雨天キャンセル同意プッシュの送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await afterSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "雨天キャンセル同意プッシュを処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+
+/**
  * Stripe Connectの状態をアプリ用の安全な形に整えます。
  * StripeのアカウントID自体はクライアントへ返しません。
  *
@@ -1824,6 +3730,60 @@ async function markReservationPaid(
         },
         {merge: true},
       );
+
+      const studentId = String(
+        reservation.studentId || "",
+      ).trim();
+      const coachId = String(
+        reservation.coachId || "",
+      ).trim();
+      const times = Array.isArray(reservation.times) ?
+        reservation.times.map((time) => String(time)) :
+        reservation.time ? [String(reservation.time)] : [];
+
+      if (studentId) {
+        transaction.set(
+          db.collection("notifications")
+            .doc(`payment_completed_student_${reservationId}`),
+          {
+            recipientId: studentId,
+            coachId,
+            studentId,
+            reservationId,
+            type: "paymentCompletedToStudent",
+            title: "お支払いが完了しました",
+            message:
+              "レッスン料金のお支払いが完了し、予約が確定しました。",
+            date: reservation.date || "",
+            times,
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
+
+      if (coachId) {
+        transaction.set(
+          db.collection("notifications")
+            .doc(`payment_completed_coach_${reservationId}`),
+          {
+            recipientId: coachId,
+            coachId,
+            studentId,
+            reservationId,
+            type: "paymentCompletedToCoach",
+            title: "予約のお支払いが完了しました",
+            message:
+              "生徒のお支払いが完了し、レッスン予約が確定しました。",
+            date: reservation.date || "",
+            times,
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+      }
 
       return {
         alreadyHandled: false,
@@ -13069,5 +15029,1173 @@ exports.updateReview = onCall(
     );
 
     return result;
+  },
+);
+
+/**
+ * 雨天・施設都合キャンセルの返金結果通知が作成・更新されたら、
+ * 生徒・コーチそれぞれの登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 返金成功／失敗通知は予約ごとの固定Document IDを使うため、
+ * onDocumentWrittenでcreatedAtの更新時だけ送信します。
+ * Push結果を書き戻した更新では再送しません。
+ */
+exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
+  "notifications/{notificationId}",
+  async (event) => {
+    const change = event.data;
+    const beforeSnapshot = change?.before;
+    const afterSnapshot = change?.after;
+
+    if (!afterSnapshot || !afterSnapshot.exists) {
+      return;
+    }
+
+    const notification = afterSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const successTypes = new Set([
+      "weatherCancellationRefundedToStudent",
+      "weatherCancellationRefundedToCoach",
+    ]);
+    const failedTypes = new Set([
+      "weatherCancellationRefundFailedToStudent",
+      "weatherCancellationRefundFailedToCoach",
+    ]);
+
+    if (
+      !successTypes.has(notificationType) &&
+      !failedTypes.has(notificationType)
+    ) {
+      return;
+    }
+
+    const beforeData =
+      beforeSnapshot && beforeSnapshot.exists ?
+        beforeSnapshot.data() || {} :
+        {};
+
+    const timestampMillis = (value) => {
+      if (value && typeof value.toMillis === "function") {
+        return value.toMillis();
+      }
+      return null;
+    };
+
+    const beforeCreatedAt = timestampMillis(
+      beforeData.createdAt,
+    );
+    const afterCreatedAt = timestampMillis(
+      notification.createdAt,
+    );
+
+    if (
+      beforeSnapshot &&
+      beforeSnapshot.exists &&
+      beforeCreatedAt === afterCreatedAt
+    ) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const recipientIsStudent =
+      notificationType.endsWith("ToStudent");
+    const expectedRecipientId =
+      recipientIsStudent ? studentId : coachId;
+    const recipientSuffix =
+      recipientIsStudent ? "student" : "coach";
+    const isSuccess = successTypes.has(notificationType);
+
+    const expectedSuccessId =
+      reservationId ?
+        `weather_refund_succeeded_${recipientSuffix}_${reservationId}` :
+        "";
+    const expectedFailedIds = reservationId ?
+      new Set([
+        `weather_refund_failed_${recipientSuffix}_${reservationId}`,
+        `weather_refund_create_failed_${recipientSuffix}_${reservationId}`,
+      ]) :
+      new Set();
+
+    const hasExpectedNotificationId =
+      isSuccess ?
+        notificationId === expectedSuccessId :
+        expectedFailedIds.has(notificationId);
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      !hasExpectedNotificationId ||
+      recipientId !== expectedRecipientId
+    ) {
+      logger.warn(
+        "雨天キャンセル返金結果プッシュの通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "雨天キャンセル返金結果プッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+    const refundStatus = String(
+      reservation.refundStatus || "",
+    ).trim();
+    const weatherStatus = String(
+      reservation.weatherCancellationStatus || "",
+    ).trim();
+
+    const stateMatches = isSuccess ?
+      reservationStatus === "weather_cancelled" &&
+        cancellationSource === "weather" &&
+        paymentStatus === "refunded" &&
+        refundStatus === "succeeded" :
+      reservationStatus === "weather_cancelled" &&
+        cancellationSource === "weather" &&
+        paymentStatus === "refund_failed" &&
+        [
+          "failed",
+          "canceled",
+          "failed_to_create",
+        ].includes(refundStatus) &&
+        weatherStatus === "refund_failed";
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      !stateMatches
+    ) {
+      logger.warn(
+        "雨天キャンセル返金結果プッシュと予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+          paymentStatus,
+          refundStatus,
+          weatherStatus,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "雨天キャンセル返金結果プッシュの送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const defaultTitle = isSuccess ?
+      "雨天・施設都合キャンセルの返金が完了しました" :
+      "雨天キャンセルの返金状況をご確認ください";
+    const defaultBody = isSuccess ?
+      "双方合意でキャンセルした予約の全額返金が完了しました。" :
+      "全額返金を完了できませんでした。運営が確認します。";
+    const title = String(
+      notification.title || defaultTitle,
+    ).slice(0, 120);
+    const body = String(
+      notification.message || defaultBody,
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `weather-refund-${isSuccess ? "success" : "failed"}-` +
+            `${reservationId}-${recipientSuffix}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "雨天キャンセル返金結果プッシュの送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot = await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await afterSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "雨天キャンセル返金結果プッシュを処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
+ * 雨天・施設都合キャンセル申請の取り下げ通知が作成・更新されたら、
+ * 申請を受けていた相手の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 同じ予約では申請→取り下げ→再申請→再取り下げがあり得るため、
+ * 固定Document IDの再利用に対応できるonDocumentWrittenを使います。
+ * createdAtが更新されたときだけ送信し、Push結果の書き戻しでは再送しません。
+ */
+exports.sendWeatherCancellationWithdrawnPush = onDocumentWritten(
+  "notifications/{notificationId}",
+  async (event) => {
+    const change = event.data;
+    const beforeSnapshot = change?.before;
+    const afterSnapshot = change?.after;
+
+    if (!afterSnapshot || !afterSnapshot.exists) {
+      return;
+    }
+
+    const notification = afterSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const allowedTypes = new Set([
+      "weatherCancellationWithdrawnToCoach",
+      "weatherCancellationWithdrawnToStudent",
+    ]);
+
+    if (!allowedTypes.has(notificationType)) {
+      return;
+    }
+
+    const beforeData =
+      beforeSnapshot && beforeSnapshot.exists ?
+        beforeSnapshot.data() || {} :
+        {};
+
+    const timestampMillis = (value) => {
+      if (value && typeof value.toMillis === "function") {
+        return value.toMillis();
+      }
+      return null;
+    };
+
+    const beforeCreatedAt = timestampMillis(
+      beforeData.createdAt,
+    );
+    const afterCreatedAt = timestampMillis(
+      notification.createdAt,
+    );
+
+    if (
+      beforeSnapshot &&
+      beforeSnapshot.exists &&
+      beforeCreatedAt === afterCreatedAt
+    ) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const expectedNotificationId =
+      reservationId ?
+        `weather_cancel_withdrawn_${reservationId}` :
+        "";
+
+    const recipientIsStudent =
+      notificationType ===
+        "weatherCancellationWithdrawnToStudent";
+    const expectedRecipientId =
+      recipientIsStudent ? studentId : coachId;
+    const expectedRequesterId =
+      recipientIsStudent ? coachId : studentId;
+    const expectedRequesterRole =
+      recipientIsStudent ? "coach" : "student";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      notificationId !== expectedNotificationId ||
+      recipientId !== expectedRecipientId ||
+      recipientId === expectedRequesterId
+    ) {
+      logger.warn(
+        "雨天キャンセル申請取り下げプッシュの" +
+        "通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "雨天キャンセル申請取り下げプッシュ対象の" +
+        "予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+    const weatherStatus = String(
+      reservation.weatherCancellationStatus || "",
+    ).trim();
+    const requesterId = String(
+      reservation.weatherCancellationRequestedBy || "",
+    ).trim();
+    const requesterRole = String(
+      reservation.weatherCancellationRequesterRole || "",
+    ).trim();
+    const withdrawnBy = String(
+      reservation.weatherCancellationWithdrawnBy || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "paid" ||
+      paymentStatus !== "paid" ||
+      weatherStatus !== "withdrawn" ||
+      requesterId !== expectedRequesterId ||
+      requesterRole !== expectedRequesterRole ||
+      withdrawnBy !== expectedRequesterId
+    ) {
+      logger.warn(
+        "雨天キャンセル申請取り下げプッシュと" +
+        "予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          paymentStatus,
+          weatherStatus,
+          requesterId,
+          requesterRole,
+          withdrawnBy,
+          expectedRequesterId,
+          expectedRequesterRole,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "雨天キャンセル申請取り下げプッシュの" +
+        "送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "雨天キャンセル申請が取り下げられました",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "雨天・施設都合のキャンセル申請は取り下げられ、" +
+      "予約は継続します。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `weather-withdrawn-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "雨天キャンセル申請取り下げプッシュの" +
+        "送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await afterSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "雨天キャンセル申請取り下げプッシュを" +
+      "処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
+ * Stripeで通常の支払いが完了した通知が作成されたら、
+ * 生徒・コーチそれぞれの登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 通知ドキュメントだけを信用せず、予約の参加者・支払い状態・
+ * Document IDを照合してから送信します。
+ */
+exports.sendPaymentCompletedPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn("支払い完了プッシュの通知データがありません。", {
+        notificationId: event.params.notificationId,
+      });
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const allowedTypes = new Set([
+      "paymentCompletedToStudent",
+      "paymentCompletedToCoach",
+    ]);
+
+    if (!allowedTypes.has(notificationType)) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const isStudentNotification =
+      notificationType === "paymentCompletedToStudent";
+    const expectedRecipientId =
+      isStudentNotification ? studentId : coachId;
+    const expectedNotificationId =
+      reservationId ?
+        `${isStudentNotification ?
+          "payment_completed_student" :
+          "payment_completed_coach"}_${reservationId}` :
+        "";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      recipientId !== expectedRecipientId ||
+      notificationId !== expectedNotificationId
+    ) {
+      logger.warn("支払い完了プッシュの通知データが不正です。", {
+        notificationId,
+        notificationType,
+        recipientId,
+        coachId,
+        studentId,
+        reservationId,
+        expectedRecipientId,
+        expectedNotificationId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn("支払い完了プッシュ対象の予約が見つかりません。", {
+        notificationId,
+        notificationType,
+        reservationId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "paid" ||
+      paymentStatus !== "paid"
+    ) {
+      logger.warn("支払い完了プッシュと予約データが一致しません。", {
+        notificationId,
+        notificationType,
+        reservationId,
+        coachId,
+        studentId,
+        reservationCoachId,
+        reservationStudentId,
+        reservationStatus,
+        paymentStatus,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info("支払い完了プッシュの送信先端末がありません。", {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const defaultTitle = isStudentNotification ?
+      "お支払いが完了しました" :
+      "予約のお支払いが完了しました";
+    const defaultBody = isStudentNotification ?
+      "レッスン料金のお支払いが完了し、予約が確定しました。" :
+      "生徒のお支払いが完了し、レッスン予約が確定しました。";
+
+    const title = String(
+      notification.title || defaultTitle,
+    ).slice(0, 120);
+    const body = String(
+      notification.message || defaultBody,
+    ).slice(0, 500);
+
+    const roleSuffix =
+      isStudentNotification ? "student" : "coach";
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `payment-completed-${reservationId}-${roleSuffix}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error("支払い完了プッシュの送信に失敗しました。", {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        message: error?.message || String(error),
+      });
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info("支払い完了プッシュを処理しました。", {
+      notificationId,
+      notificationType,
+      reservationId,
+      recipientId,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      removedInvalidDeviceCount: invalidDeviceIds.length,
+    });
   },
 );

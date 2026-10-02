@@ -34,11 +34,27 @@ final class PushNotificationRouter: ObservableObject {
 
         switch type {
 
-        case "reservationRequested":
+        case "reservationRequested",
+             "studentCancellation",
+             "reservationWithdrawn",
+             "paymentCompletedToCoach",
+             "weatherCancellationRequestToCoach",
+             "weatherCancellationWithdrawnToCoach",
+             "weatherCancellationRejectedToCoach",
+             "weatherCancellationApprovedToCoach",
+             "weatherCancellationRefundedToCoach",
+             "weatherCancellationRefundFailedToCoach":
             pendingDestination = .coachReservations
 
         case "reservationApproved",
-             "reservationRejected":
+             "reservationRejected",
+             "paymentCompletedToStudent",
+             "weatherCancellationRequestToStudent",
+             "weatherCancellationWithdrawnToStudent",
+             "weatherCancellationRejectedToStudent",
+             "weatherCancellationApprovedToStudent",
+             "weatherCancellationRefundedToStudent",
+             "weatherCancellationRefundFailedToStudent":
             pendingDestination = .studentReservations
 
         case "chatMessage":

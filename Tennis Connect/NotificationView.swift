@@ -20,8 +20,8 @@ enum NotificationRouting {
         to audience: NotificationAudience
     ) -> Bool {
 
-        // 雨天キャンセル系は送信先がtype名に明示されているため、
-        // 今後種類が増えてもToCoach / ToStudentで安全に振り分ける。
+        // 送信先がtype名に明示される通知は、
+        // ToCoach / ToStudentで安全に振り分ける。
         if type.hasSuffix("ToCoach") {
             return audience == .coach
         }
@@ -723,6 +723,7 @@ struct NotificationView: View {
 
         case "studentCancellationRefunded",
              "studentCancellationRefundFailed",
+             "paymentCompletedToStudent",
              "weatherCancellationRequestToStudent",
              "weatherCancellationWithdrawnToStudent",
              "weatherCancellationRejectedToStudent",
@@ -732,7 +733,8 @@ struct NotificationView: View {
 
             showStudentReservations = true
 
-        case "weatherCancellationRequestToCoach",
+        case "paymentCompletedToCoach",
+             "weatherCancellationRequestToCoach",
              "weatherCancellationWithdrawnToCoach",
              "weatherCancellationRejectedToCoach",
              "weatherCancellationApprovedToCoach",
@@ -963,6 +965,11 @@ struct NotificationView: View {
         case "coachCancellationRefundFailed":
             return "exclamationmark.triangle.fill"
 
+        case "paymentCompletedToStudent",
+             "paymentCompletedToCoach":
+
+            return "creditcard.fill"
+
         case "weatherCancellationRequestToStudent",
              "weatherCancellationRequestToCoach":
 
@@ -1033,6 +1040,11 @@ struct NotificationView: View {
 
         case "coachCancellationRefundFailed":
             return .red
+
+        case "paymentCompletedToStudent",
+             "paymentCompletedToCoach":
+
+            return .green
 
         case "weatherCancellationRequestToStudent",
              "weatherCancellationRequestToCoach":
