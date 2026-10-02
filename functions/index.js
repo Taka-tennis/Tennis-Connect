@@ -1430,6 +1430,340 @@ exports.sendStudentCancellationPush = onDocumentCreated(
 
 
 /**
+ * コーチ都合キャンセル開始のアプリ内通知が作成されたら、
+ * 対象生徒の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * notificationドキュメントだけを信用せず、
+ * 対象予約のcoachId / studentId / status / cancellationSourceを
+ * 照合してから送信します。
+ *
+ * 返金状態は、この通知が作成される前にStripe側の処理が
+ * 進んでいる場合があるため、ここでは照合条件に含めません。
+ */
+exports.sendCoachCancellationPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn(
+        "コーチ都合キャンセルプッシュの通知データがありません。",
+        {
+          notificationId: event.params.notificationId,
+        },
+      );
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    if (notificationType !== "coachCancellationRefundStarted") {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      recipientId !== studentId
+    ) {
+      logger.warn(
+        "コーチ都合キャンセルプッシュの通知データが不正です。",
+        {
+          notificationId,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "コーチ都合キャンセルプッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      reservationStatus !== "coach_cancelled" ||
+      cancellationSource !== "coach"
+    ) {
+      logger.warn(
+        "コーチ都合キャンセルプッシュと予約データが一致しません。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+          coachId,
+          studentId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "コーチ都合キャンセルプッシュの送信先端末がありません。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const title = String(
+      notification.title ||
+      "コーチ都合で予約がキャンセルされました",
+    ).slice(0, 120);
+    const body = String(
+      notification.message ||
+      "予約はキャンセルされ、全額返金の手続きを開始しました。",
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: "coachCancellationRefundStarted",
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `coach-cancellation-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "コーチ都合キャンセルプッシュの送信に失敗しました。",
+        {
+          notificationId,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode ===
+          "messaging/registration-token-not-registered" ||
+        errorCode ===
+          "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot =
+              await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "コーチ都合キャンセルプッシュを処理しました。",
+      {
+        notificationId,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount:
+          invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+
+/**
  * 支払い完了前の予約取り下げ通知が作成されたら、
  * 対象コーチの登録済みiOS端末へプッシュ通知を送信します。
  *
@@ -7690,55 +8024,225 @@ exports.blockCoach = onCall(
         .collection("reservations")
         .doc(job.reservationId);
 
+      let refund = null;
+      let reconciledExistingRefund = false;
+
       try {
-        const refund = await stripe.refunds.create(
+        // 通常の生徒都合キャンセルとブロック経由キャンセルは、
+        // どちらも同じ「生徒都合キャンセル」として扱います。
+        //
+        // 先にStripe側の既存Refundを確認し、同じ予約・返金理由・
+        // 返金額のRefundがあれば新規作成せず再利用します。
+        // これにより、通常キャンセルとブロックが競合しても
+        // 2件目の返金を作らないようにします。
+        refund = await findExistingReservationRefund(
+          stripe,
           {
-            payment_intent:
+            paymentIntentId:
               job.stripePaymentIntentId,
-            amount:
+            reservationId:
+              job.reservationId,
+            cancellationSource: "student",
+            expectedAmount:
               job.expectedRefundAmount,
-            metadata: {
-              reservationId:
-                job.reservationId,
-              coachId: job.coachId,
-              studentId: uid,
-              cancellationSource: "student",
-              cancellationTrigger: "block",
-              refundPercent: String(
-                job.refundPercent,
-              ),
-            },
-          },
-          {
-            idempotencyKey:
-              `block_student_refund_${job.reservationId}`,
           },
         );
 
+        reconciledExistingRefund = Boolean(refund);
+      } catch (error) {
+        refundFailureCount += 1;
+
+        const needsManualReview = [
+          "multiple_matching_refunds",
+          "refund_amount_mismatch",
+        ].includes(
+          String(error?.code || ""),
+        );
+
+        // 別経路が先に返金成功まで完了していた場合は、
+        // その最終状態を失敗状態で上書きしません。
+        await db.runTransaction(
+          async (transaction) => {
+            const latestSnap =
+              await transaction.get(
+                reservationRef,
+              );
+
+            if (!latestSnap.exists) {
+              return;
+            }
+
+            const latest =
+              latestSnap.data() || {};
+            const latestRefundStatus =
+              String(
+                latest.refundStatus || "",
+              );
+            const latestPaymentStatus =
+              String(
+                latest.paymentStatus || "",
+              );
+
+            if (
+              latestRefundStatus === "succeeded" ||
+              [
+                "refunded",
+                "partially_refunded",
+              ].includes(latestPaymentStatus)
+            ) {
+              return;
+            }
+
+            transaction.set(
+              reservationRef,
+              {
+                paymentStatus: "refund_failed",
+                refundStatus:
+                  needsManualReview ?
+                    "manual_review_required" :
+                    "failed_to_create",
+                refundError:
+                  error?.message || String(error),
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          },
+        );
+
+        logger.error(
+          "ブロックに伴う生徒都合返金の既存Refund確認に失敗しました。",
+          {
+            reservationId:
+              job.reservationId,
+            studentId: uid,
+            coachId,
+            message:
+              error?.message || String(error),
+            needsManualReview,
+          },
+        );
+
+        continue;
+      }
+
+      if (!refund) {
+        try {
+          refund = await stripe.refunds.create(
+            {
+              payment_intent:
+                job.stripePaymentIntentId,
+              amount:
+                job.expectedRefundAmount,
+              metadata: {
+                reservationId:
+                  job.reservationId,
+                coachId: job.coachId,
+                studentId: uid,
+                cancellationSource: "student",
+                refundPercent: String(
+                  job.refundPercent,
+                ),
+              },
+            },
+            {
+              // 通常の生徒都合キャンセルと同じKeyに統一します。
+              // 並行実行されてもStripe上では同一返金へ収束します。
+              idempotencyKey:
+                `student_refund_${job.reservationId}`,
+            },
+          );
+        } catch (error) {
+          refundFailureCount += 1;
+
+          // Stripe応答が不明な間に、もう一方の経路が成功状態を
+          // 保存している可能性があるため、最終状態を保護します。
+          await db.runTransaction(
+            async (transaction) => {
+              const latestSnap =
+                await transaction.get(
+                  reservationRef,
+                );
+
+              if (!latestSnap.exists) {
+                return;
+              }
+
+              const latest =
+                latestSnap.data() || {};
+              const latestRefundStatus =
+                String(
+                  latest.refundStatus || "",
+                );
+              const latestPaymentStatus =
+                String(
+                  latest.paymentStatus || "",
+                );
+
+              if (
+                latestRefundStatus === "succeeded" ||
+                [
+                  "refunded",
+                  "partially_refunded",
+                ].includes(latestPaymentStatus)
+              ) {
+                return;
+              }
+
+              transaction.set(
+                reservationRef,
+                {
+                  paymentStatus: "refund_failed",
+                  refundStatus:
+                    "failed_to_create",
+                  refundError:
+                    error?.message ||
+                    String(error),
+                  updatedAt:
+                    FieldValue.serverTimestamp(),
+                },
+                {merge: true},
+              );
+            },
+          );
+
+          logger.error(
+            "ブロックに伴う生徒都合キャンセルの返金作成に失敗しました。",
+            {
+              reservationId:
+                job.reservationId,
+              studentId: uid,
+              coachId,
+              message:
+                error?.message || String(error),
+            },
+          );
+
+          continue;
+        }
+      }
+
+      try {
         await markReservationRefund(
           refund,
-          `callable_block_student_cancel_${job.reservationId}`,
+          reconciledExistingRefund ?
+            `callable_block_student_cancel_reconcile_${job.reservationId}` :
+            `callable_block_student_cancel_${job.reservationId}`,
         );
       } catch (error) {
         refundFailureCount += 1;
 
-        await reservationRef.set(
-          {
-            paymentStatus: "refund_failed",
-            refundStatus: "failed_to_create",
-            refundError:
-              error?.message || String(error),
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
-          {merge: true},
-        );
-
+        // Refund自体は作成済みの可能性が高いため、
+        // failed_to_create には戻しません。
+        // Refund Webhookまたは次回の既存Refund照合で復旧させます。
         logger.error(
-          "ブロックに伴う生徒都合キャンセルの返金作成に失敗しました。",
+          "ブロックに伴う生徒都合返金のFirestore反映に失敗しました。",
           {
             reservationId:
               job.reservationId,
+            refundId:
+              refund?.id || "",
             studentId: uid,
             coachId,
             message:
@@ -8666,9 +9170,57 @@ exports.requestCoachRefund = onCall(
           );
         }
 
+        const currentStatus = String(
+          data.status || "",
+        );
+        const currentPaymentStatus = String(
+          data.paymentStatus || "",
+        );
+        const currentRefundStatus = String(
+          data.refundStatus || "",
+        );
+        const currentCancellationSource = String(
+          data.cancellationSource || "",
+        );
+
+        // コーチ都合キャンセルを新規開始できるのは、
+        // まだ一度もキャンセル理由が付いていない
+        // paid / paid の予約だけに限定します。
+        //
+        // 既にキャンセル処理へ入っている予約については、
+        // status と cancellationSource の両方が
+        // coach を示している場合だけ同じコーチ都合返金として
+        // 再確認・再試行を許可します。
+        //
+        // これにより、生徒都合キャンセル・開始時刻後決済・
+        // その他の返金処理を、後からコーチ都合へ上書きすることを防ぎます。
+        const isInitialCoachCancellation =
+          currentStatus === "paid" &&
+          currentPaymentStatus === "paid" &&
+          currentCancellationSource === "" &&
+          currentRefundStatus === "";
+
+        const isExistingCoachCancellation =
+          currentStatus === "coach_cancelled" &&
+          currentCancellationSource === "coach";
+
         if (
-          data.refundStatus === "succeeded" ||
-          data.paymentStatus === "refunded"
+          !isInitialCoachCancellation &&
+          !isExistingCoachCancellation
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "この予約は別のキャンセル・返金処理中、" +
+            "またはコーチ都合キャンセルを開始できない状態です。",
+          );
+        }
+
+        if (
+          isExistingCoachCancellation &&
+          (
+            currentRefundStatus === "succeeded" ||
+            currentPaymentStatus === "refunded"
+          )
         ) {
           return {
             ...data,
@@ -8676,22 +9228,27 @@ exports.requestCoachRefund = onCall(
           };
         }
 
-        const refundablePaymentStatuses = [
-          "paid",
-          "refund_processing",
-          "refund_failed",
-        ];
+        if (
+          isExistingCoachCancellation &&
+          ![
+            "refund_processing",
+            "refund_failed",
+          ].includes(currentPaymentStatus)
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "コーチ都合キャンセルの返金状態を確認できません。" +
+            "運営による確認が必要です。",
+          );
+        }
 
         if (
-          !refundablePaymentStatuses.includes(
-            String(data.paymentStatus || ""),
-          ) ||
           typeof data.stripePaymentIntentId !== "string" ||
           data.stripePaymentIntentId.trim() === ""
         ) {
           throw new HttpsError(
             "failed-precondition",
-            "支払い済みの予約だけ返金できます。",
+            "決済情報を確認できませんでした。",
           );
         }
 
@@ -16197,5 +16754,741 @@ exports.sendPaymentCompletedPush = onDocumentCreated(
       failureCount: response.failureCount,
       removedInvalidDeviceCount: invalidDeviceIds.length,
     });
+  },
+);
+
+/**
+ * コーチ都合キャンセルの返金結果通知が作成されたら、
+ * 対象生徒の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 既存の返金・予約状態は変更せず、notifications に作成済みの
+ * coachCancellationRefunded / coachCancellationRefundFailed のみを対象にします。
+ */
+exports.sendCoachCancellationRefundResultPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn("コーチ都合返金結果プッシュの通知データがありません。", {
+        notificationId: event.params.notificationId,
+      });
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const isSuccess =
+      notificationType === "coachCancellationRefunded";
+    const isFailure =
+      notificationType === "coachCancellationRefundFailed";
+
+    if (!isSuccess && !isFailure) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const expectedNotificationId =
+      reservationId ?
+        (
+          isSuccess ?
+            `refund_succeeded_${reservationId}` :
+            `refund_failed_${reservationId}`
+        ) :
+        "";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !coachId ||
+      !studentId ||
+      !reservationId ||
+      notificationId !== expectedNotificationId ||
+      recipientId !== studentId
+    ) {
+      logger.warn(
+        "コーチ都合返金結果プッシュの通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "コーチ都合返金結果プッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+    const refundStatus = String(
+      reservation.refundStatus || "",
+    ).trim();
+
+    const stateMatches =
+      isSuccess ?
+        (
+          reservationStatus === "coach_cancelled" &&
+          cancellationSource === "coach" &&
+          paymentStatus === "refunded" &&
+          refundStatus === "succeeded"
+        ) :
+        (
+          reservationStatus === "coach_cancelled" &&
+          cancellationSource === "coach" &&
+          paymentStatus === "refund_failed" &&
+          ["failed", "canceled"].includes(refundStatus)
+        );
+
+    if (
+      reservationCoachId !== coachId ||
+      reservationStudentId !== studentId ||
+      !stateMatches
+    ) {
+      logger.warn(
+        "コーチ都合返金結果プッシュと予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+          paymentStatus,
+          refundStatus,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "コーチ都合返金結果プッシュの送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const defaultTitle =
+      isSuccess ?
+        "返金が完了しました" :
+        "返金状況をご確認ください";
+    const defaultBody =
+      isSuccess ?
+        "コーチ都合でキャンセルされた予約の全額返金が完了しました。" :
+        "コーチ都合キャンセルの返金処理を完了できませんでした。運営が確認します。";
+
+    const title = String(
+      notification.title || defaultTitle,
+    ).slice(0, 120);
+    const body = String(
+      notification.message || defaultBody,
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `coach-refund-${isSuccess ? "success" : "failed"}-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "コーチ都合返金結果プッシュの送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot = await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "コーチ都合返金結果プッシュを処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount: invalidDeviceIds.length,
+      },
+    );
+  },
+);
+
+/**
+ * 生徒都合キャンセルの返金結果通知が作成されたら、
+ * 対象生徒の登録済みiOS端末へプッシュ通知を送信します。
+ *
+ * 既存のキャンセル・返金処理は変更せず、
+ * studentCancellationRefunded / studentCancellationRefundFailed
+ * の通知ドキュメントだけを対象にします。
+ */
+exports.sendStudentCancellationRefundResultPush = onDocumentCreated(
+  "notifications/{notificationId}",
+  async (event) => {
+    const notificationSnapshot = event.data;
+
+    if (!notificationSnapshot) {
+      logger.warn("生徒都合返金結果プッシュの通知データがありません。", {
+        notificationId: event.params.notificationId,
+      });
+      return;
+    }
+
+    const notification = notificationSnapshot.data() || {};
+    const notificationType = String(
+      notification.type || "",
+    ).trim();
+
+    const isSuccess =
+      notificationType === "studentCancellationRefunded";
+    const isFailure =
+      notificationType === "studentCancellationRefundFailed";
+
+    if (!isSuccess && !isFailure) {
+      return;
+    }
+
+    const notificationId = String(
+      event.params.notificationId || "",
+    ).trim();
+    const recipientId = String(
+      notification.recipientId || "",
+    ).trim();
+    const coachId = String(
+      notification.coachId || "",
+    ).trim();
+    const studentId = String(
+      notification.studentId || "",
+    ).trim();
+    const reservationId = String(
+      notification.reservationId || "",
+    ).trim();
+
+    const expectedNotificationId =
+      reservationId ?
+        (
+          isSuccess ?
+            `student_refund_succeeded_${reservationId}` :
+            `student_refund_failed_${reservationId}`
+        ) :
+        "";
+
+    const db = getFirestore();
+
+    if (
+      !notificationId ||
+      !recipientId ||
+      !studentId ||
+      !reservationId ||
+      notificationId !== expectedNotificationId ||
+      recipientId !== studentId
+    ) {
+      logger.warn(
+        "生徒都合返金結果プッシュの通知データが不正です。",
+        {
+          notificationId,
+          notificationType,
+          recipientId,
+          coachId,
+          studentId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "invalid_notification",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservationSnapshot = await db
+      .collection("reservations")
+      .doc(reservationId)
+      .get();
+
+    if (!reservationSnapshot.exists) {
+      logger.warn(
+        "生徒都合返金結果プッシュ対象の予約が見つかりません。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_not_found",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const reservation = reservationSnapshot.data() || {};
+    const reservationCoachId = String(
+      reservation.coachId || "",
+    ).trim();
+    const reservationStudentId = String(
+      reservation.studentId || "",
+    ).trim();
+    const reservationStatus = String(
+      reservation.status || "",
+    ).trim();
+    const cancellationSource = String(
+      reservation.cancellationSource || "",
+    ).trim();
+    const paymentStatus = String(
+      reservation.paymentStatus || "",
+    ).trim();
+    const refundStatus = String(
+      reservation.refundStatus || "",
+    ).trim();
+
+    const stateMatches =
+      isSuccess ?
+        (
+          reservationStatus === "student_cancelled" &&
+          cancellationSource === "student" &&
+          paymentStatus === "refunded" &&
+          refundStatus === "succeeded"
+        ) :
+        (
+          reservationStatus === "student_cancelled" &&
+          cancellationSource === "student" &&
+          paymentStatus === "refund_failed" &&
+          ["failed", "canceled"].includes(refundStatus)
+        );
+
+    if (
+      reservationStudentId !== studentId ||
+      (coachId && reservationCoachId !== coachId) ||
+      !stateMatches
+    ) {
+      logger.warn(
+        "生徒都合返金結果プッシュと予約データが一致しません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          reservationCoachId,
+          reservationStudentId,
+          reservationStatus,
+          cancellationSource,
+          paymentStatus,
+          refundStatus,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "reservation_mismatch",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const deviceSnapshot = await db
+      .collection("pushTokens")
+      .doc(recipientId)
+      .collection("devices")
+      .get();
+
+    const devices = deviceSnapshot.docs
+      .map((documentSnapshot) => ({
+        deviceId: documentSnapshot.id,
+        token: String(
+          documentSnapshot.data()?.token || "",
+        ).trim(),
+      }))
+      .filter((device) => device.token.length >= 20);
+
+    if (devices.length === 0) {
+      logger.info(
+        "生徒都合返金結果プッシュの送信先端末がありません。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "no_registered_devices",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: 0,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const defaultTitle =
+      isSuccess ?
+        "キャンセルの返金が完了しました" :
+        "返金状況をご確認ください";
+    const defaultBody =
+      isSuccess ?
+        "生徒都合キャンセルの返金が完了しました。" :
+        "生徒都合キャンセルの返金処理を完了できませんでした。運営が確認します。";
+
+    const title = String(
+      notification.title || defaultTitle,
+    ).slice(0, 120);
+    const body = String(
+      notification.message || defaultBody,
+    ).slice(0, 500);
+
+    const messages = devices.map((device) => ({
+      token: device.token,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: notificationType,
+        notificationId,
+        reservationId,
+        coachId,
+        studentId,
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+          "apns-collapse-id":
+            `student-refund-${isSuccess ? "success" : "failed"}-${reservationId}`,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    }));
+
+    let response;
+
+    try {
+      response = await getMessaging().sendEach(messages);
+    } catch (error) {
+      logger.error(
+        "生徒都合返金結果プッシュの送信に失敗しました。",
+        {
+          notificationId,
+          notificationType,
+          reservationId,
+          recipientId,
+          message: error?.message || String(error),
+        },
+      );
+
+      await notificationSnapshot.ref.set(
+        {
+          pushStatus: "send_error",
+          pushAttemptedAt: FieldValue.serverTimestamp(),
+          pushSuccessCount: 0,
+          pushFailureCount: devices.length,
+        },
+        {merge: true},
+      );
+      return;
+    }
+
+    const invalidDeviceIds = [];
+
+    response.responses.forEach((sendResponse, index) => {
+      if (sendResponse.success) {
+        return;
+      }
+
+      const errorCode = String(
+        sendResponse.error?.code || "",
+      );
+
+      if (
+        errorCode === "messaging/registration-token-not-registered" ||
+        errorCode === "messaging/invalid-registration-token"
+      ) {
+        invalidDeviceIds.push(devices[index].deviceId);
+      }
+    });
+
+    if (invalidDeviceIds.length > 0) {
+      await Promise.all(
+        invalidDeviceIds.map(async (deviceId) => {
+          const deviceRef = db
+            .collection("pushTokens")
+            .doc(recipientId)
+            .collection("devices")
+            .doc(deviceId);
+          const ownerRef = db
+            .collection("pushDeviceOwners")
+            .doc(deviceId);
+
+          await db.runTransaction(async (transaction) => {
+            const ownerSnapshot = await transaction.get(ownerRef);
+            const ownerUid = String(
+              ownerSnapshot.data()?.uid || "",
+            ).trim();
+
+            transaction.delete(deviceRef);
+
+            if (ownerUid === recipientId) {
+              transaction.delete(ownerRef);
+            }
+          });
+        }),
+      );
+    }
+
+    const pushStatus =
+      response.successCount > 0 ? "sent" : "failed";
+
+    await notificationSnapshot.ref.set(
+      {
+        pushStatus,
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSentAt:
+          response.successCount > 0 ?
+            FieldValue.serverTimestamp() :
+            FieldValue.delete(),
+        pushSuccessCount: response.successCount,
+        pushFailureCount: response.failureCount,
+      },
+      {merge: true},
+    );
+
+    logger.info(
+      "生徒都合返金結果プッシュを処理しました。",
+      {
+        notificationId,
+        notificationType,
+        reservationId,
+        recipientId,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        removedInvalidDeviceCount: invalidDeviceIds.length,
+      },
+    );
   },
 );
