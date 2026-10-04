@@ -9252,23 +9252,71 @@ exports.requestCoachRefund = onCall(
           );
         }
 
+        const cancellationUpdate = {
+          status: "coach_cancelled",
+          cancellationSource: "coach",
+          cancellationRefundPercent: 100,
+          paymentStatus: "refund_processing",
+          refundStatus: "creating",
+          refundRequestedBy: request.auth.uid,
+          refundRequestedAt:
+            data.refundRequestedAt ||
+            FieldValue.serverTimestamp(),
+          updatedAt:
+            FieldValue.serverTimestamp(),
+        };
+
+        if (!data.coachCancelledAt) {
+          cancellationUpdate.coachCancelledAt =
+            FieldValue.serverTimestamp();
+        }
+
         transaction.set(
           reservationRef,
-          {
-            status: "coach_cancelled",
-            cancellationSource: "coach",
-            cancellationRefundPercent: 100,
-            paymentStatus: "refund_processing",
-            refundStatus: "creating",
-            refundRequestedBy: request.auth.uid,
-            refundRequestedAt:
-              data.refundRequestedAt ||
-              FieldValue.serverTimestamp(),
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
+          cancellationUpdate,
           {merge: true},
         );
+
+        // 予約枠を戻すのは、paid / paid から
+        // コーチ都合キャンセルへ初めて遷移するこの1回だけです。
+        // 返金の再試行では絶対に空き枠を再公開しません。
+        // これにより、初回キャンセル後に別の生徒が同じ枠を
+        // 予約した場合でも、返金再試行がその枠を復活させることを防ぎます。
+        if (isInitialCoachCancellation) {
+          const dateId = String(
+            data.date || "",
+          ).replaceAll("/", "-");
+          const times = Array.isArray(data.times) ?
+            data.times.map(
+              (time) => String(time),
+            ) :
+            data.time ?
+              [String(data.time)] :
+              [];
+
+          if (
+            data.coachId &&
+            dateId &&
+            times.length > 0
+          ) {
+            const availabilityRef = db
+              .collection("coachAvailability")
+              .doc(data.coachId)
+              .collection("dates")
+              .doc(dateId);
+
+            transaction.set(
+              availabilityRef,
+              {
+                times:
+                  FieldValue.arrayUnion(...times),
+                updatedAt:
+                  FieldValue.serverTimestamp(),
+              },
+              {merge: true},
+            );
+          }
+        }
 
         return {
           ...data,
@@ -9423,8 +9471,8 @@ exports.requestCoachRefund = onCall(
         `callable_coach_refund_${reservationId}`,
     );
 
-    // 返金とは別に、予約枠の復活と
-    // 「コーチ都合キャンセル開始」通知を確実に補完します。
+    // 予約枠は初回キャンセルのTransaction内ですでに復活済みです。
+    // ここでは返金の再試行でも安全な、予約状態と通知だけを補完します。
     await db.runTransaction(
       async (transaction) => {
         const latestSnap = await transaction.get(
@@ -9438,9 +9486,6 @@ exports.requestCoachRefund = onCall(
         }
 
         const latest = latestSnap.data();
-        const dateId = String(
-          latest.date || "",
-        ).replaceAll("/", "-");
         const times = Array.isArray(latest.times) ?
           latest.times.map(
             (time) => String(time),
@@ -9481,29 +9526,6 @@ exports.requestCoachRefund = onCall(
           reservationUpdate,
           {merge: true},
         );
-
-        if (
-          latest.coachId &&
-          dateId &&
-          times.length > 0
-        ) {
-          const availabilityRef = db
-            .collection("coachAvailability")
-            .doc(latest.coachId)
-            .collection("dates")
-            .doc(dateId);
-
-          transaction.set(
-            availabilityRef,
-            {
-              times:
-                FieldValue.arrayUnion(...times),
-              updatedAt:
-                FieldValue.serverTimestamp(),
-            },
-            {merge: true},
-          );
-        }
 
         if (
           notificationRef &&
