@@ -4821,6 +4821,21 @@ async function markReservationRefund(
         const weatherNotifications = [];
 
         if (refundStatus === "succeeded") {
+          const staleFailureNotificationIds = [
+            `weather_refund_failed_student_${reservationId}`,
+            `weather_refund_failed_coach_${reservationId}`,
+            `weather_refund_create_failed_student_${reservationId}`,
+            `weather_refund_create_failed_coach_${reservationId}`,
+          ];
+
+          for (const staleNotificationId of
+            staleFailureNotificationIds) {
+            transaction.delete(
+              db.collection("notifications")
+                .doc(staleNotificationId),
+            );
+          }
+
           if (reservation.studentId) {
             weatherNotifications.push({
               id:
@@ -9236,6 +9251,7 @@ async function saveRefundFailureUnlessSucceeded(
     refundStatus = "failed_to_create",
     refundError = "",
     weatherCancellationStatus = "",
+    failureNotifications = [],
   } = {},
 ) {
   const db = getFirestore();
@@ -9293,6 +9309,28 @@ async function saveRefundFailureUnlessSucceeded(
         update,
         {merge: true},
       );
+
+      for (const item of failureNotifications) {
+        const notificationId = String(
+          item?.id || "",
+        ).trim();
+        const notificationData = item?.data;
+
+        if (
+          !notificationId ||
+          !notificationData ||
+          typeof notificationData !== "object"
+        ) {
+          continue;
+        }
+
+        transaction.set(
+          db.collection("notifications")
+            .doc(notificationId),
+          notificationData,
+          {merge: true},
+        );
+      }
 
       return {
         updated: true,
@@ -11022,6 +11060,41 @@ exports.respondWeatherCancellation = onCall(
         },
       );
     } catch (error) {
+      const recipients = [
+        {
+          id: prepared.studentId || "",
+          suffix: "student",
+          type: "weatherCancellationRefundFailedToStudent",
+        },
+        {
+          id: prepared.coachId || "",
+          suffix: "coach",
+          type: "weatherCancellationRefundFailedToCoach",
+        },
+      ];
+
+      const failureNotifications = recipients
+        .filter((recipient) => recipient.id)
+        .map((recipient) => ({
+          id:
+            `weather_refund_create_failed_${recipient.suffix}_` +
+            reservationId,
+          data: {
+            recipientId: recipient.id,
+            coachId: prepared.coachId || "",
+            studentId: prepared.studentId || "",
+            reservationId,
+            type: recipient.type,
+            title: "雨天キャンセルの返金状況をご確認ください",
+            message:
+              "全額返金を開始できませんでした。運営が確認します。",
+            date: prepared.date || "",
+            times: prepared.times || [],
+            isRead: false,
+            createdAt: FieldValue.serverTimestamp(),
+          },
+        }));
+
       const failureState =
         await saveRefundFailureUnlessSucceeded(
           reservationRef,
@@ -11031,6 +11104,7 @@ exports.respondWeatherCancellation = onCall(
               "refund_failed",
             refundError:
               error?.message || String(error),
+            failureNotifications,
           },
         );
 
@@ -11057,51 +11131,6 @@ exports.respondWeatherCancellation = onCall(
           preservedSucceededRefund: true,
         };
       }
-
-      const batch = db.batch();
-      const recipients = [
-        {
-          id: prepared.studentId || "",
-          suffix: "student",
-          type: "weatherCancellationRefundFailedToStudent",
-        },
-        {
-          id: prepared.coachId || "",
-          suffix: "coach",
-          type: "weatherCancellationRefundFailedToCoach",
-        },
-      ];
-
-      for (const recipient of recipients) {
-        if (!recipient.id) {
-          continue;
-        }
-
-        batch.set(
-          db.collection("notifications")
-            .doc(
-              `weather_refund_create_failed_${recipient.suffix}_` +
-              reservationId,
-            ),
-          {
-            recipientId: recipient.id,
-            coachId: prepared.coachId || "",
-            studentId: prepared.studentId || "",
-            reservationId,
-            type: recipient.type,
-            title: "雨天キャンセルの返金状況をご確認ください",
-            message:
-              "全額返金を開始できませんでした。運営が確認します。",
-            date: prepared.date || "",
-            times: prepared.times || [],
-            isRead: false,
-            createdAt: FieldValue.serverTimestamp(),
-          },
-          {merge: true},
-        );
-      }
-
-      await batch.commit();
 
       logger.error("雨天キャンセルの返金作成に失敗しました。", {
         reservationId,
@@ -16158,6 +16187,30 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
       reservation.weatherCancellationStatus || "",
     ).trim();
 
+    const reservationRefundSucceeded =
+      reservationStatus === "weather_cancelled" &&
+      cancellationSource === "weather" &&
+      paymentStatus === "refunded" &&
+      refundStatus === "succeeded";
+
+    if (
+      !isSuccess &&
+      reservationCoachId === coachId &&
+      reservationStudentId === studentId &&
+      reservationRefundSucceeded
+    ) {
+      await afterSnapshot.ref.delete();
+
+      logger.info(
+        "雨天キャンセル返金成功後の古い失敗通知を破棄しました。",
+        {
+          notificationId,
+          reservationId,
+        },
+      );
+      return;
+    }
+
     const stateMatches = isSuccess ?
       reservationStatus === "weather_cancelled" &&
         cancellationSource === "weather" &&
@@ -16242,17 +16295,146 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
       return;
     }
 
+    // 失敗Pushは、端末情報の取得中に成功Webhookが先着する可能性があるため、
+    // FCM送信の直前でも予約と通知の最新状態を再確認します。
+    //
+    // それでもFirestore再確認とFCM送信は同一Transactionにはできないため、
+    // この直後に成功へ変わる競合は理論上残ります。
+    // そのため失敗Push本文は「返金失敗」と断定せず、
+    // 必ずアプリ内の最新状態を確認してもらう中立文言にします。
+    if (!isSuccess) {
+      const latestReservationSnapshot = await db
+        .collection("reservations")
+        .doc(reservationId)
+        .get();
+      const latestNotificationSnapshot =
+        await afterSnapshot.ref.get();
+
+      if (!latestNotificationSnapshot.exists) {
+        logger.info(
+          "雨天キャンセル返金の失敗通知は送信前に解消済みです。",
+          {
+            notificationId,
+            reservationId,
+          },
+        );
+        return;
+      }
+
+      const latestNotification =
+        latestNotificationSnapshot.data() || {};
+      const latestNotificationType = String(
+        latestNotification.type || "",
+      ).trim();
+      const latestCreatedAt = timestampMillis(
+        latestNotification.createdAt,
+      );
+
+      if (
+        latestNotificationType !== notificationType ||
+        latestCreatedAt !== afterCreatedAt
+      ) {
+        logger.info(
+          "雨天キャンセル返金の失敗通知が更新されたため、古いPush送信を中止しました。",
+          {
+            notificationId,
+            reservationId,
+          },
+        );
+        return;
+      }
+
+      if (!latestReservationSnapshot.exists) {
+        logger.warn(
+          "雨天キャンセル返金失敗Pushの送信直前確認で予約が見つかりません。",
+          {
+            notificationId,
+            reservationId,
+          },
+        );
+        return;
+      }
+
+      const latestReservation =
+        latestReservationSnapshot.data() || {};
+      const latestReservationStatus = String(
+        latestReservation.status || "",
+      ).trim();
+      const latestCancellationSource = String(
+        latestReservation.cancellationSource || "",
+      ).trim();
+      const latestPaymentStatus = String(
+        latestReservation.paymentStatus || "",
+      ).trim();
+      const latestRefundStatus = String(
+        latestReservation.refundStatus || "",
+      ).trim();
+      const latestWeatherStatus = String(
+        latestReservation.weatherCancellationStatus || "",
+      ).trim();
+
+      const latestRefundSucceeded =
+        latestReservationStatus === "weather_cancelled" &&
+        latestCancellationSource === "weather" &&
+        latestPaymentStatus === "refunded" &&
+        latestRefundStatus === "succeeded";
+
+      if (latestRefundSucceeded) {
+        await latestNotificationSnapshot.ref.delete();
+
+        logger.info(
+          "雨天キャンセル返金成功を送信直前に確認したため、失敗Pushを中止しました。",
+          {
+            notificationId,
+            reservationId,
+          },
+        );
+        return;
+      }
+
+      const latestFailureStateMatches =
+        latestReservationStatus === "weather_cancelled" &&
+        latestCancellationSource === "weather" &&
+        latestPaymentStatus === "refund_failed" &&
+        [
+          "failed",
+          "canceled",
+          "failed_to_create",
+        ].includes(latestRefundStatus) &&
+        latestWeatherStatus === "refund_failed";
+
+      if (!latestFailureStateMatches) {
+        logger.info(
+          "雨天キャンセル返金の最新状態が失敗条件と一致しないため、失敗Pushを中止しました。",
+          {
+            notificationId,
+            reservationId,
+            latestReservationStatus,
+            latestCancellationSource,
+            latestPaymentStatus,
+            latestRefundStatus,
+            latestWeatherStatus,
+          },
+        );
+        return;
+      }
+    }
+
     const defaultTitle = isSuccess ?
       "雨天・施設都合キャンセルの返金が完了しました" :
-      "雨天キャンセルの返金状況をご確認ください";
+      "雨天キャンセルの返金状況が更新されました";
     const defaultBody = isSuccess ?
       "双方合意でキャンセルした予約の全額返金が完了しました。" :
-      "全額返金を完了できませんでした。運営が確認します。";
-    const title = String(
-      notification.title || defaultTitle,
+      "返金状況に更新があります。アプリで最新の状態をご確認ください。";
+    const title = (
+      isSuccess ?
+        String(notification.title || defaultTitle) :
+        defaultTitle
     ).slice(0, 120);
-    const body = String(
-      notification.message || defaultBody,
+    const body = (
+      isSuccess ?
+        String(notification.message || defaultBody) :
+        defaultBody
     ).slice(0, 500);
 
     const messages = devices.map((device) => ({
@@ -16272,8 +16454,7 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         headers: {
           "apns-priority": "10",
           "apns-collapse-id":
-            `weather-refund-${isSuccess ? "success" : "failed"}-` +
-            `${reservationId}-${recipientSuffix}`,
+            `weather-refund-result-${reservationId}-${recipientSuffix}`,
         },
         payload: {
           aps: {
