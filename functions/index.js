@@ -4193,16 +4193,132 @@ async function markReservationPaid(
       },
     );
   } catch (error) {
-    await reservationRef.set(
-      {
-        paymentStatus: "refund_processing",
-        refundStatus: "creating",
-        refundError:
-          error?.message || String(error),
-        updatedAt: FieldValue.serverTimestamp(),
+    let reconciledRefund = null;
+
+    try {
+      // Refund作成リクエスト自体はStripeへ到達して成功したものの、
+      // 応答だけがタイムアウトした可能性があります。
+      // Firestoreを「処理中」へ戻す前に、Stripe側の既存Refundを確認します。
+      reconciledRefund =
+        await findExistingReservationRefund(
+          stripe,
+          {
+            paymentIntentId,
+            reservationId,
+            cancellationSource: "late_payment",
+            expectedAmount:
+              Number.isInteger(amountPaid) &&
+              amountPaid > 0 ?
+                amountPaid :
+                0,
+          },
+        );
+    } catch (reconciliationError) {
+      logger.error(
+        "開始時刻後決済の返金作成エラー後、" +
+        "Stripe側のRefund照合にも失敗しました。",
+        {
+          reservationId,
+          sessionId: session.id,
+          eventId,
+          stripeErrorMessage:
+            reconciliationError?.message ||
+            String(reconciliationError),
+          stripeErrorCode:
+            reconciliationError?.code || "",
+          stripeErrorType:
+            reconciliationError?.type || "",
+        },
+      );
+    }
+
+    if (reconciledRefund) {
+      // Stripe側にRefundが存在する場合は新しいRefundを作らず、
+      // その最新状態を共通処理でFirestoreへ反映します。
+      await markReservationRefund(
+        reconciledRefund,
+        `late_payment_reconcile_${eventId}`,
+      );
+
+      logger.warn(
+        "開始時刻後決済の返金作成APIでエラーになりましたが、" +
+        "Stripe側の既存Refundを確認して状態を復旧しました。",
+        {
+          reservationId,
+          sessionId: session.id,
+          eventId,
+          refundId: reconciledRefund.id,
+          refundStatus:
+            reconciledRefund.status || "",
+        },
+      );
+
+      return;
+    }
+
+    const stateResult = await db.runTransaction(
+      async (transaction) => {
+        const latestSnap =
+          await transaction.get(reservationRef);
+
+        if (!latestSnap.exists) {
+          throw new Error(
+            `返金対象の予約が見つかりません: ${reservationId}`,
+          );
+        }
+
+        const latest = latestSnap.data() || {};
+        const latestPaymentStatus = String(
+          latest.paymentStatus || "",
+        );
+        const latestRefundStatus = String(
+          latest.refundStatus || "",
+        );
+
+        // Refund Webhookが先に成功状態を保存している場合、
+        // 後着のAPIタイムアウト処理で
+        // succeeded/refunded を processing/creating に巻き戻しません。
+        if (
+          latestPaymentStatus === "refunded" ||
+          latestRefundStatus === "succeeded"
+        ) {
+          return {
+            refundAlreadySucceeded: true,
+          };
+        }
+
+        transaction.set(
+          reservationRef,
+          {
+            paymentStatus: "refund_processing",
+            refundStatus: "creating",
+            refundError:
+              error?.message || String(error),
+            updatedAt:
+              FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        );
+
+        return {
+          refundAlreadySucceeded: false,
+        };
       },
-      {merge: true},
     );
+
+    if (stateResult.refundAlreadySucceeded) {
+      logger.warn(
+        "開始時刻後決済の返金作成APIでエラーになりましたが、" +
+        "返金成功状態がすでに保存済みのため巻き戻しを防止しました。",
+        {
+          reservationId,
+          sessionId: session.id,
+          eventId,
+        },
+      );
+
+      return;
+    }
 
     logger.error(
       "開始時刻後決済の自動返金作成に失敗しました。",
@@ -4217,8 +4333,9 @@ async function markReservationPaid(
       },
     );
 
-    // Webhookへ500を返し、Stripeの再送で
-    // 同じIdempotency Keyを使って安全に再試行します。
+    // Stripe側にも既存Refundを確認できず、
+    // Firestoreにも成功状態がない場合だけ500を返します。
+    // Stripeの再送では同じIdempotency Keyを使って安全に再試行します。
     throw error;
   }
 
