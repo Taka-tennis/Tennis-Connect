@@ -9218,6 +9218,92 @@ async function findExistingReservationRefund(
   return matches[0] || null;
 }
 
+/**
+ * 返金処理の失敗状態を保存します。
+ *
+ * Stripe側の成功Webhookが先にFirestoreへ反映された後で、
+ * API呼び出し側のcatchが遅れて到着しても、
+ * succeeded / refunded / partially_refunded を
+ * refund_failed へ巻き戻しません。
+ *
+ * @param {FirebaseFirestore.DocumentReference} reservationRef 予約参照
+ * @param {object} options 保存内容
+ * @return {Promise<object>} 保存結果
+ */
+async function saveRefundFailureUnlessSucceeded(
+  reservationRef,
+  {
+    refundStatus = "failed_to_create",
+    refundError = "",
+    weatherCancellationStatus = "",
+  } = {},
+) {
+  const db = getFirestore();
+
+  return db.runTransaction(
+    async (transaction) => {
+      const latestSnap =
+        await transaction.get(reservationRef);
+
+      if (!latestSnap.exists) {
+        throw new Error(
+          "返金対象の予約が見つかりません。",
+        );
+      }
+
+      const latest = latestSnap.data() || {};
+      const currentPaymentStatus = String(
+        latest.paymentStatus || "",
+      );
+      const currentRefundStatus = String(
+        latest.refundStatus || "",
+      );
+
+      const refundAlreadySucceeded =
+        currentRefundStatus === "succeeded" ||
+        [
+          "refunded",
+          "partially_refunded",
+        ].includes(currentPaymentStatus);
+
+      if (refundAlreadySucceeded) {
+        return {
+          updated: false,
+          preservedSuccess: true,
+          paymentStatus: currentPaymentStatus,
+          refundStatus: currentRefundStatus,
+        };
+      }
+
+      const update = {
+        paymentStatus: "refund_failed",
+        refundStatus,
+        refundError,
+        updatedAt:
+          FieldValue.serverTimestamp(),
+      };
+
+      if (weatherCancellationStatus) {
+        update.weatherCancellationStatus =
+          weatherCancellationStatus;
+      }
+
+      transaction.set(
+        reservationRef,
+        update,
+        {merge: true},
+      );
+
+      return {
+        updated: true,
+        preservedSuccess: false,
+        paymentStatus: "refund_failed",
+        refundStatus,
+      };
+    },
+  );
+}
+
 exports.requestCoachRefund = onCall(
   {secrets: [stripeSecretKey]},
   async (request) => {
@@ -9490,20 +9576,41 @@ exports.requestCoachRefund = onCall(
         error?.code ===
           "multiple_matching_refunds";
 
-      await reservationRef.set(
-        {
-          paymentStatus: "refund_failed",
-          refundStatus:
-            multipleRefunds ?
-              "manual_review_required" :
-              "failed_to_create",
-          refundError:
-            error?.message || String(error),
-          updatedAt:
-            FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      const failureState =
+        await saveRefundFailureUnlessSucceeded(
+          reservationRef,
+          {
+            refundStatus:
+              multipleRefunds ?
+                "manual_review_required" :
+                "failed_to_create",
+            refundError:
+              error?.message || String(error),
+          },
+        );
+
+      if (
+        failureState.preservedSuccess &&
+        !multipleRefunds
+      ) {
+        logger.warn(
+          "コーチ都合返金の照合エラーが後着しましたが、" +
+          "返金成功状態を保持しました。",
+          {
+            reservationId,
+            currentPaymentStatus:
+              failureState.paymentStatus,
+            currentRefundStatus:
+              failureState.refundStatus,
+          },
+        );
+
+        return {
+          status: "succeeded",
+          alreadyRefunded: true,
+          reservationId,
+        };
+      }
 
       logger.error(
         "コーチ都合返金の既存Refund確認に失敗しました。",
@@ -9551,17 +9658,35 @@ exports.requestCoachRefund = onCall(
           },
         );
       } catch (error) {
-        await reservationRef.set(
-          {
-            paymentStatus: "refund_failed",
-            refundStatus: "failed_to_create",
-            refundError:
-              error?.message || String(error),
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
-          {merge: true},
-        );
+        const failureState =
+          await saveRefundFailureUnlessSucceeded(
+            reservationRef,
+            {
+              refundStatus: "failed_to_create",
+              refundError:
+                error?.message || String(error),
+            },
+          );
+
+        if (failureState.preservedSuccess) {
+          logger.warn(
+            "コーチ都合返金の作成エラーが後着しましたが、" +
+            "返金成功状態を保持しました。",
+            {
+              reservationId,
+              currentPaymentStatus:
+                failureState.paymentStatus,
+              currentRefundStatus:
+                failureState.refundStatus,
+            },
+          );
+
+          return {
+            status: "succeeded",
+            alreadyRefunded: true,
+            reservationId,
+          };
+        }
 
         logger.error(
           "Stripe返金の作成に失敗しました。",
@@ -10074,20 +10199,49 @@ exports.requestStudentCancellation = onCall(
           "refund_amount_mismatch",
         ].includes(String(error?.code || ""));
 
-      await reservationRef.set(
-        {
-          paymentStatus: "refund_failed",
-          refundStatus:
-            needsManualReview ?
-              "manual_review_required" :
-              "failed_to_create",
-          refundError:
-            error?.message || String(error),
-          updatedAt:
-            FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      const failureState =
+        await saveRefundFailureUnlessSucceeded(
+          reservationRef,
+          {
+            refundStatus:
+              needsManualReview ?
+                "manual_review_required" :
+                "failed_to_create",
+            refundError:
+              error?.message || String(error),
+          },
+        );
+
+      if (
+        failureState.preservedSuccess &&
+        !needsManualReview
+      ) {
+        logger.warn(
+          "生徒都合返金の照合エラーが後着しましたが、" +
+          "返金成功状態を保持しました。",
+          {
+            reservationId,
+            studentId: uid,
+            currentPaymentStatus:
+              failureState.paymentStatus,
+            currentRefundStatus:
+              failureState.refundStatus,
+          },
+        );
+
+        return {
+          cancelled: true,
+          alreadyCancelled: true,
+          reservationId,
+          refundPercent: Number(
+            prepared.refundPercent || 0,
+          ),
+          refundAmount:
+            expectedRefundAmount,
+          refundStatus: "succeeded",
+          preservedSucceededRefund: true,
+        };
+      }
 
       logger.error(
         "生徒都合返金の既存Refund確認に失敗しました。",
@@ -10141,17 +10295,43 @@ exports.requestStudentCancellation = onCall(
           },
         );
       } catch (error) {
-        await reservationRef.set(
-          {
-            paymentStatus: "refund_failed",
-            refundStatus: "failed_to_create",
-            refundError:
-              error?.message || String(error),
-            updatedAt:
-              FieldValue.serverTimestamp(),
-          },
-          {merge: true},
-        );
+        const failureState =
+          await saveRefundFailureUnlessSucceeded(
+            reservationRef,
+            {
+              refundStatus: "failed_to_create",
+              refundError:
+                error?.message || String(error),
+            },
+          );
+
+        if (failureState.preservedSuccess) {
+          logger.warn(
+            "生徒都合返金の作成エラーが後着しましたが、" +
+            "返金成功状態を保持しました。",
+            {
+              reservationId,
+              studentId: uid,
+              currentPaymentStatus:
+                failureState.paymentStatus,
+              currentRefundStatus:
+                failureState.refundStatus,
+            },
+          );
+
+          return {
+            cancelled: true,
+            alreadyCancelled: true,
+            reservationId,
+            refundPercent: Number(
+              prepared.refundPercent || 0,
+            ),
+            refundAmount:
+              expectedRefundAmount,
+            refundStatus: "succeeded",
+            preservedSucceededRefund: true,
+          };
+        }
 
         logger.error(
           "生徒都合キャンセルの返金作成に失敗しました。",
@@ -10842,16 +11022,41 @@ exports.respondWeatherCancellation = onCall(
         },
       );
     } catch (error) {
-      await reservationRef.set(
-        {
-          paymentStatus: "refund_failed",
-          refundStatus: "failed_to_create",
-          weatherCancellationStatus: "refund_failed",
-          refundError: error.message,
-          updatedAt: FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      const failureState =
+        await saveRefundFailureUnlessSucceeded(
+          reservationRef,
+          {
+            refundStatus: "failed_to_create",
+            weatherCancellationStatus:
+              "refund_failed",
+            refundError:
+              error?.message || String(error),
+          },
+        );
+
+      if (failureState.preservedSuccess) {
+        logger.warn(
+          "雨天キャンセル返金の作成エラーが後着しましたが、" +
+          "返金成功状態を保持しました。",
+          {
+            reservationId,
+            currentPaymentStatus:
+              failureState.paymentStatus,
+            currentRefundStatus:
+              failureState.refundStatus,
+          },
+        );
+
+        return {
+          approved: true,
+          reservationId,
+          refundPercent: 100,
+          refundAmount:
+            Number(prepared.amountPaid || 0),
+          refundStatus: "succeeded",
+          preservedSucceededRefund: true,
+        };
+      }
 
       const batch = db.batch();
       const recipients = [
@@ -11160,19 +11365,38 @@ exports.retryWeatherCancellationRefund = onCall(
           );
         }) || null;
     } catch (error) {
-      await reservationRef.set(
-        {
-          paymentStatus: "refund_failed",
-          refundStatus: "failed_to_create",
-          weatherCancellationStatus:
-            "refund_failed",
-          refundError:
-            error?.message || String(error),
-          updatedAt:
-            FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      const failureState =
+        await saveRefundFailureUnlessSucceeded(
+          reservationRef,
+          {
+            refundStatus: "failed_to_create",
+            weatherCancellationStatus:
+              "refund_failed",
+            refundError:
+              error?.message || String(error),
+          },
+        );
+
+      if (failureState.preservedSuccess) {
+        logger.warn(
+          "雨天キャンセル返金の照合エラーが後着しましたが、" +
+          "返金成功状態を保持しました。",
+          {
+            reservationId,
+            currentPaymentStatus:
+              failureState.paymentStatus,
+            currentRefundStatus:
+              failureState.refundStatus,
+          },
+        );
+
+        return {
+          status: "succeeded",
+          alreadyRefunded: true,
+          reservationId,
+          preservedSucceededRefund: true,
+        };
+      }
 
       logger.error(
         "雨天キャンセル返金の既存Refund確認に失敗しました。",
@@ -11244,19 +11468,38 @@ exports.retryWeatherCancellationRefund = onCall(
         },
       );
     } catch (error) {
-      await reservationRef.set(
-        {
-          paymentStatus: "refund_failed",
-          refundStatus: "failed_to_create",
-          weatherCancellationStatus:
-            "refund_failed",
-          refundError:
-            error?.message || String(error),
-          updatedAt:
-            FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      const failureState =
+        await saveRefundFailureUnlessSucceeded(
+          reservationRef,
+          {
+            refundStatus: "failed_to_create",
+            weatherCancellationStatus:
+              "refund_failed",
+            refundError:
+              error?.message || String(error),
+          },
+        );
+
+      if (failureState.preservedSuccess) {
+        logger.warn(
+          "雨天キャンセル返金の再作成エラーが後着しましたが、" +
+          "返金成功状態を保持しました。",
+          {
+            reservationId,
+            currentPaymentStatus:
+              failureState.paymentStatus,
+            currentRefundStatus:
+              failureState.refundStatus,
+          },
+        );
+
+        return {
+          status: "succeeded",
+          alreadyRefunded: true,
+          reservationId,
+          preservedSucceededRefund: true,
+        };
+      }
 
       logger.error(
         "雨天キャンセル返金の再作成に失敗しました。",
