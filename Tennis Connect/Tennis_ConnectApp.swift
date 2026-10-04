@@ -48,6 +48,11 @@ final class PushNotificationRouter: ObservableObject {
 
         case "reservationApproved",
              "reservationRejected",
+             "coachCancellationRefundStarted",
+             "coachCancellationRefunded",
+             "coachCancellationRefundFailed",
+             "studentCancellationRefunded",
+             "studentCancellationRefundFailed",
              "paymentCompletedToStudent",
              "weatherCancellationRequestToStudent",
              "weatherCancellationWithdrawnToStudent",
