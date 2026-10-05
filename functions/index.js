@@ -4637,6 +4637,28 @@ async function markReservationRefund(
         reservation.weatherCancellationStatus || "",
       );
 
+      const staleWeatherFailureNotificationIds = [
+        `weather_refund_failed_student_${reservationId}`,
+        `weather_refund_failed_coach_${reservationId}`,
+        `weather_refund_create_failed_student_${reservationId}`,
+        `weather_refund_create_failed_coach_${reservationId}`,
+      ];
+
+      const deleteStaleWeatherRefundFailureNotifications =
+        () => {
+          if (cancellationSource !== "weather") {
+            return;
+          }
+
+          for (const staleNotificationId of
+            staleWeatherFailureNotificationIds) {
+            transaction.delete(
+              db.collection("notifications")
+                .doc(staleNotificationId),
+            );
+          }
+        };
+
       // succeededは返金完了の最終状態です。
       // もし古いpending/failed Eventが後から届いても、
       // Firestoreを完了前の状態へ戻しません。
@@ -4644,6 +4666,8 @@ async function markReservationRefund(
         currentRefundStatus === "succeeded" &&
         refundStatus !== "succeeded"
       ) {
+        deleteStaleWeatherRefundFailureNotifications();
+
         logger.warn(
           "古いRefundイベントによる返金完了状態の巻き戻しを防止しました。",
           {
@@ -4676,8 +4700,14 @@ async function markReservationRefund(
         );
 
       // 同じRefund状態のWebhook再送では、
-      // updatedAt・通知createdAt・isReadを上書きしません。
+      // updatedAt・成功通知のcreatedAt・isReadは上書きしません。
+      // ただし雨天返金が成功済みなら、修正前に残った
+      // 古い失敗通知だけは同一Transaction内で削除します。
       if (sameState) {
+        if (refundStatus === "succeeded") {
+          deleteStaleWeatherRefundFailureNotifications();
+        }
+
         return {
           changed: false,
           ignoredDuplicate: true,
@@ -4821,20 +4851,7 @@ async function markReservationRefund(
         const weatherNotifications = [];
 
         if (refundStatus === "succeeded") {
-          const staleFailureNotificationIds = [
-            `weather_refund_failed_student_${reservationId}`,
-            `weather_refund_failed_coach_${reservationId}`,
-            `weather_refund_create_failed_student_${reservationId}`,
-            `weather_refund_create_failed_coach_${reservationId}`,
-          ];
-
-          for (const staleNotificationId of
-            staleFailureNotificationIds) {
-            transaction.delete(
-              db.collection("notifications")
-                .doc(staleNotificationId),
-            );
-          }
+          deleteStaleWeatherRefundFailureNotifications();
 
           if (reservation.studentId) {
             weatherNotifications.push({
