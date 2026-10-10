@@ -16062,24 +16062,74 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         beforeSnapshot.data() || {} :
         {};
 
-    const timestampMillis = (value) => {
-      if (value && typeof value.toMillis === "function") {
-        return value.toMillis();
+    const timestampsExactlyEqual = (left, right) => {
+      if (!left || !right) {
+        return false;
       }
-      return null;
+
+      if (typeof left.isEqual === "function") {
+        return left.isEqual(right);
+      }
+
+      const leftSeconds = Number(left.seconds);
+      const rightSeconds = Number(right.seconds);
+      const leftNanoseconds = Number(left.nanoseconds);
+      const rightNanoseconds = Number(right.nanoseconds);
+
+      return (
+        Number.isFinite(leftSeconds) &&
+        Number.isFinite(rightSeconds) &&
+        Number.isFinite(leftNanoseconds) &&
+        Number.isFinite(rightNanoseconds) &&
+        leftSeconds === rightSeconds &&
+        leftNanoseconds === rightNanoseconds
+      );
     };
 
-    const beforeCreatedAt = timestampMillis(
-      beforeData.createdAt,
-    );
-    const afterCreatedAt = timestampMillis(
-      notification.createdAt,
-    );
+    const afterCreatedAt = notification.createdAt || null;
+
+    // 通常の通知作成では createdAt に serverTimestamp() を保存します。
+    // 旧データ・手動データなどで createdAt が欠落している通知は、
+    // isRead など別フィールドの更新を「新しい通知世代」と誤認して
+    // Pushを再送する可能性があります。
+    //
+    // 作成イベントは before が存在しないため、after.createdAt が
+    // 有効な場合だけ通常どおり処理します。
+    // 更新イベントでは before / after のどちらか一方でも createdAt が
+    // 欠落していれば、世代を安全に識別できないためPush送信を行いません。
+    if (
+      !afterCreatedAt ||
+      (
+        beforeSnapshot &&
+        beforeSnapshot.exists &&
+        !beforeData.createdAt
+      )
+    ) {
+      logger.warn(
+        "雨天キャンセル返金結果通知のcreatedAtが欠落しているため、Push送信を中止しました。",
+        {
+          notificationId: String(
+            event.params.notificationId || "",
+          ).trim(),
+          notificationType,
+          beforeCreatedAtExists: Boolean(
+            beforeData.createdAt,
+          ),
+          afterCreatedAtExists: Boolean(
+            afterCreatedAt,
+          ),
+        },
+      );
+      return;
+    }
 
     if (
       beforeSnapshot &&
       beforeSnapshot.exists &&
-      beforeCreatedAt === afterCreatedAt
+      timestampsExactlyEqual(
+        beforeData.createdAt,
+        afterCreatedAt,
+      )
     ) {
       return;
     }
@@ -16126,6 +16176,40 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
 
     const db = getFirestore();
 
+    // Push処理の途中で成功側処理が通知を削除しても、
+    // Push結果の書き戻しで削除済みDocumentを再作成しないようにします。
+    //
+    // 同じDocument IDが将来再利用された場合にも古いPush処理が
+    // 新しい通知へ結果を書かないよう、type と createdAt も照合します。
+    const updatePushMetadataIfCurrent = async (fields) => {
+      return db.runTransaction(async (transaction) => {
+        const currentSnapshot =
+          await transaction.get(afterSnapshot.ref);
+
+        if (!currentSnapshot.exists) {
+          return false;
+        }
+
+        const currentNotification =
+          currentSnapshot.data() || {};
+        const currentType = String(
+          currentNotification.type || "",
+        ).trim();
+        if (
+          currentType !== notificationType ||
+          !timestampsExactlyEqual(
+            currentNotification.createdAt,
+            afterCreatedAt,
+          )
+        ) {
+          return false;
+        }
+
+        transaction.update(afterSnapshot.ref, fields);
+        return true;
+      });
+    };
+
     if (
       !notificationId ||
       !recipientId ||
@@ -16147,13 +16231,10 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         },
       );
 
-      await afterSnapshot.ref.set(
-        {
-          pushStatus: "invalid_notification",
-          pushAttemptedAt: FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      await updatePushMetadataIfCurrent({
+        pushStatus: "invalid_notification",
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+      });
       return;
     }
 
@@ -16171,13 +16252,10 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         },
       );
 
-      await afterSnapshot.ref.set(
-        {
-          pushStatus: "reservation_not_found",
-          pushAttemptedAt: FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      await updatePushMetadataIfCurrent({
+        pushStatus: "reservation_not_found",
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+      });
       return;
     }
 
@@ -16264,13 +16342,10 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         },
       );
 
-      await afterSnapshot.ref.set(
-        {
-          pushStatus: "reservation_mismatch",
-          pushAttemptedAt: FieldValue.serverTimestamp(),
-        },
-        {merge: true},
-      );
+      await updatePushMetadataIfCurrent({
+        pushStatus: "reservation_mismatch",
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+      });
       return;
     }
 
@@ -16300,15 +16375,12 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         },
       );
 
-      await afterSnapshot.ref.set(
-        {
-          pushStatus: "no_registered_devices",
-          pushAttemptedAt: FieldValue.serverTimestamp(),
-          pushSuccessCount: 0,
-          pushFailureCount: 0,
-        },
-        {merge: true},
-      );
+      await updatePushMetadataIfCurrent({
+        pushStatus: "no_registered_devices",
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSuccessCount: 0,
+        pushFailureCount: 0,
+      });
       return;
     }
 
@@ -16343,13 +16415,12 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
       const latestNotificationType = String(
         latestNotification.type || "",
       ).trim();
-      const latestCreatedAt = timestampMillis(
-        latestNotification.createdAt,
-      );
-
       if (
         latestNotificationType !== notificationType ||
-        latestCreatedAt !== afterCreatedAt
+        !timestampsExactlyEqual(
+          latestNotification.createdAt,
+          afterCreatedAt,
+        )
       ) {
         logger.info(
           "雨天キャンセル返金の失敗通知が更新されたため、古いPush送信を中止しました。",
@@ -16497,15 +16568,12 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
         },
       );
 
-      await afterSnapshot.ref.set(
-        {
-          pushStatus: "send_error",
-          pushAttemptedAt: FieldValue.serverTimestamp(),
-          pushSuccessCount: 0,
-          pushFailureCount: devices.length,
-        },
-        {merge: true},
-      );
+      await updatePushMetadataIfCurrent({
+        pushStatus: "send_error",
+        pushAttemptedAt: FieldValue.serverTimestamp(),
+        pushSuccessCount: 0,
+        pushFailureCount: devices.length,
+      });
       return;
     }
 
@@ -16559,19 +16627,16 @@ exports.sendWeatherCancellationRefundResultPush = onDocumentWritten(
     const pushStatus =
       response.successCount > 0 ? "sent" : "failed";
 
-    await afterSnapshot.ref.set(
-      {
-        pushStatus,
-        pushAttemptedAt: FieldValue.serverTimestamp(),
-        pushSentAt:
-          response.successCount > 0 ?
-            FieldValue.serverTimestamp() :
-            FieldValue.delete(),
-        pushSuccessCount: response.successCount,
-        pushFailureCount: response.failureCount,
-      },
-      {merge: true},
-    );
+    await updatePushMetadataIfCurrent({
+      pushStatus,
+      pushAttemptedAt: FieldValue.serverTimestamp(),
+      pushSentAt:
+        response.successCount > 0 ?
+          FieldValue.serverTimestamp() :
+          FieldValue.delete(),
+      pushSuccessCount: response.successCount,
+      pushFailureCount: response.failureCount,
+    });
 
     logger.info(
       "雨天キャンセル返金結果プッシュを処理しました。",
