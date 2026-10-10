@@ -209,6 +209,7 @@ struct CoachHomeView: View {
         }
         .tint(CoachUI.brandGreen)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(selectedTab != 0)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 if selectedTab == 0 {
