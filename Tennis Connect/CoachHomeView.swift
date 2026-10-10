@@ -1517,68 +1517,23 @@ private struct CoachMyPageView: View {
                         alignment: .leading,
                         spacing: 12
                     ) {
-                        Text("お知らせ")
+                        Text("アカウント")
                             .font(.headline)
                             .foregroundStyle(
                                 CoachUI.textPrimary
                             )
 
-                        HStack(
-                            alignment: .top,
-                            spacing: 12
-                        ) {
-                            ZStack {
-                                Circle()
-                                    .fill(
-                                        CoachUI.softGreen
-                                    )
-                                    .frame(
-                                        width: 40,
-                                        height: 40
-                                    )
-
-                                Image(
-                                    systemName: "bell"
-                                )
-                                .font(
-                                    .system(
-                                        size: 16,
-                                        weight: .semibold
-                                    )
-                                )
-                                .foregroundStyle(
-                                    CoachUI.brandGreen
-                                )
-                            }
-
-                            VStack(
-                                alignment: .leading,
-                                spacing: 4
-                            ) {
-                                Text("通知")
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(
-                                        CoachUI.textPrimary
-                                    )
-
-                                Text(
-                                    "予約申請やキャンセルなどのお知らせは、画面右上のベルから確認できます。"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(
-                                    CoachUI.textSecondary
-                                )
-                                .fixedSize(
-                                    horizontal: false,
-                                    vertical: true
-                                )
-                            }
+                        NavigationLink {
+                            SettingsView()
+                        } label: {
+                            CoachMyPageMenuRow(
+                                title: "設定",
+                                detail:
+                                    "アカウントや各種設定",
+                                icon: "gearshape"
+                            )
                         }
-                        .padding(16)
-                        .frame(
-                            maxWidth: .infinity,
-                            alignment: .leading
-                        )
+                        .buttonStyle(.plain)
                         .background(Color.white)
                         .clipShape(
                             RoundedRectangle(

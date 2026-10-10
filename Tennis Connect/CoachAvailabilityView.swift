@@ -397,6 +397,14 @@ struct CoachAvailabilityView: View {
                     )
             }
 
+            Text(
+                "日付を移動しても未保存の選択内容は保持されます。複数日を編集して、最後にまとめて保存できます。"
+            )
+            .font(.caption)
+            .foregroundStyle(
+                CoachAvailabilityUI.textSecondary
+            )
+
             DatePicker(
                 "",
                 selection: $selectedDate,
@@ -698,14 +706,6 @@ struct CoachAvailabilityView: View {
             )
             .opacity(
                 dirtyDateKeys.isEmpty ? 0.55 : 1
-            )
-
-            Text(
-                "日付を移動しても未保存の選択内容は保持されます。複数日を編集して、最後にまとめて保存できます。"
-            )
-            .font(.caption)
-            .foregroundStyle(
-                CoachAvailabilityUI.textSecondary
             )
 
             if !errorMessage.isEmpty {
