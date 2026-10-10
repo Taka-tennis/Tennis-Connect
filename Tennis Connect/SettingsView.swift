@@ -25,9 +25,10 @@ private enum TennisConnectLegalInfo {
 
 struct SettingsView: View {
 
-    private var loginEmail: String {
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var loginEmail =
         Auth.auth().currentUser?.email ?? "未設定"
-    }
 
     private var appVersion: String {
         Bundle.main.infoDictionary?[
@@ -48,15 +49,35 @@ struct SettingsView: View {
                     headerSection
 
                     settingsSection(
-                        title: "アカウント"
-                    ) {
-                        settingsInfoRow(
-                            title: "メールアドレス",
-                            value: loginEmail,
-                            systemImage: "envelope.fill",
-                            tint: .green
-                        )
-                    }
+                        title: "アカウント",
+                        content: {
+                            NavigationLink(
+                                destination:
+                                    EmailChangeView(
+                                        onEmailChanged: {
+                                            updatedEmail in
+
+                                            loginEmail =
+                                                updatedEmail
+
+                                            syncStudentEmailIfNeeded(
+                                                email:
+                                                    updatedEmail
+                                            )
+                                        }
+                                    )
+                            ) {
+                                settingsNavigationRow(
+                                    title: "メールアドレス",
+                                    subtitle: loginEmail,
+                                    systemImage:
+                                        "envelope.fill",
+                                    tint: .green
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    )
 
                     settingsSection(
                         title: "通知"
@@ -227,6 +248,138 @@ struct SettingsView: View {
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            refreshLoginEmail()
+        }
+        .onChange(of: scenePhase) {
+            newPhase in
+
+            if newPhase == .active {
+                refreshLoginEmail()
+            }
+        }
+    }
+
+    private func refreshLoginEmail() {
+        guard let user = Auth.auth().currentUser else {
+            loginEmail = "未設定"
+            return
+        }
+
+        user.reload {
+            error in
+
+            DispatchQueue.main.async {
+                if let error {
+                    print(
+                        "メールアドレス再読込エラー: " +
+                        error.localizedDescription
+                    )
+
+                    loginEmail =
+                        Auth.auth().currentUser?.email
+                        ?? "未設定"
+                    return
+                }
+
+                guard
+                    let refreshedUser =
+                        Auth.auth().currentUser,
+                    let refreshedEmail =
+                        refreshedUser.email?
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ),
+                    !refreshedEmail.isEmpty
+                else {
+                    loginEmail = "未設定"
+                    return
+                }
+
+                loginEmail = refreshedEmail
+
+                refreshedUser
+                    .getIDTokenForcingRefresh(true) {
+                        _,
+                        tokenError in
+
+                        if let tokenError {
+                            print(
+                                "メール変更後の認証情報更新エラー: " +
+                                tokenError.localizedDescription
+                            )
+                            return
+                        }
+
+                        syncStudentEmailIfNeeded(
+                            email: refreshedEmail
+                        )
+                    }
+            }
+        }
+    }
+
+    private func syncStudentEmailIfNeeded(
+        email: String
+    ) {
+        guard
+            let uid = Auth.auth().currentUser?.uid,
+            !email.isEmpty
+        else {
+            return
+        }
+
+        let studentRef =
+            Firestore.firestore()
+                .collection("students")
+                .document(uid)
+
+        studentRef.getDocument {
+            snapshot,
+            error in
+
+            if let error {
+                print(
+                    "生徒メール同期確認エラー: " +
+                    error.localizedDescription
+                )
+                return
+            }
+
+            guard snapshot?.exists == true else {
+                return
+            }
+
+            let savedEmail =
+                snapshot?.data()?["email"]
+                as? String
+                ?? ""
+
+            guard savedEmail != email else {
+                return
+            }
+
+            studentRef.updateData(
+                [
+                    "email": email,
+                    "updatedAt":
+                        FieldValue.serverTimestamp()
+                ]
+            ) {
+                error in
+
+                if let error {
+                    print(
+                        "生徒メール同期エラー: " +
+                        error.localizedDescription
+                    )
+                } else {
+                    print(
+                        "Firebase Authと生徒プロフィールのメールを同期しました"
+                    )
+                }
+            }
+        }
     }
 
     private var headerSection: some View {
@@ -402,6 +555,385 @@ struct SettingsView: View {
             .padding(.leading, 68)
     }
 }
+
+
+private struct EmailChangeView: View {
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
+    let onEmailChanged: (String) -> Void
+
+    @State private var newEmail = ""
+    @State private var currentPassword = ""
+    @State private var pendingEmail = ""
+
+    @State private var isSending = false
+    @State private var isChecking = false
+    @State private var verificationSent = false
+    @State private var errorMessage = ""
+    @State private var statusMessage = ""
+
+    @State private var confirmedEmail = ""
+    @State private var showCompletedAlert = false
+
+    private var currentEmail: String {
+        Auth.auth().currentUser?.email ?? "未設定"
+    }
+
+    var body: some View {
+        Form {
+            Section("現在のメールアドレス") {
+                Text(currentEmail)
+                    .textSelection(.enabled)
+            }
+
+            Section {
+                TextField(
+                    "新しいメールアドレス",
+                    text: $newEmail
+                )
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+                SecureField(
+                    "現在のパスワード",
+                    text: $currentPassword
+                )
+                .textContentType(.password)
+            } header: {
+                Text("新しいメールアドレス")
+            } footer: {
+                Text(
+                    "本人確認のため現在のパスワードを入力してください。"
+                )
+            }
+
+            Section {
+                Button {
+                    sendVerificationEmail()
+                } label: {
+                    HStack {
+                        Spacer()
+
+                        if isSending {
+                            ProgressView()
+                        } else {
+                            Label(
+                                "確認メールを送信",
+                                systemImage:
+                                    "envelope.badge"
+                            )
+                            .fontWeight(.semibold)
+                        }
+
+                        Spacer()
+                    }
+                }
+                .disabled(
+                    isSending ||
+                    isChecking ||
+                    newEmail
+                        .trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        )
+                        .isEmpty ||
+                    currentPassword.isEmpty
+                )
+            } footer: {
+                Text(
+                    "新しいメールアドレスへ確認メールを送ります。メール内のリンクを確認するまで、ログイン用メールアドレスは変更されません。変更完了後は、セキュリティのため再ログインが必要になる場合があります。"
+                )
+            }
+
+            if verificationSent {
+                Section("確認待ち") {
+                    Label(
+                        "確認メールを送信しました",
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .foregroundStyle(.green)
+
+                    Text(pendingEmail)
+                        .font(.subheadline)
+                        .textSelection(.enabled)
+
+                    Text(
+                        "メール内のリンクを開いたあと、この画面へ戻って確認してください。"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    Button {
+                        checkForCompletedChange()
+                    } label: {
+                        HStack {
+                            Spacer()
+
+                            if isChecking {
+                                ProgressView()
+                            } else {
+                                Label(
+                                    "変更完了を確認",
+                                    systemImage:
+                                        "arrow.clockwise"
+                                )
+                            }
+
+                            Spacer()
+                        }
+                    }
+                    .disabled(isChecking || isSending)
+                }
+            }
+
+            if !statusMessage.isEmpty {
+                Section {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !errorMessage.isEmpty {
+                Section {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle("メールアドレス変更")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: scenePhase) {
+            newPhase in
+
+            if newPhase == .active &&
+                verificationSent {
+                checkForCompletedChange(
+                    showWaitingMessage: false
+                )
+            }
+        }
+        .alert(
+            "メールアドレスを変更しました",
+            isPresented: $showCompletedAlert
+        ) {
+            Button("OK") {
+                onEmailChanged(confirmedEmail)
+                dismiss()
+            }
+        } message: {
+            Text(
+                "次回から新しいメールアドレスでログインしてください。"
+            )
+        }
+    }
+
+    private func sendVerificationEmail() {
+        let trimmedNewEmail =
+            newEmail.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        guard !trimmedNewEmail.isEmpty else {
+            errorMessage =
+                "新しいメールアドレスを入力してください。"
+            return
+        }
+
+        guard trimmedNewEmail.count <= 254 else {
+            errorMessage =
+                "メールアドレスが長すぎます。"
+            return
+        }
+
+        guard
+            trimmedNewEmail.contains("@"),
+            !trimmedNewEmail.contains(" ")
+        else {
+            errorMessage =
+                "メールアドレスの形式を確認してください。"
+            return
+        }
+
+        guard !currentPassword.isEmpty else {
+            errorMessage =
+                "現在のパスワードを入力してください。"
+            return
+        }
+
+        guard
+            let user = Auth.auth().currentUser,
+            let savedEmail =
+                user.email?
+                    .trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+            !savedEmail.isEmpty
+        else {
+            errorMessage =
+                "ログイン情報を確認できませんでした。"
+            return
+        }
+
+        guard
+            savedEmail.caseInsensitiveCompare(
+                trimmedNewEmail
+            ) != .orderedSame
+        else {
+            errorMessage =
+                "現在と同じメールアドレスです。"
+            return
+        }
+
+        isSending = true
+        errorMessage = ""
+        statusMessage = ""
+
+        let credential =
+            EmailAuthProvider.credential(
+                withEmail: savedEmail,
+                password: currentPassword
+            )
+
+        user.reauthenticate(
+            with: credential
+        ) {
+            _,
+            error in
+
+            if let error {
+                DispatchQueue.main.async {
+                    isSending = false
+                    errorMessage =
+                        "本人確認に失敗しました。現在のパスワードを確認してください。\n" +
+                        error.localizedDescription
+                }
+                return
+            }
+
+            Auth.auth().useAppLanguage()
+
+            user.sendEmailVerification(
+                beforeUpdatingEmail:
+                    trimmedNewEmail
+            ) {
+                error in
+
+                DispatchQueue.main.async {
+                    isSending = false
+
+                    if let error {
+                        errorMessage =
+                            "確認メールを送信できませんでした。\n" +
+                            error.localizedDescription
+                        return
+                    }
+
+                    pendingEmail = trimmedNewEmail
+                    verificationSent = true
+                    currentPassword = ""
+                    errorMessage = ""
+                    statusMessage =
+                        "新しいメールアドレスに確認メールを送信しました。"
+                }
+            }
+        }
+    }
+
+    private func checkForCompletedChange(
+        showWaitingMessage: Bool = true
+    ) {
+        guard verificationSent else {
+            return
+        }
+
+        guard let user = Auth.auth().currentUser else {
+            errorMessage =
+                "ログイン情報を確認できませんでした。"
+            return
+        }
+
+        guard !isChecking else {
+            return
+        }
+
+        isChecking = true
+        errorMessage = ""
+
+        user.reload {
+            error in
+
+            DispatchQueue.main.async {
+                if let error {
+                    isChecking = false
+                    errorMessage =
+                        "変更状況を確認できませんでした。\n" +
+                        error.localizedDescription
+                    return
+                }
+
+                guard
+                    let refreshedUser =
+                        Auth.auth().currentUser,
+                    let refreshedEmail =
+                        refreshedUser.email?
+                            .trimmingCharacters(
+                                in: .whitespacesAndNewlines
+                            ),
+                    !refreshedEmail.isEmpty
+                else {
+                    isChecking = false
+                    errorMessage =
+                        "更新後のメールアドレスを確認できませんでした。"
+                    return
+                }
+
+                guard
+                    refreshedEmail
+                        .caseInsensitiveCompare(
+                            pendingEmail
+                        )
+                        == .orderedSame
+                else {
+                    isChecking = false
+
+                    if showWaitingMessage {
+                        statusMessage =
+                            "まだ変更は完了していません。確認メール内のリンクを開いてから、もう一度お試しください。"
+                    }
+                    return
+                }
+
+                refreshedUser
+                    .getIDTokenForcingRefresh(true) {
+                        _,
+                        tokenError in
+
+                        DispatchQueue.main.async {
+                            isChecking = false
+
+                            if let tokenError {
+                                errorMessage =
+                                    "メールアドレスは変更されましたが、認証情報の更新確認に失敗しました。\n" +
+                                    tokenError.localizedDescription
+                                return
+                            }
+
+                            confirmedEmail =
+                                refreshedEmail
+                            errorMessage = ""
+                            statusMessage = ""
+                            showCompletedAlert = true
+                        }
+                    }
+            }
+        }
+    }
+}
+
 
 private struct InquiryView: View {
 

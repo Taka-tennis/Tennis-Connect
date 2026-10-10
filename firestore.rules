@@ -74,7 +74,7 @@ service cloud.firestore {
       allow read:
         if signedIn() && request.auth.uid == studentId;
 
-      allow update:
+            allow update:
         if signedIn()
         && request.auth.uid == studentId
         && request.resource.data
@@ -87,8 +87,23 @@ service cloud.firestore {
             'gender',
             'ageGroup',
             'tennisExperience',
+            'email',
             'updatedAt'
           ])
+        && (
+          !request.resource.data
+            .diff(resource.data)
+            .affectedKeys()
+            .hasAny(['email'])
+          || (
+            request.auth.token.email != null
+            && request.auth.token.email_verified == true
+            && request.resource.data.email is string
+            && request.resource.data.email.size() > 0
+            && request.resource.data.email.size() <= 254
+            && request.resource.data.email == request.auth.token.email
+          )
+        )
         && request.resource.data.displayName is string
         && request.resource.data.displayName.size() > 0
         && request.resource.data.displayName.size() <= 20
@@ -116,6 +131,7 @@ service cloud.firestore {
           || request.resource.data.tennisExperience is string
         )
         && request.resource.data.updatedAt == request.time;
+
 
       allow delete: if false;
 
