@@ -1,4 +1,4 @@
-// 修正版：コーチの予約一覧を「対応待ち・今後の予約・履歴」に整理
+// 修正版：コーチの予約一覧を「対応待ち・承認済み・履歴」に整理
 
 import SwiftUI
 import FirebaseFirestore
@@ -71,7 +71,7 @@ struct CoachReservationListView: View {
             case .pending:
                 return "対応待ち"
             case .upcoming:
-                return "今後"
+                return "承認済み"
             case .history:
                 return "履歴"
             }
@@ -504,7 +504,7 @@ struct CoachReservationListView: View {
     private var sectionTitle: String {
         switch selectedCategory {
         case .pending:
-            return "承認または却下を選んでください"
+            return "内容を確認して対応してください"
         case .upcoming:
             return "これからのレッスン"
         case .history:
@@ -528,7 +528,7 @@ struct CoachReservationListView: View {
         case .pending:
             return "対応待ちはありません"
         case .upcoming:
-            return "今後の予約はありません"
+            return "承認済みの予約はありません"
         case .history:
             return "予約履歴はありません"
         }
@@ -537,7 +537,7 @@ struct CoachReservationListView: View {
     private var emptyStateMessage: String {
         switch selectedCategory {
         case .pending:
-            return "新しい予約申請が届くと、ここに表示されます"
+            return "新しい予約申請や、回答が必要なキャンセル申請が届くと、ここに表示されます"
         case .upcoming:
             return "承認した予約や支払い済みの予約が表示されます"
         case .history:
@@ -913,6 +913,12 @@ struct CoachReservationListView: View {
     }
 
     private func category(for reservation: Reservation) -> ReservationCategory {
+        if reservation.weatherCancellationStatus == "pending",
+           reservation.weatherCancellationRequesterRole == "student",
+           !isPast(reservation) {
+            return .pending
+        }
+
         if reservation.status == "pending" {
             return .pending
         }
@@ -1590,9 +1596,26 @@ struct CoachReservationListView: View {
         )
     }
 
+    private func isReservationExpired(
+        _ reservation: Reservation
+    ) -> Bool {
+        ["cancelled", "canceled"].contains(
+            reservation.status
+        ) &&
+        reservation.cancellationSource ==
+            "reservation_expired"
+    }
+
     @ViewBuilder
     private func statusBadge(_ reservation: Reservation) -> some View {
-        if reservation.paymentStatus == "refunded" ||
+        if isReservationExpired(reservation) {
+            statusChip(
+                "期限切れ",
+                icon: "clock.arrow.circlepath",
+                color: CoachReservationUI.textSecondary
+            )
+
+        } else if reservation.paymentStatus == "refunded" ||
             reservation.refundStatus == "succeeded" {
 
             let refundLabel =
@@ -1753,6 +1776,10 @@ struct CoachReservationListView: View {
 
     private func statusDescription(_ reservation: Reservation) -> String {
         let studentCancelled = isStudentCancellation(reservation)
+
+        if isReservationExpired(reservation) {
+            return "コーチの回答がないまま予約日時を過ぎたため、自動的に終了しました"
+        }
 
         if reservation.paymentStatus == "refunded" ||
             reservation.refundStatus == "succeeded" {
@@ -2254,6 +2281,14 @@ private struct CoachReservationDetailView: View {
     }
 
     private var statusText: String {
+        if ["cancelled", "canceled"].contains(
+            reservation.status
+        ) &&
+            reservation.cancellationSource ==
+                "reservation_expired" {
+            return "期限切れ"
+        }
+
         if reservation.paymentStatus == "refunded" ||
             reservation.refundStatus == "succeeded" {
             return "返金済み"

@@ -120,9 +120,9 @@ struct ReservationListView: View {
         var title: String {
             switch self {
             case .pending:
-                return "承認待ち"
+                return "対応待ち"
             case .upcoming:
-                return "今後"
+                return "承認済み"
             case .history:
                 return "履歴"
             }
@@ -318,7 +318,7 @@ struct ReservationListView: View {
                     .multilineTextAlignment(.center)
 
                 Text(
-                    "ログインすると、承認待ち・今後の予約・予約履歴を確認できます。"
+                    "ログインすると、対応待ち・承認済み・予約履歴を確認できます。"
                 )
                 .font(.subheadline)
                 .foregroundStyle(
@@ -590,7 +590,7 @@ struct ReservationListView: View {
     private var sectionTitle: String {
         switch selectedCategory {
         case .pending:
-            return "コーチの承認を待っている予約"
+            return "内容を確認して対応してください"
 
         case .upcoming:
             return "これからのレッスン"
@@ -619,7 +619,7 @@ struct ReservationListView: View {
             return "承認待ちの予約はありません"
 
         case .upcoming:
-            return "今後の予約はありません"
+            return "承認済みの予約はありません"
 
         case .history:
             return "予約履歴はありません"
@@ -629,7 +629,7 @@ struct ReservationListView: View {
     private var emptyStateMessage: String {
         switch selectedCategory {
         case .pending:
-            return "予約申請中のレッスンがここに表示されます"
+            return "予約申請中のレッスンや、回答が必要なキャンセル申請がここに表示されます"
 
         case .upcoming:
             return "承認済み・支払い済みのこれからのレッスンが表示されます"
@@ -861,6 +861,12 @@ struct ReservationListView: View {
     private func category(
         for reservation: ReservationItem
     ) -> ReservationCategory {
+        if reservation.weatherCancellationStatus == "pending",
+           reservation.weatherCancellationRequesterRole == "coach",
+           !isPast(reservation) {
+            return .pending
+        }
+
         if reservation.status == "pending" {
             return .pending
         }
@@ -963,9 +969,23 @@ struct ReservationListView: View {
             ?? value
     }
 
+    private func isReservationExpired(
+        _ reservation: ReservationItem
+    ) -> Bool {
+        ["cancelled", "canceled"].contains(
+            reservation.status
+        ) &&
+        reservation.cancellationSource ==
+            "reservation_expired"
+    }
+
     private func statusDescription(
         _ reservation: ReservationItem
     ) -> String {
+        if isReservationExpired(reservation) {
+            return "コーチの回答がないまま予約日時を過ぎたため、自動的に終了しました"
+        }
+
         if isRefunded(reservation) {
             if reservation.cancellationSource == "late_payment" {
                 return "開始時刻後の決済を全額返金済み"
@@ -1245,7 +1265,15 @@ struct ReservationListView: View {
     private func statusBadge(
         _ reservation: ReservationItem
     ) -> some View {
-        if isRefunded(reservation) {
+        if isReservationExpired(reservation) {
+            reservationBadge(
+                title: "期限切れ",
+                icon: "clock.arrow.circlepath",
+                color:
+                    StudentReservationUI.textSecondary
+            )
+
+        } else if isRefunded(reservation) {
             reservationBadge(
                 title:
                     reservation.cancellationSource == "late_payment"
@@ -3011,7 +3039,15 @@ private struct StudentReservationDetailView: View {
 
     @ViewBuilder
     private var statusHeader: some View {
-        if isRefunded {
+        if isReservationExpired {
+            statusMessage(
+                icon: "clock.arrow.circlepath",
+                color: .secondary,
+                title: "予約申請は期限切れです",
+                message:
+                    "コーチの回答がないまま予約日時を過ぎたため、自動的に終了しました"
+            )
+        } else if isRefunded {
             statusMessage(
                 icon: "arrow.uturn.backward.circle.fill",
                 color: .purple,
@@ -3173,6 +3209,14 @@ private struct StudentReservationDetailView: View {
         }
 
         return true
+    }
+
+    private var isReservationExpired: Bool {
+        ["cancelled", "canceled"].contains(
+            reservation.status
+        ) &&
+        reservation.cancellationSource ==
+            "reservation_expired"
     }
 
     private var isRefunded: Bool {

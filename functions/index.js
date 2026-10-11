@@ -9,6 +9,7 @@ const {
   onDocumentCreated,
   onDocumentWritten,
 } = require("firebase-functions/v2/firestore");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {initializeApp} = require("firebase-admin/app");
 const {getAuth} = require("firebase-admin/auth");
 const {getMessaging} = require("firebase-admin/messaging");
@@ -12222,6 +12223,176 @@ function lessonStartDateFromReservation(reservation) {
   const parsed = new Date(`${rawDate}T${startTime}:00+09:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
+
+
+/**
+ * コーチが未回答のまま開始時刻を過ぎた予約申請を自動失効します。
+ *
+ * 対象は status == "pending" の未決済予約だけです。
+ * 決済済み・返金中など支払い実績を示す予約には一切触れません。
+ * また、開始時刻を過ぎた枠を空き日程へ戻すこともしません。
+ *
+ * Cloud Schedulerは重複・並行実行される可能性があるため、
+ * 各予約をTransaction内で再取得し、最新状態がpendingのときだけ更新します。
+ */
+exports.expirePendingReservationRequests = onSchedule(
+  {
+    schedule: "every 5 minutes",
+    timeZone: "Asia/Tokyo",
+    retryCount: 0,
+  },
+  async () => {
+    const db = getFirestore();
+    const pendingSnapshot = await db
+      .collection("reservations")
+      .where("status", "==", "pending")
+      .get();
+
+    if (pendingSnapshot.empty) {
+      logger.info("期限切れ確認対象の予約申請はありません。");
+      return;
+    }
+
+    const protectedPaymentStatuses = new Set([
+      "paid",
+      "partially_refunded",
+      "refund_processing",
+      "refund_failed",
+      "refunded",
+    ]);
+
+    let expiredCount = 0;
+    let futureCount = 0;
+    let statusChangedCount = 0;
+    let protectedPaymentCount = 0;
+    let invalidDateCount = 0;
+
+    for (const document of pendingSnapshot.docs) {
+      const result = await db.runTransaction(
+        async (transaction) => {
+          const latestSnapshot = await transaction.get(
+            document.ref,
+          );
+
+          if (!latestSnapshot.exists) {
+            return "status_changed";
+          }
+
+          const reservation = latestSnapshot.data() || {};
+          const currentStatus = String(
+            reservation.status || "",
+          ).trim();
+
+          if (currentStatus !== "pending") {
+            return "status_changed";
+          }
+
+          const paymentStatus = String(
+            reservation.paymentStatus || "",
+          ).trim();
+          const refundStatus = String(
+            reservation.refundStatus || "",
+          ).trim();
+          const paymentIntentId = String(
+            reservation.stripePaymentIntentId || "",
+          ).trim();
+          const amountPaid = Number(
+            reservation.amountPaid || 0,
+          );
+
+          const hasProtectedPaymentState =
+            protectedPaymentStatuses.has(paymentStatus) ||
+            refundStatus === "succeeded" ||
+            paymentIntentId !== "" ||
+            (Number.isFinite(amountPaid) && amountPaid > 0);
+
+          if (hasProtectedPaymentState) {
+            logger.error(
+              "pending予約に支払い実績があるため自動失効をスキップしました。",
+              {
+                reservationId: latestSnapshot.id,
+                paymentStatus,
+                refundStatus,
+                hasPaymentIntent: paymentIntentId !== "",
+                amountPaid:
+                  Number.isFinite(amountPaid) ? amountPaid : null,
+              },
+            );
+            return "protected_payment";
+          }
+
+          const lessonStartDate =
+            lessonStartDateFromReservation(reservation);
+
+          if (!lessonStartDate) {
+            logger.error(
+              "予約日時を解析できないため自動失効をスキップしました。",
+              {
+                reservationId: latestSnapshot.id,
+                date: reservation.date || "",
+                times: Array.isArray(reservation.times) ?
+                  reservation.times :
+                  reservation.time ? [reservation.time] : [],
+              },
+            );
+            return "invalid_date";
+          }
+
+          if (lessonStartDate.getTime() > Date.now()) {
+            return "future";
+          }
+
+          transaction.set(
+            document.ref,
+            {
+              status: "cancelled",
+              cancellationSource: "reservation_expired",
+              cancellationRefundPercent: 0,
+              cancellationRefundAmountExpected: 0,
+              paymentStatus: "not_paid",
+              refundStatus: "not_applicable",
+              refundAmount: 0,
+              expirationReason: "coach_no_response",
+              expiredAt: FieldValue.serverTimestamp(),
+              cancelledAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            {merge: true},
+          );
+
+          return "expired";
+        },
+      );
+
+      switch (result) {
+        case "expired":
+          expiredCount += 1;
+          break;
+        case "future":
+          futureCount += 1;
+          break;
+        case "protected_payment":
+          protectedPaymentCount += 1;
+          break;
+        case "invalid_date":
+          invalidDateCount += 1;
+          break;
+        default:
+          statusChangedCount += 1;
+          break;
+      }
+    }
+
+    logger.info("予約申請の期限切れ確認が完了しました。", {
+      checkedCount: pendingSnapshot.size,
+      expiredCount,
+      futureCount,
+      statusChangedCount,
+      protectedPaymentCount,
+      invalidDateCount,
+    });
+  },
+);
 
 /**
  * 生徒都合キャンセルの返金率を決定します。
